@@ -1,0 +1,40 @@
+{
+  "name": "Insight Flow 官方模板 3：每周增长简报自动分发",
+  "description": "n8n 每周一 09:00 定时调 IF 生成周报 → 推送飞书群 → 归档到 MFlow 报告目录（经 IF 自动完成）。",
+  "nodes": [
+    {
+      "name": "每周一 09:00 触发",
+      "type": "n8n-nodes-base.cron",
+      "parameters": {"rule": {"weekday": 1, "hour": 9, "minute": 0}}
+    },
+    {
+      "name": "调用 IF 周报生成",
+      "type": "n8n-nodes-base.httpRequest",
+      "parameters": {
+        "url": "http://<if-host>:8400/api/v1/reports/weekly?workspace_id=<ws>",
+        "method": "POST",
+        "headers": {"X-API-Key": "{{$env.IF_API_KEY}}"}
+      }
+    },
+    {
+      "name": "摘要提取",
+      "type": "n8n-nodes-base.code",
+      "parameters": {
+        "jsCode": "const r = $json;\nreturn [{ json: {\n  insights: r.insights_count,\n  feedback: r.feedback,\n  report: r.report_path,\n  mflow: r.mflow_path || '未配置同步'\n} }];"
+      }
+    },
+    {
+      "name": "飞书日报卡片",
+      "type": "n8n-nodes-base.httpRequest",
+      "parameters": {
+        "url": "https://open.feishu.cn/open-apis/bot/v2/hook/{{$env.FEISHU_WEBHOOK}}",
+        "method": "POST",
+        "bodyParameters": {
+          "msg_type": "interactive",
+          "card": {"header": {"title": {"tag": "plain_text", "content": "📈 Insight Flow 增长周报"}, "template": "blue"}}
+        }
+      }
+    }
+  ],
+  "connections_note": "cron → POST IF 周报 → 摘要 → 飞书卡片；IF 侧自动完成 MFlow 同步，无需额外节点。"
+}

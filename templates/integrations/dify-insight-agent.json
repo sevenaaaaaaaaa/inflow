@@ -1,0 +1,23 @@
+{
+  "name": "Insight Flow 官方模板 2：Dify Agent 接入 IF 洞察",
+  "description": "把 IF 的 MCP Server（HTTP 传输）作为 Dify Agent 的工具源。导入方式：Dify → 工具 → 自定义 → OpenAPI/服务地址。",
+  "connection": {
+    "type": "mcp",
+    "url": "http://<if-host>:8400/api/v1/mcp/tools/call",
+    "list_tools": "GET /api/v1/mcp/tools",
+    "auth": {"header": "X-API-Key", "value": "<IF API Key（scope=read 起步）>"}
+  },
+  "recommended_tools": [
+    {"name": "list_insights", "usage": "Agent 检索最新洞察作为决策上下文"},
+    {"name": "get_insight", "usage": "展开单条洞察的证据链与推荐动作"},
+    {"name": "ask_analyst", "usage": "自然语言问答（自动工具调用+引用溯源）"},
+    {"name": "run_diagnosis", "usage": "触发一次流量诊断并等待结果"}
+  ],
+  "example_agent_prompt": "你是增长顾问。收到用户问题后：1) 先调用 ask_analyst 获取数据洞察（含 [ins:id] 引用）；2) 对 top 洞察调用 get_insight 展开证据；3) 输出建议时必须引用洞察 ID；4. 数据不足时明确说明，不编造数字。",
+  "example_workflow": [
+    {"step": 1, "node": "用户提问", "detail": "LLM 节点接收问题"},
+    {"step": 2, "node": "工具调用 ask_analyst", "detail": "获取带引用的分析"},
+    {"step": 3, "node": "工具调用 get_insight", "detail": "展开 Top1 洞察证据"},
+    {"step": 4, "node": "LLM 汇总", "detail": "生成含引用的最终建议"}
+  ]
+}

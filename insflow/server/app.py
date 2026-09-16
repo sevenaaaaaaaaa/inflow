@@ -28,6 +28,11 @@ app = FastAPI(
     description="增长情报与策略操作系统 API",
     version="0.1.0",
     lifespan=lifespan,
+    # OpenAPI 3.1（可直接导入 n8n / Dify / Postman 生成节点与 SDK）
+    openapi_version="3.1.0",
+    openapi_url="/api/v1/openapi.json",
+    docs_url="/api/v1/docs",
+    redoc_url="/api/v1/redoc",
 )
 
 # ========== API Key 认证（可选启用，M4）==========

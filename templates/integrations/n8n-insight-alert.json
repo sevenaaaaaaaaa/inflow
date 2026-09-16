@@ -1,0 +1,46 @@
+{
+  "name": "Insight Flow 官方模板 1：洞察告警分发",
+  "description": "IF 出站 Webhook（insight.created / monitor.alert）→ n8n 接收 → 按 severity 分发到飞书/Slack/邮件。HMAC 验签用 IF 侧 webhook.generic 的 X-IF-Signature。",
+  "nodes": [
+    {
+      "name": "Webhook 入口",
+      "type": "n8n-nodes-base.webhook",
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "insflow-insights",
+        "responseMode": "onReceived"
+      }
+    },
+    {
+      "name": "验签（HMAC-SHA256）",
+      "type": "n8n-nodes-base.code",
+      "parameters": {
+        "jsCode": "const crypto = require('crypto');\nconst secret = $env.IF_WEBHOOK_SECRET;\nconst sig = $json.headers['x-if-signature'];\nconst raw = JSON.stringify($json.body);\nconst expected = crypto.createHmac('sha256', secret).update(raw).digest('hex');\nif (sig !== expected) { throw new Error('签名校验失败'); }\nreturn [{ json: $json.body }];"
+      }
+    },
+    {
+      "name": "严重度路由",
+      "type": "n8n-nodes-base.switch",
+      "parameters": {
+        "rules": [
+          {"value2": "critical", "output": "飞书加急"},
+          {"value2": "high", "output": "Slack 频道"},
+          {"value2": "medium", "output": "邮件摘要"}
+        ]
+      }
+    },
+    {
+      "name": "飞书加急",
+      "type": "n8n-nodes-base.httpRequest",
+      "parameters": {
+        "url": "https://open.feishu.cn/open-apis/bot/v2/hook/{{$env.FEISHU_WEBHOOK}}",
+        "method": "POST",
+        "bodyParameters": {
+          "msg_type": "text",
+          "content": {"text": "🔴 {{ $json.title }}\n{{ $json.summary }}"}
+        }
+      }
+    }
+  ],
+  "connections_note": "Webhook → 验签 → 严重度路由 → 对应通知节点；critical 走飞书加急，其余按渠道分发。"
+}
