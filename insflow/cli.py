@@ -208,6 +208,58 @@ def plugin_check(plugin_path: str):
                 console.print(f"  [yellow]⚠[/] {warn}")
 
 
+@plugin.command("install")
+@click.argument("plugin_path")
+def plugin_install(plugin_path: str):
+    """从本地市场安装插件（自动 plugin check）"""
+    from .engine.marketplace import Marketplace
+    market = Marketplace()
+    result = market.install(plugin_path)
+    if result["ok"]:
+        console.print(f"[green]已安装: {result['plugin_id']} ({result['type']})[/]")
+        if not result.get("auto_scheduled"):
+            console.print("[yellow]⚠ 未通过 check，不会被调度器自动执行[/]")
+        for w in result.get("warnings", []):
+            console.print(f"  [yellow]⚠[/] {w}")
+    else:
+        console.print(f"[red]安装失败（{result.get('stage')}）[/]")
+        for err in result.get("errors", []):
+            console.print(f"  [red]✗[/] {err}")
+        sys.exit(1)
+
+
+@plugin.command("uninstall")
+@click.argument("plugin_id")
+def plugin_uninstall(plugin_id: str):
+    """卸载插件"""
+    from .engine.marketplace import Marketplace
+    result = Marketplace().uninstall(plugin_id)
+    if result["ok"]:
+        console.print(f"[green]已卸载: {plugin_id}[/]")
+    else:
+        console.print(f"[red]{result.get('detail')}[/]")
+
+
+@plugin.command("market")
+def plugin_market():
+    """列出本地市场中可安装的插件"""
+    from .engine.marketplace import Marketplace
+    items = Marketplace().scan()
+    if not items:
+        console.print("[yellow]marketplace/ 目录暂无可安装插件[/]")
+        return
+    table = Table(title="Plugin Marketplace")
+    table.add_column("ID", style="cyan")
+    table.add_column("Type", style="magenta")
+    table.add_column("Name", style="green")
+    table.add_column("Version", style="dim")
+    table.add_column("Check", style="bold")
+    for it in items:
+        table.add_row(it["id"], it["type"], it["name"], it["version"],
+                      "[green]✓[/]" if it["check_passed"] else "[red]✗[/]")
+    console.print(table)
+
+
 @main.command()
 def init():
     """初始化 Insight Flow 数据目录"""

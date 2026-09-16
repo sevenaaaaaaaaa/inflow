@@ -251,6 +251,34 @@ async def mcp_call_tool(data: McpToolCall):
         return {"raw": output}
 
 
+# ========== 插件市场（M4）==========
+
+@app.get("/api/v1/marketplace")
+async def marketplace_scan():
+    """浏览本地插件市场"""
+    from ..engine.marketplace import Marketplace
+    return {"plugins": Marketplace().scan()}
+
+
+@app.get("/api/v1/plugins")
+async def plugins_installed():
+    from ..engine.marketplace import Marketplace
+    return {"plugins": Marketplace().installed()}
+
+
+class PluginInstallRequest(BaseModel):
+    path: str
+
+
+@app.post("/api/v1/plugins/install")
+async def install_plugin(data: PluginInstallRequest):
+    from ..engine.marketplace import Marketplace
+    result = Marketplace().install(data.path)
+    if not result["ok"]:
+        raise HTTPException(status_code=422, detail=result)
+    return result
+
+
 # ========== 自定义规则 DSL（IM-3）/ 模型效果（IM-5）==========
 
 class DSLRuleRequest(BaseModel):
