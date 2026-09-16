@@ -1,0 +1,18 @@
+{
+  "id": "dataforseo-ads",
+  "type": "source",
+  "name": "DataForSEO Ads Transparency（Google 广告素材库）",
+  "version": "1.0.0",
+  "entry": "entry.py",
+  "permissions": ["network", "credentials:dataforseo"],
+  "config": {
+    "login": {"desc": "DataForSEO login email", "required": true, "secret": false},
+    "password": {"desc": "API password", "required": true, "secret": true}
+  },
+  "provides": {
+    "metrics": ["ad_creatives", "ad_spend_signal"],
+    "engines": ["google"],
+    "latency": "standard",
+    "cost_hint": "按量计费（广告情报 CI-4 默认实现）"
+  }
+}
