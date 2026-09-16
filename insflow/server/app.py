@@ -30,6 +30,65 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# ========== API Key 认证（可选启用，M4）==========
+
+import os as _os
+from ..core.auth import ACTION_MIN_ROLE, AuthManager, can
+
+_auth_managers: dict[str, AuthManager] = {}
+
+
+def _get_auth(workspace_id: str) -> AuthManager:
+    if workspace_id not in _auth_managers:
+        _auth_managers[workspace_id] = AuthManager(workspace_id)
+    return _auth_managers[workspace_id]
+
+
+AUTH_ENABLED = _os.environ.get("INSFLOW_API_AUTH", "") == "1"
+
+
+async def require_auth(request, action: str):
+    """可选鉴权依赖：INSFLOW_API_AUTH=1 时校验 X-API-Key + RBAC/scope"""
+    if not AUTH_ENABLED:
+        return None
+    key = request.headers.get("X-API-Key", "")
+    workspace_id = request.query_params.get("workspace_id", "default")
+    ok, api_key = _get_auth(workspace_id).authorize(key, action)
+    if not ok:
+        raise HTTPException(status_code=401, detail="认证/授权失败")
+    return api_key
+
+
+class APIKeyCreate(BaseModel):
+    name: str
+    scopes: list[str] = ["read"]
+    ttl_days: int | None = 365
+
+
+@app.post("/api/v1/auth/keys")
+async def create_api_key(workspace_id: str, data: APIKeyCreate):
+    """创建 API Key（明文只返回一次）"""
+    from ..core.auth import SCOPE_LEVEL
+    for s in data.scopes:
+        if s not in SCOPE_LEVEL:
+            raise HTTPException(status_code=422, detail=f"非法 scope: {s}")
+    key = _get_auth(workspace_id).create_key(data.name, data.scopes)
+    return {"key_id": key.key_id, "key": key.key, "name": key.name,
+            "scopes": key.scopes, "expires_at": key.expires_at.isoformat() if key.expires_at else None}
+
+
+@app.get("/api/v1/auth/keys")
+async def list_api_keys(workspace_id: str = Query(...)):
+    return {"keys": _get_auth(workspace_id).list_keys()}
+
+
+@app.delete("/api/v1/auth/keys/{key_id}")
+async def revoke_api_key(workspace_id: str, key_id: str):
+    ok = _get_auth(workspace_id).revoke(key_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Key not found")
+    return {"ok": True}
+
 
 # ========== 请求/响应模型 ==========
 
