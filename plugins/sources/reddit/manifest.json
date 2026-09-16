@@ -1,0 +1,32 @@
+{
+  "id": "reddit",
+  "type": "source",
+  "name": "Reddit Official API",
+  "version": "1.0.0",
+  "entry": "entry.py",
+  "permissions": ["network", "credentials:reddit"],
+  "config": {
+    "client_id": {
+      "desc": "Reddit App client ID",
+      "required": true,
+      "secret": false
+    },
+    "client_secret": {
+      "desc": "Reddit App client secret",
+      "required": true,
+      "secret": true
+    },
+    "user_agent": {
+      "desc": "User agent string",
+      "required": false,
+      "secret": false,
+      "default": "InsightFlow/1.0"
+    }
+  },
+  "provides": {
+    "metrics": ["reddit_posts", "reddit_comments", "subreddit_mentions"],
+    "engines": ["reddit"],
+    "latency": "standard",
+    "cost_hint": "Free (100 req/min)"
+  }
+}

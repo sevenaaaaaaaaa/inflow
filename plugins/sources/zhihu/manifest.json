@@ -1,0 +1,21 @@
+{
+  "id": "zhihu",
+  "type": "source",
+  "name": "知乎数据开放平台",
+  "version": "1.0.0",
+  "entry": "entry.py",
+  "permissions": ["network", "credentials:zhihu"],
+  "config": {
+    "api_key": {
+      "desc": "知乎开放平台 API Key",
+      "required": true,
+      "secret": true
+    }
+  },
+  "provides": {
+    "metrics": ["zhihu_questions", "zhihu_answers", "zhihu_articles"],
+    "engines": ["zhihu"],
+    "latency": "standard",
+    "cost_hint": "免费档: 1000 次/天搜索"
+  }
+}

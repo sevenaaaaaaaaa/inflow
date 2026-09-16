@@ -1,0 +1,15 @@
+{
+  "id": "gdelt",
+  "type": "source",
+  "name": "GDELT Global Database of Events, Language, and Tone",
+  "version": "1.0.0",
+  "entry": "entry.py",
+  "permissions": ["network"],
+  "config": {},
+  "provides": {
+    "metrics": ["news_mentions", "global_events", "tone_analysis"],
+    "engines": ["gdelt"],
+    "latency": "standard",
+    "cost_hint": "Free (rate limited)"
+  }
+}
