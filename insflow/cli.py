@@ -396,7 +396,14 @@ def export(workspace: str, out: str, fmt: str):
                     writer.writerow([ins["id"], ins["type"], ins["title"],
                                      ins["severity"], ins["confidence"], ins["status"], ins["created_at"]])
 
+        # 导出审计（R3-5：全量导出写审计事件，防数据外带无痕）
+        from .core.files import EventBus
+        EventBus(workspace).emit("data.exported", {
+            "workspace_id": workspace, "format": fmt,
+            "path": str(path), "insights": len(data["insights"]),
+        })
         console.print(f"[green]已导出 {len(data['insights'])} 条洞察 → {path}[/]")
+        console.print("[dim]已记录导出审计事件（data.exported）[/]")
 
     run_async(_run())
 
@@ -449,6 +456,57 @@ def doctor(workspace: str):
                   f"（{s['total']} 项检查，{s['failed']} 失败 / {s['warned']} 警告）")
     if s["failed"]:
         sys.exit(1)
+
+
+@main.command()
+@click.option("--workspace", "-w", default=None, help="工作区ID（不填则新建）")
+@click.option("--name", default="InsFlow Demo", help="新工作区名称")
+@click.option("--pack", "-p", default="saas-growth", help="行业模板包")
+@click.option("--base-url", default="http://127.0.0.1:8400", help="服务地址（向导链接用）")
+def setup(name: str, workspace: str, pack: str, base_url: str):
+    """引导式初始化：体检 → 建 workspace → 应用行业模板 → 输出接入向导链接"""
+    async def _setup():
+        # 1. 体检（非阻塞：警告继续，失败才停）
+        from .engine.doctor import Doctor
+        report = Doctor(workspace or "default").run_all()
+        failed = report["summary"]["failed"]
+        if failed and not workspace:
+            console.print("[red]体检未通过，先处理修复建议再运行 setup[/]")
+            sys.exit(1)
+        console.print(f"[dim]体检：{report['summary']['verdict']}（{failed} 失败 / {report['summary']['warned']} 警告）[/]")
+
+        from .core.store import get_store
+        store = await get_store()
+
+        # 2. 工作区（复用或新建）
+        if workspace:
+            ws = await store.get_workspace(workspace)
+            if not ws:
+                console.print(f"[red]Workspace 不存在: {workspace}[/]")
+                sys.exit(1)
+        else:
+            from .core.entities import Workspace
+            ws = await store.create_workspace(Workspace(name=name))
+            console.print(f"[green]✓ 工作区: {ws.id}（{ws.name}）[/]")
+
+        # 3. 应用行业模板
+        from .engine.template_pack import TemplateRegistry
+        reg = TemplateRegistry()
+        pack_obj = reg.get(pack)
+        if pack_obj:
+            applied = await pack_obj.apply(ws.id)
+            console.print(f"[green]✓ 模板: {pack_obj.name}[/]"
+                          f"（监控 {len(applied['monitors_created'])} 新建 / {len(applied['monitors_skipped'])} 跳过，"
+                          f"DSL {len(applied['dsl_rules_registered'])} 条）")
+
+        # 4. 输出下一步
+        console.print("\n[bold]下一步：[/]")
+        console.print(f"  1. 接入向导: {base_url}/console/onboarding?workspace_id={ws.id}")
+        console.print(f"  2. 触发首诊: POST {base_url}/api/v1/diagnosis/run")
+        console.print(f"  3. 体检复查: insflow doctor -w {ws.id}")
+        return ws.id
+
+    run_async(_setup())
 
 
 @main.command()

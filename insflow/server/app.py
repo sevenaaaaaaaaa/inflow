@@ -338,6 +338,43 @@ async def set_plan(workspace_id: str, data: PlanSetRequest):
         raise HTTPException(status_code=422, detail=str(e))
 
 
+@app.post("/api/v1/billing/invoice")
+async def build_invoice(workspace_id: str = Query(...), month: str | None = Query(None)):
+    """生成月度对账单（R3-3，客户可读 Markdown）"""
+    from ..engine.invoice import InvoiceBuilder
+    store = await get_store()
+    if not await store.get_workspace(workspace_id):
+        raise HTTPException(status_code=404, detail="Workspace not found")
+    result = await InvoiceBuilder(workspace_id).build(month=month)
+    return {"invoice_path": result["invoice_path"]}
+
+
+# ========== 行业模板包（R3-1）==========
+
+class TemplateApplyRequest(BaseModel):
+    template_id: str
+
+
+@app.get("/api/v1/templates")
+async def list_templates():
+    """列出可用的行业模板包"""
+    from ..engine.template_pack import TemplateRegistry
+    return {"templates": TemplateRegistry().list()}
+
+
+@app.post("/api/v1/templates/apply")
+async def apply_template(workspace_id: str, data: TemplateApplyRequest):
+    """一键应用行业模板包（幂等）"""
+    from ..engine.template_pack import TemplateRegistry
+    store = await get_store()
+    if not await store.get_workspace(workspace_id):
+        raise HTTPException(status_code=404, detail="Workspace not found")
+    pack = TemplateRegistry().get(data.template_id)
+    if not pack:
+        raise HTTPException(status_code=404, detail=f"模板不存在: {data.template_id}")
+    return await pack.apply(workspace_id)
+
+
 class WhiteLabelExportRequest(BaseModel):
     report_category: str
     filename: str

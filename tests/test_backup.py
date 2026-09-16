@@ -1,9 +1,11 @@
 """测试数据备份（在线备份/保留清理/恢复）"""
 
 import sqlite3
+from pathlib import Path
 
 import pytest
 
+from insflow.core.store import Store
 from insflow.engine.backup import BackupManager
 
 
@@ -99,3 +101,30 @@ class TestRestore:
         mgr = BackupManager(data_dir=env["data"], backup_dir=tmp_path / "data-backup")
         result = mgr.restore(tmp_path / "nonexistent", confirm=True)
         assert result["ok"] is False
+
+
+class TestTenantBackup:
+    async def test_workspace_export(self, env, tmp_path, monkeypatch):
+        """租户级导出：独立 JSON + 数据结构完整"""
+        import json as jsonlib
+        import insflow.core.files as fm
+        from insflow.core.entities import Workspace
+        from insflow.core.store import get_store, reset_store
+
+        monkeypatch.setenv("INSFLOW_MASTER_KEY", "mk")
+        mgr = BackupManager(data_dir=env["data"], backup_dir=tmp_path / "data-backup")
+
+        s = Store(db_path=tmp_path / "t.db")
+        await s.connect()
+        await s.migrate()
+        reset_store(s)
+        await s.create_workspace(Workspace(id="test-ws", name="T"))
+
+        result = await mgr.export_workspace("test-ws", tmp_path / "export")
+        assert result["ok"] is True
+        data = jsonlib.loads(Path(result["path"]).read_text(encoding="utf-8"))
+        assert data["workspace_id"] == "test-ws"
+        assert data["exported_at"]
+
+        await s.close()
+        reset_store(None)

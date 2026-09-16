@@ -13,6 +13,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from ..core.files import DATA_DIR, EventBus, atomic_write_json
+from ..core.store import get_store
 
 ROOT_DIR = Path(__file__).parent.parent.parent
 DEFAULT_BACKUP_DIR = ROOT_DIR / "data-backup"
@@ -81,6 +82,40 @@ class BackupManager:
         finally:
             src.close()
             dst.close()
+
+    # ========== 租户级备份/恢复（R3-4：多客户隔离场景）==========
+
+    async def workspace_stats(self, workspace_id: str) -> dict:
+        """租户数据统计（备份/恢复前预览）"""
+        store = await get_store()
+        insights = await store.list_insights(workspace_id, limit=10000)
+        actions = await store.list_actions(workspace_id)
+        return {"workspace_id": workspace_id, "insights": len(insights),
+                "actions": len(actions)}
+
+    async def export_workspace(self, workspace_id: str, out_dir: "Path | str") -> dict:
+        """租户级导出：该 workspace 全量数据 → 独立 JSON（审计 + 隔离恢复）"""
+        import json as jsonlib
+        store = await get_store()
+        out_dir = Path(out_dir)
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        data = {
+            "exported_at": datetime.now(UTC).isoformat(),
+            "workspace_id": workspace_id,
+            "insights": [i.model_dump(mode="json")
+                         for i in await store.list_insights(workspace_id, limit=10000)],
+            "actions": [a.model_dump(mode="json")
+                        for a in await store.list_actions(workspace_id)],
+            "feedback": await store.get_feedback_stats(workspace_id),
+        }
+        path = Path(out_dir) / f"ws-{workspace_id}.json"
+        path.write_text(jsonlib.dumps(data, ensure_ascii=False, indent=2, default=str),
+                        encoding="utf-8")
+        EventBus(workspace_id).emit("backup.workspace_exported", {
+            "path": str(path),
+        })
+        return {"ok": True, "path": str(path)}
 
     # ========== 保留策略 ==========
 
