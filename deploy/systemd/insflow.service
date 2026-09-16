@@ -1,0 +1,32 @@
+# Insight Flow systemd 单元（物理机/私有服务器部署）
+# 安装：
+#   sudo cp deploy/systemd/insflow.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now insflow
+# 建议配合 daily timer 做周报/验证评估（见 insflow-daily.timer）
+
+[Unit]
+Description=Insight Flow 增长情报系统
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=insflow
+Group=insflow
+WorkingDirectory=/opt/insflow
+EnvironmentFile=/opt/insflow/.env
+ExecStart=/opt/insflow/.venv/bin/insflow serve --host 127.0.0.1 --port 8400
+Restart=on-failure
+RestartSec=5
+
+# 硬化（私有化基线）
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/insflow/data
+RestrictSUIDSGID=true
+CapabilityBoundingSet=
+
+[Install]
+WantedBy=multi-user.target

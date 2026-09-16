@@ -1,0 +1,12 @@
+# Insight Flow 日报调度（周报生成 + 到期动作验证评估）
+# 配套 insflow.service 使用；通过 CLI 触发 HTTP（本机回环）或直接调引擎脚本
+
+[Unit]
+Description=Insight Flow 每日任务（验证评估/周报）
+
+[Timer]
+OnCalendar=*-*-* 09:00:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

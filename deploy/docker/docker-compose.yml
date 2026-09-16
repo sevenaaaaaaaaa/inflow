@@ -1,0 +1,24 @@
+# Insight Flow 私有化部署 · Docker Compose
+# 用法：
+#   1. cp .env.example .env 并设置 INSFLOW_MASTER_KEY（必填，fail-closed）
+#   2. docker compose up -d
+#   3. 访问 http://<host>:8400 （建议前置反代加 TLS）
+services:
+  insflow:
+    build: ./docker
+    container_name: insflow
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8400:8400"   # 只绑本机回环，暴露交给反代
+    env_file: .env
+    environment:
+      - INSFLOW_PORT=8400
+    volumes:
+      - insflow-data:/app/data
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
+
+volumes:
+  insflow-data:
