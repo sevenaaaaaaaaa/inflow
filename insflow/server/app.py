@@ -497,11 +497,24 @@ async def agent_skills():
 
 # ========== MCP over HTTP（OpenFlow McpGuard / 任意 MCP HTTP 客户端）==========
 
+# 内核 fail-closed（R2-4）：默认要求认证；本地调试显式 INSFLOW_MCP_AUTH=0 才放开
+MCP_AUTH_REQUIRED = _os.environ.get("INSFLOW_MCP_AUTH", "1") != "0"
+
+
+async def _mcp_auth_guard(request, action: str = "read"):
+    if not MCP_AUTH_REQUIRED:
+        return None
+    return await require_auth(request, "read")
+
+
 @app.get("/api/v1/mcp/tools")
-async def mcp_list_tools():
-    """MCP 工具清单（10 个，与 stdio server 同源）"""
+async def mcp_list_tools(request: Request):
+    """MCP 工具清单（10 个，与 stdio server 同源；认证默认强制）"""
     from ..mcp_server.tools import MCP_TOOLS_SCHEMA
-    return {"tools": MCP_TOOLS_SCHEMA, "transport": "http", "server": "insight-flow"}
+    if MCP_AUTH_REQUIRED:
+        await require_auth(request, "read")
+    return {"tools": MCP_TOOLS_SCHEMA, "transport": "http",
+            "auth_required": MCP_AUTH_REQUIRED}
 
 
 class McpToolCall(BaseModel):
@@ -510,11 +523,13 @@ class McpToolCall(BaseModel):
 
 
 @app.post("/api/v1/mcp/tools/call")
-async def mcp_call_tool(data: McpToolCall):
-    """MCP 工具调用（HTTP 传输；多 Key 认证由部署层反代注入）"""
-    import json as jsonlib
-
+async def mcp_call_tool(data: McpToolCall, request: Request):
+    """MCP 工具调用（认证默认强制；触发类工具要求 write scope）"""
     from ..mcp_server.tools import call_mcp_tool
+    if MCP_AUTH_REQUIRED:
+        write_tools = {"trigger_playbook", "run_diagnosis"}
+        await require_auth(request, "write" if data.name in write_tools else "read")
+    import json as jsonlib
     output = await call_mcp_tool(data.name, data.arguments)
     try:
         return JSONResponse(content=jsonlib.loads(output))
