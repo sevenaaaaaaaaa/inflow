@@ -1,0 +1,21 @@
+{
+  "id": "firecrawl",
+  "type": "source",
+  "name": "Firecrawl 网页抓取",
+  "version": "1.0.0",
+  "entry": "entry.py",
+  "permissions": ["network", "credentials:firecrawl"],
+  "config": {
+    "api_key": {
+      "desc": "Firecrawl API key（免费档 1000 credits）",
+      "required": true,
+      "secret": true
+    }
+  },
+  "provides": {
+    "metrics": ["page_content", "page_snapshot"],
+    "engines": ["firecrawl"],
+    "latency": "standard",
+    "cost_hint": "1 credit/页（免费档 1000 credits）"
+  }
+}

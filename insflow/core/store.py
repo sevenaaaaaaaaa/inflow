@@ -153,6 +153,15 @@ def generate_id() -> str:
     return str(uuid.uuid4())[:8]
 
 
+def to_json(value) -> str:
+    """JSON 序列化（兼容 pydantic 模型嵌套）"""
+    def _default(o):
+        if hasattr(o, "model_dump"):
+            return o.model_dump(mode="json")
+        return str(o)
+    return json.dumps(value, ensure_ascii=False, default=_default)
+
+
 class Store:
     """SQLite 存储层"""
 
@@ -213,7 +222,7 @@ class Store:
             """INSERT INTO workspaces (id, name, stage, maturity_level, settings_json, created_at, updated_at)
                VALUES (?, ?, ?, ?, ?, ?, ?)""",
             (ws.id, ws.name, ws.stage.value, ws.maturity_level.value, 
-             ws.settings_json.__str__(), ws.created_at.isoformat(), ws.updated_at.isoformat())
+             to_json(ws.settings_json), ws.created_at.isoformat(), ws.updated_at.isoformat())
         )
         await self._db.commit()
         return ws
@@ -243,7 +252,7 @@ class Store:
                SET name = ?, stage = ?, maturity_level = ?, settings_json = ?, updated_at = ?
                WHERE id = ?""",
             (ws.name, ws.stage.value, ws.maturity_level.value,
-             json.dumps(ws.settings_json, ensure_ascii=False), ws.updated_at.isoformat(), ws.id)
+             to_json(ws.settings_json), ws.updated_at.isoformat(), ws.id)
         )
         await self._db.commit()
         return ws
@@ -259,8 +268,8 @@ class Store:
                evidence_json, models_json, actions_json, stage_tags_json, status, created_at)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (insight.id, insight.workspace_id, insight.type, insight.title, insight.summary,
-             insight.severity.value, insight.confidence, str(insight.evidence_json),
-             str(insight.models_json), str(insight.actions_json), str(insight.stage_tags_json),
+             insight.severity.value, insight.confidence, to_json(insight.evidence_json),
+             to_json(insight.models_json), to_json(insight.actions_json), to_json(insight.stage_tags_json),
              insight.status.value, insight.created_at.isoformat())
         )
         await self._db.commit()
@@ -321,11 +330,11 @@ class Store:
                params_json, state, dispatched_at, result_json, verify_window_until, baseline_json, created_at)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (action.id, action.workspace_id, action.insight_id, action.action_type,
-             action.target_ref, str(action.params_json), action.state.value,
+             action.target_ref, to_json(action.params_json), action.state.value,
              action.dispatched_at.isoformat() if action.dispatched_at else None,
-             str(action.result_json),
+             to_json(action.result_json),
              action.verify_window_until.isoformat() if action.verify_window_until else None,
-             str(action.baseline_json), action.created_at.isoformat())
+             to_json(action.baseline_json), action.created_at.isoformat())
         )
         await self._db.commit()
         return action
