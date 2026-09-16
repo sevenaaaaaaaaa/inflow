@@ -143,7 +143,7 @@ class Doctor:
                     "调度任务", WARN, "0 个任务（INSFLOW_DISABLE_SCHEDULER=1 或未建监控）"))
 
             # 事件流失败扫描（最近 100 条中的 fail 类事件）
-            from .files import EventBus
+            from ..core.files import EventBus
             events = EventBus(self.workspace_id).read(limit=100)
             fails = [e for e in events if e.get("type", "").endswith((".failed", ".dead"))]
             if fails:
