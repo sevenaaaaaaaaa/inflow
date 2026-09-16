@@ -1,0 +1,1 @@
+"""Insight Flow MCP Server"""
