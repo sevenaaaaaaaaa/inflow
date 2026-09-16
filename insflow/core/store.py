@@ -747,6 +747,27 @@ class Store:
             row["props_json"] = json.loads(row["props_json"]) if row["props_json"] else {}
         return rows
 
+    # ========== Metrics 查询（舆情看板等）==========
+
+    async def latest_metrics(self, workspace_id: str, metrics: list[str]) -> list[dict]:
+        """每个 (entity_id, metric) 取最近一条（看板用，避免全量时序）"""
+        if not metrics:
+            return []
+        placeholders = ",".join("?" for _ in metrics)
+        rows = await self._fetchall(
+            f"""SELECT m.* FROM metrics m
+                JOIN (SELECT entity_id, metric, MAX(ts) AS mts FROM metrics
+                      WHERE workspace_id = ? AND metric IN ({placeholders})
+                      GROUP BY entity_id, metric) latest
+                ON m.entity_id = latest.entity_id AND m.metric = latest.metric AND m.ts = latest.mts
+                WHERE m.workspace_id = ?
+                ORDER BY m.ts DESC""",
+            tuple([workspace_id, *metrics, workspace_id]),
+        )
+        for r in rows:
+            r["dim_json"] = json.loads(r["dim_json"]) if r["dim_json"] else {}
+        return rows
+
     # ========== Monitors（M6: 监控任务 CRUD）==========
 
     def _parse_monitor_row(self, row: dict) -> dict:

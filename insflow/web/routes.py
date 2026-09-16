@@ -48,6 +48,7 @@ NAV_AREA = {
     "onboarding": "monitor",
     "monitors": "monitor",
     "insights": "insight",
+    "sentiment": "insight",
     "reports": "report",
     "plugins": "ecosystem",
     "usage": "settings",
@@ -166,6 +167,59 @@ async def plugins_page(request: Request, workspace_id: str = Query("")):
     ))
 
 
+@router.get("/sentiment", response_class=HTMLResponse)
+async def sentiment_page(request: Request, workspace_id: str = Query("")):
+    """舆情看板（G-3）：情绪分布 + 负面预警 + 主体热力"""
+    if not workspace_id:
+        workspace_id = await _default_workspace()
+    store = await get_store()
+
+    # 1. 各监测主体的最新情绪指标
+    rows = await store.latest_metrics(workspace_id, [
+        "topic_negative_ratio", "topic_sentiment_score",
+        "topic_mentions_news", "topic_mentions_search", "topic_mentions_reddit",
+    ])
+    topics: dict[str, dict] = {}
+    for r in rows:
+        t = topics.setdefault(r["entity_id"], {
+            "query": r["entity_id"], "negative_ratio": 0.0, "score": 0.0,
+            "counts": {}, "mentions": {}, "ts": r["ts"],
+        })
+        if r["metric"] == "topic_negative_ratio":
+            t["negative_ratio"] = float(r["value"])
+            t["counts"] = (r["dim_json"] or {}).get("counts", {})
+        elif r["metric"] == "topic_sentiment_score":
+            t["score"] = float(r["value"])
+        elif r["metric"].startswith("topic_mentions_"):
+            t["mentions"][r["metric"].replace("topic_mentions_", "")] = int(r["value"])
+
+    topic_list = sorted(topics.values(), key=lambda x: -x["negative_ratio"])
+
+    # 2. 负面/舆情洞察（近 30 条）
+    all_insights = await store.list_insights(workspace_id, limit=200)
+    sentiment_insights = [
+        i for i in all_insights
+        if i.type in ("topic_negative_alert", "topic_digest", "mention_spike") or
+        "sentiment" in i.type or "negative" in i.type
+    ][:30]
+    negative_alerts = [i for i in sentiment_insights if i.type == "topic_negative_alert"]
+
+    # 3. 汇总
+    total_negative = sum(t["counts"].get("negative", 0) for t in topic_list)
+    total_mentions = sum(sum(t["mentions"].values()) for t in topic_list)
+    avg_negative = (sum(t["negative_ratio"] for t in topic_list) / len(topic_list)
+                    if topic_list else 0.0)
+
+    return templates.TemplateResponse(request, "sentiment.html", _ctx(
+        request, "sentiment", workspace_id,
+        topics=topic_list, insights=sentiment_insights,
+        negative_alerts=negative_alerts,
+        stats={"topics": len(topic_list), "negative_total": total_negative,
+               "mentions_total": total_mentions, "avg_negative": avg_negative,
+               "alerts": len(negative_alerts)},
+    ))
+
+
 @router.get("/subscriptions", response_class=HTMLResponse)
 async def subscriptions_page(request: Request, workspace_id: str = Query("")):
     if not workspace_id:
@@ -182,7 +236,9 @@ async def usage_page(request: Request, workspace_id: str = Query("")):
     if not workspace_id:
         workspace_id = await _default_workspace()
     from ..engine.billing import PLANS, BillingManager
-    summary = await BillingManager(workspace_id).usage_summary()
+    billing = BillingManager(workspace_id)
+    summary = await billing.usage_summary()
+    trial = await billing.trial_status()
     return templates.TemplateResponse(request, "usage.html", _ctx(
         request, "usage", workspace_id,
         plan_id=summary["plan_id"],
@@ -192,7 +248,7 @@ async def usage_page(request: Request, workspace_id: str = Query("")):
         sources_allowed=summary["sources_allowed"],
         usage=summary["usage"],
         checked_at=summary["checked_at"],
-        all_plans=PLANS,
+        all_plans=PLANS, trial=trial,
     ))
 
 

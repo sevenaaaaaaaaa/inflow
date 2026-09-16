@@ -97,11 +97,23 @@ class AccountManager:
         await store._db.commit()
 
         token = await self._create_session(uid, now)
+
+        # 自助试用（G-4）：注册即得 14 天 Growth 体验
+        trial = {}
+        try:
+            from ..engine.billing import BillingManager, TRIAL_DAYS, TRIAL_PLAN
+            trial = await BillingManager(tenant.id).start_trial()
+            trial["days"] = TRIAL_DAYS
+            trial["plan"] = TRIAL_PLAN
+        except Exception:
+            trial = {"ok": False}
+
         EventBus(tenant.id).emit("account.registered", {
             "user_id": uid, "email": email, "workspace_id": tenant.id,
+            "trial": trial.get("plan", ""),
         })
         return {"user_id": uid, "email": email, "workspace_id": tenant.id,
-                "token": token}
+                "token": token, "trial": trial}
 
     # ========== 登录 ==========
 

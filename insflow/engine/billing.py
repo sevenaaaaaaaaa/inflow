@@ -9,7 +9,7 @@
 配额产品化：用量可见（API）+ 超量告警（events.jsonl → webhook/飞书出站链路复用）
 """
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta, timezone
 from typing import Any
 
 from ..core.files import EventBus
@@ -86,6 +86,10 @@ PLANS: dict[str, dict[str, Any]] = {
 
 DEFAULT_PLAN = "free"
 
+# 自助试用（G-4）：注册即得 N 天高阶套餐试用
+TRIAL_PLAN = "growth"
+TRIAL_DAYS = 14
+
 # 告警阈值（80% 预警，100% 熔断提示）
 WARNING_RATIO = 0.8
 
@@ -105,16 +109,84 @@ class BillingManager:
     # ========== 套餐绑定 ==========
 
     async def get_plan_id(self) -> str:
+        """解析生效套餐（试用期内返回试用套餐，过期自动回落基础套餐）"""
         store = await get_store()
         ws = await store.get_workspace(self.workspace_id)
         if not ws:
             return DEFAULT_PLAN
-        return (ws.settings_json or {}).get("plan", DEFAULT_PLAN)
+        settings = dict(ws.settings_json or {})
+        base_plan = settings.get("plan", DEFAULT_PLAN)
+
+        trial_until = settings.get("trial_until")
+        if trial_until:
+            try:
+                until = datetime.fromisoformat(trial_until)
+                if until > datetime.now(timezone.utc):
+                    return settings.get("trial_plan", TRIAL_PLAN)
+                # 试用过期：清理并回落到基础套餐
+                settings.pop("trial_until", None)
+                settings.pop("trial_plan", None)
+                ws.settings_json = settings
+                await store.update_workspace(ws)
+            except (ValueError, TypeError):
+                pass
+        return base_plan
+
+    # ========== 自助试用（G-4）==========
+
+    async def start_trial(self, days: int = TRIAL_DAYS, plan: str = TRIAL_PLAN) -> dict:
+        """开通试用（注册即调用；同一工作区仅一次）"""
+        store = await get_store()
+        ws = await store.get_workspace(self.workspace_id)
+        if not ws:
+            raise QuotaExceededForPlan(f"Workspace 不存在: {self.workspace_id}")
+        settings = dict(ws.settings_json or {})
+        if settings.get("trial_used"):
+            raise QuotaExceededForPlan("该工作区已使用过试用")
+        if plan not in PLANS:
+            raise QuotaExceededForPlan(f"未知套餐: {plan}")
+
+        until = datetime.now(timezone.utc) + timedelta(days=days)
+        settings.update({
+            "plan": settings.get("plan", DEFAULT_PLAN),
+            "trial_plan": plan,
+            "trial_until": until.isoformat(),
+            "trial_used": True,
+        })
+        ws.settings_json = settings
+        await store.update_workspace(ws)
+        self.bus_emit("billing.trial_started", {
+            "plan": plan, "days": days, "until": until.isoformat(),
+        })
+        return {"ok": True, "plan": plan, "days": days, "until": until.isoformat()}
+
+    async def trial_status(self) -> dict:
+        """试用状态（控制台横幅用）"""
+        store = await get_store()
+        ws = await store.get_workspace(self.workspace_id)
+        settings = dict((ws.settings_json if ws else {}) or {})
+        until_raw = settings.get("trial_until")
+        if not until_raw:
+            return {"active": False, "used": bool(settings.get("trial_used"))}
+        try:
+            until = datetime.fromisoformat(until_raw)
+        except (ValueError, TypeError):
+            return {"active": False, "used": bool(settings.get("trial_used"))}
+        remaining = (until - datetime.now(timezone.utc)).total_seconds()
+        return {
+            "active": remaining > 0,
+            "used": bool(settings.get("trial_used")),
+            "plan": settings.get("trial_plan", TRIAL_PLAN),
+            "until": until_raw,
+            "days_left": max(0, int(remaining // 86400)),
+        }
 
     async def get_plan(self) -> dict:
         plan_id = await self.get_plan_id()
         plan = dict(PLANS.get(plan_id, PLANS[DEFAULT_PLAN]))
         plan["plan_id"] = plan_id
+        trial = await self.trial_status()
+        plan["trial"] = trial
         return plan
 
     async def set_plan(self, plan_id: str) -> dict:

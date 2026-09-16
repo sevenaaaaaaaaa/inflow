@@ -2,6 +2,16 @@
 {% block title %} · 套餐用量{% endblock %}
 {% block content %}
 <h1>套餐用量</h1>
+{% if trial and trial.active %}
+<div class="card" style="border-color:var(--accent); margin-bottom:18px">
+  <strong>🎁 试用中：{{ trial.plan }} 档</strong> · 剩余 <strong>{{ trial.days_left }}</strong> 天
+  <span class="sub">（到期后自动回落免费档，升级套餐请联系客服或在下方切换）</span>
+</div>
+{% elif trial and trial.used %}
+<div class="card" style="margin-bottom:18px">
+  <span class="sub">试用已结束。升级任意付费档即可继续使用竞品监控、广告情报、白标报告等能力。</span>
+</div>
+{% endif %}
 <p class="sub">{{ plan_name }}{% if price %} · ${{ price }}/月{% endif %} · 检查于 {{ checked_at[:16] }}</p>
 
 <div class="cards">

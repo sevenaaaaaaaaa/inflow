@@ -1,0 +1,84 @@
+{% extends "base.html" %}
+{% block title %} · 舆情看板{% endblock %}
+{% block content %}
+<h1>舆情看板</h1>
+<p class="sub">全域监测主体的情绪分布与负面预警。数据来自主题监测（新闻/搜索/论坛多渠道聚合）。</p>
+
+<div class="cards">
+  <div class="card"><div class="num">{{ stats.topics }}</div><div class="label">监测主体</div></div>
+  <div class="card"><div class="num" style="color:var(--danger)">{{ stats.negative_total }}</div><div class="label">负面提及（累计）</div></div>
+  <div class="card"><div class="num">{{ stats.mentions_total }}</div><div class="label">总提及（累计）</div></div>
+  <div class="card"><div class="num" style="color:{{ 'var(--danger)' if stats.avg_negative >= 0.35 else 'var(--accent)' }}">{{ '%.0f%%' | format(stats.avg_negative * 100) }}</div><div class="label">平均负向占比</div></div>
+  <div class="card"><div class="num" style="color:{{ 'var(--danger)' if stats.alerts else 'var(--ok)' }}">{{ stats.alerts }}</div><div class="label">负面预警</div></div>
+</div>
+
+<h2>负面预警</h2>
+{% if negative_alerts %}
+<table>
+  <tr><th>严重度</th><th>主体 / 预警</th><th>证据（负面样本 · 命中词）</th><th>时间</th></tr>
+  {% for ins in negative_alerts %}
+  <tr>
+    <td><span class="badge b-{{ ins.severity.value }}">{{ ins.severity.value }}</span></td>
+    <td><strong>{{ ins.title }}</strong><br><small class="sub">{{ ins.summary[:80] }}</small></td>
+    <td>
+      {% for ev in ins.evidence_json[:1] %}
+        {% for ex in ev.get('examples', [])[:2] %}
+        <div><small class="sub">「{{ ex.text[:40] }}」<code>{{ ex.hits | join(',') }}</code></small></div>
+        {% endfor %}
+      {% endfor %}
+    </td>
+    <td>{{ ins.created_at.strftime('%m-%d %H:%M') }}</td>
+  </tr>
+  {% endfor %}
+</table>
+{% else %}
+<div class="empty">暂无负面预警 —— 情绪健康 ✅</div>
+{% endif %}
+
+<h2>主体情绪分布</h2>
+{% if topics %}
+<table>
+  <tr><th>监测主体</th><th>负向占比</th><th>情绪分布（正/中/负）</th><th>渠道提及</th><th>平均情绪分</th><th>更新</th></tr>
+  {% for t in topics %}
+  <tr>
+    <td><strong>{{ t.query }}</strong></td>
+    <td>
+      <span class="badge {{ 'b-high' if t.negative_ratio >= 0.35 else ('b-medium' if t.negative_ratio >= 0.2 else 'b-ok') }}">
+        {{ '%.0f%%' | format(t.negative_ratio * 100) }}</span>
+      <div class="pct-bar" style="margin-top:6px"><span class="pct-fill"
+        style="width: {{ (t.negative_ratio * 100) | int }}%; background: var(--danger)"></span></div>
+    </td>
+    <td>
+      <span style="color:var(--ok)">正 {{ t.counts.get('positive', 0) }}</span> ·
+      <span style="color:var(--muted)">中 {{ t.counts.get('neutral', 0) }}</span> ·
+      <span style="color:var(--danger)">负 {{ t.counts.get('negative', 0) }}</span>
+    </td>
+    <td>
+      {% for ch, n in t.mentions.items() %}<code>{{ ch }} {{ n }}</code> {% endfor %}
+    </td>
+    <td>{{ '%.2f' | format(t.score) }}</td>
+    <td>{{ t.ts[:16].replace('T', ' ') }}</td>
+  </tr>
+  {% endfor %}
+</table>
+{% else %}
+<div class="empty">暂无舆情数据 —— 在「监控任务」创建一个 <code>topic</code> 监测（如品牌词/话题）后回来查看</div>
+{% endif %}
+
+<h2>舆情动态</h2>
+{% if insights %}
+<table>
+  <tr><th>类型</th><th>标题</th><th>严重度</th><th>时间</th></tr>
+  {% for ins in insights %}
+  <tr>
+    <td><code>{{ ins.type }}</code></td>
+    <td>{{ ins.title[:60] }}</td>
+    <td><span class="badge b-{{ ins.severity.value }}">{{ ins.severity.value }}</span></td>
+    <td>{{ ins.created_at.strftime('%m-%d %H:%M') }}</td>
+  </tr>
+  {% endfor %}
+</table>
+{% else %}
+<div class="empty">暂无舆情洞察</div>
+{% endif %}
+{% endblock %}

@@ -357,6 +357,23 @@ async def set_plan(workspace_id: str, data: PlanSetRequest):
         raise HTTPException(status_code=422, detail=str(e))
 
 
+@app.get("/api/v1/billing/trial")
+async def trial_status(workspace_id: str = Query(...)):
+    """试用状态（G-4 自助试用）"""
+    from ..engine.billing import BillingManager
+    return await BillingManager(workspace_id).trial_status()
+
+
+@app.post("/api/v1/billing/trial")
+async def start_trial(workspace_id: str = Query(...), days: int = Query(14)):
+    """开通试用（注册即自动调用；此处供补开/运维）"""
+    from ..engine.billing import BillingManager
+    try:
+        return await BillingManager(workspace_id).start_trial(days=days)
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+
 @app.post("/api/v1/billing/invoice")
 async def build_invoice(workspace_id: str = Query(...), month: str | None = Query(None)):
     """生成月度对账单（R3-3，客户可读 Markdown）"""

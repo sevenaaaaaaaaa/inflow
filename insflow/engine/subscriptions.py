@@ -18,7 +18,7 @@ from ..actions.router import ActionContext, get_action_router
 from ..core.files import EventBus
 from ..core.store import get_store, generate_id
 
-CHANNELS = ("feishu", "slack", "webhook")
+CHANNELS = ("feishu", "slack", "webhook", "email")
 
 
 class SubscriptionError(Exception):
@@ -209,6 +209,18 @@ def _build_actions(sub: dict, insight, workspace_id: str) -> list[dict]:
                 "title": getattr(insight, "title", ""),
                 "summary": getattr(insight, "summary", ""),
             })
+        elif channel == "email":
+            actions.append({
+                "action_type": "email.send",
+                "target_ref": target.get("email_to", ""),
+                "params_json": {"to": target.get("email_to", ""),
+                                "smtp_host": target.get("smtp_host", ""),
+                                "smtp_port": target.get("smtp_port", ""),
+                                "smtp_from": target.get("smtp_from", "")},
+                "title": getattr(insight, "title", ""),
+                "summary": getattr(insight, "summary", ""),
+                "severity": str(getattr(insight, "severity", "medium")),
+            })
         elif channel == "webhook":
             actions.append({
                 "action_type": "webhook.generic",
@@ -230,6 +242,8 @@ def validate_target(channels: list[str], target: dict) -> None:
         raise SubscriptionError("slack 渠道需要 target.slack_url")
     if "webhook" in channels and not target.get("webhook_url"):
         raise SubscriptionError("webhook 渠道需要 target.webhook_url")
+    if "email" in channels and not target.get("email_to"):
+        raise SubscriptionError("email 渠道需要 target.email_to")
 
 
 def _parse(row: dict) -> dict:

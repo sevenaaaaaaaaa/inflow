@@ -127,3 +127,58 @@ async def test_slack_notify(monkeypatch, tmp_path):
     assert result["ok"] is True
     assert "hooks.slack.com" in capture["url"]
     assert "流量下降" in capture["json"]["text"]
+
+
+class TestEmailNotify:
+    async def test_email_requires_recipient(self):
+        from insflow.actions.notify import EmailNotifyAdapter
+        result = await EmailNotifyAdapter().execute(
+            {"action_type": "email.send", "target_ref": "not-an-email"}, None)
+        assert result["ok"] is False
+        assert "收件地址" in result["detail"]
+
+    async def test_email_requires_smtp(self, monkeypatch):
+        monkeypatch.delenv("SMTP_HOST", raising=False)
+        monkeypatch.delenv("SMTP_FROM", raising=False)
+        from insflow.actions.notify import EmailNotifyAdapter
+        result = await EmailNotifyAdapter().execute(
+            {"action_type": "email.send", "target_ref": "u@x.com"}, None)
+        assert result["ok"] is False
+        assert "SMTP 未配置" in result["detail"]
+
+    async def test_email_send_success(self, monkeypatch):
+        """SMTP 发送走线程，校验邮件内容"""
+        monkeypatch.setenv("SMTP_HOST", "smtp.test")
+        monkeypatch.setenv("SMTP_PORT", "587")
+        monkeypatch.setenv("SMTP_FROM", "insight@test.com")
+        monkeypatch.setenv("SMTP_USER", "u")
+        monkeypatch.setenv("SMTP_PASSWORD", "p")
+
+        captured = {}
+
+        class FakeSMTP:
+            def __init__(self, host, port, timeout=None):
+                captured["host"], captured["port"] = host, port
+            def __enter__(self): return self
+            def __exit__(self, *a): return None
+            def starttls(self): captured["tls"] = True
+            def login(self, u, p): captured["login"] = (u, p)
+            def send_message(self, msg):
+                captured["subject"] = msg["Subject"]
+                captured["to"] = msg["To"]
+                captured["body"] = msg.get_content()
+
+        import smtplib
+        monkeypatch.setattr(smtplib, "SMTP", FakeSMTP)
+
+        from insflow.actions.notify import EmailNotifyAdapter
+        result = await EmailNotifyAdapter().execute({
+            "action_type": "email.send", "target_ref": "user@x.com",
+            "title": "舆情负面预警：某品牌", "summary": "负向占比 45%", "severity": "high",
+        }, None)
+
+        assert result["ok"] is True
+        assert captured["host"] == "smtp.test"
+        assert captured["tls"] is True
+        assert captured["to"] == "user@x.com"
+        assert "某品牌" in captured["subject"] and "HIGH" in captured["subject"]

@@ -92,3 +92,47 @@ class TestQuota:
         mgr.record_usage("cost_usd", 4.9)  # free 限额 $5
         result = await mgr.check_quota("cost_usd", requested=0.5)
         assert result["allowed"] is False
+
+
+class TestTrial:
+    def test_trial_constants(self):
+        from insflow.engine.billing import TRIAL_DAYS, TRIAL_PLAN
+        assert TRIAL_DAYS == 14
+        assert TRIAL_PLAN == "growth"
+
+    async def test_start_trial_and_resolve(self, env):
+        from insflow.engine.billing import BillingManager
+        mgr = BillingManager("test-ws")
+        assert await mgr.get_plan_id() == "free"
+
+        result = await mgr.start_trial()
+        assert result["ok"] is True
+        # 试用期内解析为 Growth
+        assert await mgr.get_plan_id() == "growth"
+        status = await mgr.trial_status()
+        assert status["active"] is True
+        assert status["days_left"] >= 13
+
+    async def test_trial_only_once(self, env):
+        from insflow.engine.billing import BillingManager
+        mgr = BillingManager("test-ws")
+        await mgr.start_trial()
+        with pytest.raises(Exception):
+            await mgr.start_trial()
+
+    async def test_expired_trial_falls_back(self, env):
+        from datetime import datetime, timedelta, timezone
+        from insflow.core.store import get_store
+        from insflow.engine.billing import BillingManager
+
+        mgr = BillingManager("test-ws")
+        await mgr.start_trial()
+        # 手动把试用期改到过去
+        store = await get_store()
+        ws = await store.get_workspace("test-ws")
+        ws.settings_json["trial_until"] = (
+            datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
+        await store.update_workspace(ws)
+
+        assert await mgr.get_plan_id() == "free"
+        assert (await mgr.trial_status())["active"] is False
