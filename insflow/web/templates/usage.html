@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+{% block title %} · 套餐用量{% endblock %}
+{% block content %}
+<h1>套餐用量</h1>
+<p class="sub">{{ plan_name }}{% if price %} · ${{ price }}/月{% endif %} · 检查于 {{ checked_at[:16] }}</p>
+
+<div class="cards">
+  {% for kind, u in usage.items() %}
+  {% if u.get is defined and u.used is defined %}
+  <div class="card">
+    <div class="num">{{ u.used }}{% if u.limit %}<span class="sub" style="font-size:12px"> / {{ u.limit }}</span>{% else %}<span class="sub" style="font-size:12px"> / 不限</span>{% endif %}</div>
+    <div class="label">{{ kind }}
+      {% if u.limit %}
+      <span class="pct-bar"><span class="pct-fill" style="width: {{ (u.pct * 100) | int }}%"></span></span>
+      {% endif %}
+    </div>
+  </div>
+  {% endif %}
+  {% endfor %}
+</div>
+
+<h2>当前套餐包含</h2>
+<table>
+  <tr><th>项</th><th>内容</th></tr>
+  <tr><td>套餐</td><td>{{ plan_name }}</td></tr>
+  <tr><td>数据源组合</td><td>{% for s in sources_allowed %}<code>{{ s }}</code> {% endfor %}</td></tr>
+  <tr><td>功能</td><td>{% for f in features %}{{ f }} · {% endfor %}</td></tr>
+  <tr><td>竞品监控数</td><td>{{ usage.competitors.limit if usage.competitors.limit is not none else 0 }}</td></tr>
+  <tr><td>白标报告</td><td>{% if usage.white_label %}✓ 支持{% else %}✗ 需 Scale 档{% endif %}</td></tr>
+</table>
+
+<h2>切换套餐（演示）</h2>
+<div class="toolbar">
+  <select id="plan">
+    {% for pid, p in all_plans.items() %}
+    <option value="{{ pid }}" {% if pid == plan_id %}selected{% endif %}>{{ p.name }}（{{ p.price_usd_month if p.price_usd_month is not none else '报价制' }}）</option>
+    {% endfor %}
+  </select>
+  <button onclick="setPlan()">切换</button>
+</div>
+
+<script>
+async function setPlan() {
+  await fetch(`/api/v1/billing/plan?workspace_id={{ workspace_id }}`, {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({plan_id: document.getElementById('plan').value})});
+  location.reload();
+}
+</script>
+{% endblock %}

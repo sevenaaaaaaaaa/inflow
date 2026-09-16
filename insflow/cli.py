@@ -6,6 +6,7 @@ from pathlib import Path
 
 import click
 from rich.console import Console
+from rich.panel import Panel
 from rich.table import Table
 
 console = Console()
@@ -258,6 +259,144 @@ def plugin_market():
         table.add_row(it["id"], it["type"], it["name"], it["version"],
                       "[green]✓[/]" if it["check_passed"] else "[red]✗[/]")
     console.print(table)
+
+
+@main.group()
+def run():
+    """运行管线（诊断/验证评估）"""
+    pass
+
+
+@run.command("diagnosis")
+@click.option("--workspace", "-w", required=True, help="工作区ID")
+def run_diagnosis(workspace: str):
+    """跑一次全量诊断管线（AARRR + 异常检测 + 洞察 + 报告）"""
+    from .core.store import get_store
+    from .engine.diagnosis import DiagnosisEngine
+
+    async def _run():
+        store = await get_store()
+        if not await store.get_workspace(workspace):
+            console.print(f"[red]Workspace 不存在: {workspace}[/]")
+            sys.exit(1)
+        engine = DiagnosisEngine(workspace)
+        result = await engine.run()
+        console.print(f"[green]诊断完成[/] 新增洞察 {result['insights_created']} 条")
+        if result["quality_gate_failed"]:
+            console.print(f"[yellow]质量门拦截 {len(result['quality_gate_failed'])} 条草稿[/]")
+        console.print(f"报告: {result['report_path']}")
+        return result
+
+    run_async(_run())
+
+
+@main.group()
+def agent():
+    """Agent 问答"""
+    pass
+
+
+@agent.command("ask")
+@click.argument("question")
+@click.option("--workspace", "-w", default="default", help="工作区ID")
+def agent_ask(question: str, workspace: str):
+    """数据洞察问答（无 OPENAI_API_KEY 时 retrieval 模式）"""
+    from .agent import InsightAgent
+
+    async def _ask():
+        agent = InsightAgent(workspace)
+        result = await agent.ask(question)
+        console.print(Panel(result["answer"], title=f"mode={result['mode']}"))
+        if result["citations"]:
+            console.print("[dim]引用溯源：[/]")
+            for c in result["citations"][:10]:
+                console.print(f"  [dim]ins:{c['insight_id']} {c['title']}[/]")
+
+    run_async(_ask())
+
+
+@main.group()
+def report():
+    """报告生成"""
+    pass
+
+
+@report.command("weekly")
+@click.option("--workspace", "-w", required=True, help="工作区ID")
+def report_weekly(workspace: str):
+    """生成增长周报（+ 自动同步 MFlow 报告目录）"""
+    from .engine.weekly_report import WeeklyReportBuilder
+
+    async def _run():
+        result = await WeeklyReportBuilder(workspace).build()
+        console.print("[green]周报已生成[/]")
+        console.print(f"本地: {result['report_path']}")
+        if result.get("mflow_path"):
+            console.print(f"MFlow: {result['mflow_path']}")
+
+    run_async(_run())
+
+
+@main.command()
+@click.option("--workspace", "-w", required=True, help="工作区ID")
+@click.option("--out", "-o", default="backup", help="导出目录")
+@click.option("--format", "-f", "fmt", default="json", type=click.Choice(["json", "csv", "md"]))
+def export(workspace: str, out: str, fmt: str):
+    """全量导出（防锁定承诺：数据随时可带走）"""
+    import json as jsonlib
+    from datetime import datetime
+    from pathlib import Path
+
+    async def _run():
+        from .core.store import get_store
+        store = await get_store()
+        ws = await store.get_workspace(workspace)
+        if not ws:
+            console.print("[red]Workspace 不存在[/]")
+            sys.exit(1)
+
+        out_dir = Path(out) / workspace
+        out_dir.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now().strftime("%Y%m%d")
+
+        data = {
+            "exported_at": datetime.now().isoformat(),
+            "workspace": ws.model_dump(mode="json"),
+            "insights": [i.model_dump(mode="json")
+                         for i in await store.list_insights(workspace, limit=10000)],
+            "actions": [a.model_dump(mode="json")
+                        for a in await store.list_actions(workspace)],
+            "feedback_stats": await store.get_feedback_stats(workspace),
+            "model_effectiveness": await store.get_model_effectiveness(workspace),
+            "competitors": await store.list_competitors(workspace),
+            "journey_events": await store.list_journey_events(workspace, limit=10000),
+        }
+
+        if fmt == "json":
+            path = out_dir / f"insflow-export-{stamp}.json"
+            path.write_text(jsonlib.dumps(data, ensure_ascii=False, indent=2, default=str),
+                            encoding="utf-8")
+        elif fmt == "md":
+            lines = [f"# Insight Flow 导出 · {workspace}", ""]
+            lines.append(f"导出时间：{data['exported_at']}")
+            lines += ["", "## 洞察", ""]
+            for ins in data["insights"]:
+                lines.append(f"- [{ins['severity']}] {ins['title']} (ins:{ins['id']})")
+            path = out_dir / f"insflow-export-{stamp}.md"
+            path.write_text("\n".join(lines), encoding="utf-8")
+        else:
+            import csv
+            path = out_dir / f"insflow-export-{stamp}.csv"
+            with open(path, "w", newline="", encoding="utf-8") as fh:
+                writer = csv.writer(fh)
+                writer.writerow(["id", "type", "title", "severity", "confidence", "status", "created_at"])
+                for ins in data["insights"]:
+                    writer.writerow([ins["id"], ins["type"], ins["title"],
+                                     ins["severity"], ins["confidence"], ins["status"], ins["created_at"]])
+
+        console.print(f"[green]已导出 {len(data['insights'])} 条洞察 → {path}[/]")
+
+    run_async(_run())
 
 
 @main.command()

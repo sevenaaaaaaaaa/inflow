@@ -1,0 +1,62 @@
+{% extends "base.html" %}
+{% block title %} · 监控任务{% endblock %}
+{% block content %}
+<h1>监控任务</h1>
+<p class="sub">cron 定时采集 → 语义 diff → 洞察生成；任务持久化，服务重启自动恢复</p>
+
+<h2>新建监控</h2>
+<div class="toolbar">
+  <select id="m-kind">
+    <option value="site_change">网站变更（定价页/Changelog）</option>
+  </select>
+  <input id="m-url" placeholder="https://competitor.com/pricing" style="width: 320px">
+  <input id="m-cron" placeholder="0 */6 * * *" value="0 */6 * * *" style="width: 110px">
+  <button onclick="createMonitor()">创建</button>
+  <span id="m-status" class="sub"></span>
+</div>
+
+<h2>任务列表</h2>
+{% if monitors %}
+<table>
+  <tr><th>类型</th><th>目标</th><th>Cron</th><th>状态</th><th>最近运行</th><th>操作</th></tr>
+  {% for m in monitors %}
+  <tr>
+    <td>{{ m.kind }}</td>
+    <td><code>{{ m.target_json.url or m.target_json.query or '—' }}</code></td>
+    <td>{{ m.schedule_cron }}</td>
+    <td><span class="badge b-{{ 'ok' if m.state == 'ok' else 'gray' }}">{{ m.state }}</span></td>
+    <td>{{ m.last_run_at[:16] if m.last_run_at else '从未' }}</td>
+    <td>
+      <button onclick="runMonitor('{{ m.id }}')">立即运行</button>
+      <button class="secondary" onclick="delMonitor('{{ m.id }}')">删除</button>
+    </td>
+  </tr>
+  {% endfor %}
+</table>
+{% else %}
+<div class="empty">暂无监控任务 —— 填写竞品定价页 URL 开始监控异动</div>
+{% endif %}
+
+<script>
+async function createMonitor() {
+  const s = document.getElementById('m-status');
+  const r = await fetch('/api/v1/monitors', {method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({kind: document.getElementById('m-kind').value,
+                          target: {url: document.getElementById('m-url').value},
+                          schedule_cron: document.getElementById('m-cron').value})});
+  if (r.ok) { s.textContent = '已创建'; setTimeout(() => location.reload(), 600); }
+  else { const d = await r.json(); s.textContent = d.detail || '创建失败'; }
+}
+async function runMonitor(id) {
+  const r = await fetch(`/api/v1/monitors/${id}/run`, {method: 'POST'});
+  const d = await r.json();
+  alert(d.first_run !== undefined ? (d.significant ? '检测到显著变更！' : '首次快照已保存') : (d.error || '运行完成'));
+  location.reload();
+}
+async function delMonitor(id) {
+  if (!confirm('确认删除该监控？')) return;
+  await fetch(`/api/v1/monitors/${id}`, {method: 'DELETE'});
+  location.reload();
+}
+</script>
+{% endblock %}

@@ -19,7 +19,17 @@ from ..core.store import get_store
 async def lifespan(app: FastAPI):
     """应用生命周期"""
     store = await get_store()
+    # 定时任务集成（监控恢复/验证评估/周报/配额审计，可经 INSFLOW_DISABLE_SCHEDULER=1 关闭）
+    if _os.environ.get("INSFLOW_DISABLE_SCHEDULER", "") != "1":
+        try:
+            from ..core.bootstrap import bootstrap_scheduled_jobs
+            await bootstrap_scheduled_jobs()
+        except Exception:
+            import logging
+            logging.getLogger("insflow").exception("定时任务引导失败（服务继续可用）")
     yield
+    from ..core.scheduler import get_scheduler
+    get_scheduler().shutdown()
     await store.close()
 
 
@@ -51,6 +61,11 @@ def _get_auth(workspace_id: str) -> AuthManager:
 
 
 AUTH_ENABLED = _os.environ.get("INSFLOW_API_AUTH", "") == "1"
+
+# Web 控制台（Jinja2 SSR，零构建链）
+from ..web.routes import router as console_router  # noqa: E402
+
+app.include_router(console_router)
 
 
 async def require_auth(request, action: str):

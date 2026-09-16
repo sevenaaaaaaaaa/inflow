@@ -1,0 +1,69 @@
+{% extends "base.html" %}
+{% block title %} · 洞察流{% endblock %}
+{% block content %}
+<h1>洞察流</h1>
+<p class="sub">每条洞察自带证据链与推荐动作；ack → actioned → verified 闭环由动作验证状态机驱动</p>
+
+<div class="toolbar">
+  <select id="f-severity" onchange="location='/console/insights?severity='+this.value">
+    <option value="">全部严重度</option>
+    {% for sev in ['critical','high','medium','low','info'] %}
+    <option value="{{ sev }}" {% if severity == sev %}selected{% endif %}>{{ sev }}</option>
+    {% endfor %}
+  </select>
+  <select id="f-status" onchange="location='/console/insights?status='+this.value">
+    <option value="">全部状态</option>
+    {% for st in ['new','acknowledged','actioned','verified','dismissed'] %}
+    <option value="{{ st }}" {% if status == st %}selected{% endif %}>{{ st }}</option>
+    {% endfor %}
+  </select>
+  <span class="sub">共 {{ insights | length }} 条</span>
+</div>
+
+{% if insights %}
+<table>
+  <tr><th>严重度</th><th>类型</th><th>标题 / 摘要</th><th>推荐动作</th><th>状态</th><th>操作</th></tr>
+  {% for ins in insights %}
+  <tr id="{{ ins.id }}">
+    <td><span class="badge b-{{ ins.severity.value }}">{{ ins.severity.value }}</span></td>
+    <td>{{ ins.type }}</td>
+    <td><strong>{{ ins.title }}</strong><br><small class="sub">{{ ins.summary[:70] }}</small></td>
+    <td>
+      {% for a in ins.actions_json[:2] %}
+      <div><code>{{ a.action_type }}</code></div>
+      {% endfor %}
+    </td>
+    <td><span class="badge b-gray">{{ ins.status.value }}</span></td>
+    <td>
+      {% if ins.status.value == 'new' %}
+      <button onclick="setStatus('{{ ins.id }}', 'ack')">确认</button>
+      <button class="secondary" onclick="setStatus('{{ ins.id }}', 'dismiss')">忽略</button>
+      {% elif ins.status.value == 'acknowledged' %}
+      <button onclick="triggerAction('{{ ins.id }}')">派发动作</button>
+      {% endif %}
+    </td>
+  </tr>
+  {% endfor %}
+</table>
+{% else %}
+<div class="empty">无匹配洞察</div>
+{% endif %}
+
+<script>
+async function setStatus(id, action) {
+  await fetch(`/api/v1/insights/${id}/${action}`, {method: 'POST'});
+  location.reload();
+}
+async function triggerAction(id) {
+  const r = await fetch('/api/v1/actions', {method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({
+      workspace_id: '{{ workspace_id }}', insight_id: id,
+      action_type: 'feishu.notify',
+      title: document.getElementById(id).querySelector('strong').textContent,
+      description: '控制台手动派发（飞书通知）',
+    })});
+  const d = await r.json();
+  alert(d.ok ? '动作已派发 ✓' : '派发失败: ' + d.detail);
+}
+</script>
+{% endblock %}

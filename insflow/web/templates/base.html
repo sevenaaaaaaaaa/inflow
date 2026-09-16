@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Insight Flow{% block title %}{% endblock %}</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; color: #1e293b; background: #f8fafc; display: flex; min-height: 100vh; }
+  aside { width: 220px; background: #0f172a; color: #cbd5e1; padding: 24px 0; flex-shrink: 0; }
+  aside .brand { color: #fff; font-weight: 700; font-size: 18px; padding: 0 24px 20px; }
+  aside .brand small { display: block; color: #64748b; font-weight: 400; font-size: 12px; margin-top: 4px; }
+  aside a { display: block; padding: 10px 24px; color: #cbd5e1; text-decoration: none; font-size: 14px; }
+  aside a:hover, aside a.active { background: #1e293b; color: #60a5fa; }
+  main { flex: 1; padding: 32px 40px; max-width: 1100px; }
+  h1 { font-size: 22px; margin: 0 0 6px; }
+  h2 { font-size: 16px; margin: 28px 0 12px; color: #334155; }
+  .sub { color: #64748b; font-size: 13px; margin-bottom: 24px; }
+  .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 16px; }
+  .card { background: #fff; border: 1px solid #e2e8f0; border-radius: 10px; padding: 18px; }
+  .card .num { font-size: 26px; font-weight: 700; color: #2563eb; }
+  .card .label { color: #64748b; font-size: 12px; margin-top: 4px; }
+  table { width: 100%; border-collapse: collapse; background: #fff; border: 1px solid #e2e8f0; border-radius: 8px; overflow: hidden; font-size: 13px; }
+  th, td { padding: 10px 14px; border-bottom: 1px solid #f1f5f9; text-align: left; }
+  th { background: #f1f5f9; color: #475569; font-weight: 600; }
+  tr:hover td { background: #f8fafc; }
+  .badge { display: inline-block; padding: 2px 10px; border-radius: 999px; font-size: 11px; font-weight: 600; }
+  .b-high { background: #fee2e2; color: #b91c1c; }
+  .b-medium { background: #fef3c7; color: #92400e; }
+  .b-low { background: #e0f2fe; color: #0369a1; }
+  .b-ok { background: #dcfce7; color: #166534; }
+  .b-gray { background: #f1f5f9; color: #64748b; }
+  button { background: #2563eb; color: #fff; border: 0; border-radius: 6px; padding: 6px 14px; font-size: 13px; cursor: pointer; }
+  button.secondary { background: #64748b; }
+  button:hover { opacity: 0.9; }
+  .toolbar { display: flex; gap: 12px; margin-bottom: 16px; align-items: center; }
+  input, select { padding: 8px 12px; border: 1px solid #cbd5e1; border-radius: 6px; font-size: 13px; }
+  .empty { color: #94a3b8; padding: 32px; text-align: center; background: #fff; border: 1px dashed #e2e8f0; border-radius: 8px; }
+  .pct-bar { height: 8px; background: #e2e8f0; border-radius: 4px; width: 120px; display: inline-block; vertical-align: middle; }
+  .pct-fill { height: 8px; border-radius: 4px; background: #2563eb; }
+  pre { background: #0f172a; color: #e2e8f0; padding: 14px; border-radius: 8px; font-size: 12px; overflow-x: auto; }
+</style>
+</head>
+<body>
+<aside>
+  <div class="brand">Insight Flow<div>insflow {{ version }}</div></div>
+  <a href="/console" {% if nav == 'dashboard' %}class="active"{% endif %}>📊 仪表盘</a>
+  <a href="/console/insights" {% if nav == 'insights' %}class="active"{% endif %}>💡 洞察流</a>
+  <a href="/console/monitors" {% if nav == 'monitors' %}class="active"{% endif %}>📡 监控任务</a>
+  <a href="/console/reports" {% if nav == 'reports' %}class="active"{% endif %}>📄 报告中心</a>
+  <a href="/console/plugins" {% if nav == 'plugins' %}class="active"{% endif %}>🧩 插件与市场</a>
+  <a href="/console/usage" {% if nav == 'usage' %}class="active"{% endif %}>💳 套餐用量</a>
+  <a href="/api/v1/docs" target="_blank">🛠 API 文档 ↗</a>
+</aside>
+<main>{% block content %}{% endblock %}</main>
+</body>
+</html>

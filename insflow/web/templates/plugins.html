@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+{% block title %} · 插件市场{% endblock %}
+{% block content %}
+<h1>插件与市场</h1>
+<p class="sub">数据源/模型/动作皆插件；未过检插件可装入但不会被调度器自动执行</p>
+
+<h2>已安装（{{ installed | length }}）</h2>
+{% if installed %}
+<table>
+  <tr><th>ID</th><th>类型</th><th>名称</th><th>版本</th></tr>
+  {% for p in installed %}
+  <tr><td><code>{{ p.id }}</code></td><td>{{ p.type }}</td><td>{{ p.name }}</td><td>{{ p.version }}</td></tr>
+  {% endfor %}
+</table>
+{% else %}
+<div class="empty">未安装任何插件</div>
+{% endif %}
+
+<h2>本地市场（marketplace/）</h2>
+{% if market %}
+<table>
+  <tr><th>ID</th><th>类型</th><th>版本</th><th>Check</th><th>操作</th></tr>
+  {% for p in market %}
+  <tr>
+    <td><code>{{ p.id }}</code></td><td>{{ p.type }}</td><td>{{ p.version }}</td>
+    <td>{% if p.check_passed %}<span class="badge b-ok">✓</span>{% else %}<span class="badge b-high">✗ {{ p.check_errors | join('; ') }}</span>{% endif %}</td>
+    <td><button onclick="install('{{ p.path }}')">安装</button></td>
+  </tr>
+  {% endfor %}
+</table>
+{% else %}
+<div class="empty">marketplace/ 目录暂无可安装插件（把插件包放进 marketplace/sources/ 等）</div>
+{% endif %}
+
+<script>
+async function install(path) {
+  const r = await fetch('/api/v1/plugins/install', {method: 'POST',
+    headers: {'Content-Type': 'application/json'}, body: JSON.stringify({path})});
+  const d = await r.json();
+  alert(d.ok ? `已安装 ${d.plugin_id}` : '安装失败');
+  location.reload();
+}
+</script>
+{% endblock %}

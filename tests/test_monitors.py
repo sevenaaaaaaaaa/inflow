@@ -93,7 +93,6 @@ class TestExecution:
         result = await svc.run(m["id"])
         assert result["first_run"] is True
 
-        from insflow.core.store import get_store
         monitor = await (await get_store()).get_monitor("test-ws", m["id"])
         assert monitor["state"] == "ok"
 
@@ -108,6 +107,5 @@ class TestExecution:
         result = await svc.run(m["id"])
         assert "error" in result
 
-        from insflow.core.store import get_store
         monitor = await (await get_store()).get_monitor("test-ws", m["id"])
         assert monitor["state"] == "error"

@@ -1,0 +1,9 @@
+{% extends "base.html" %}
+{% block title %} · {{ cat_name }}{% endblock %}
+{% block content %}
+<h1>{{ cat_name }} · {{ filename }}</h1>
+<p class="sub"><a href="/console/reports">← 返回报告中心</a></p>
+<div style="background:#fff; border:1px solid #e2e8f0; border-radius:10px; padding:24px; line-height:1.7;">
+{{ content | md_to_html | safe }}
+</div>
+{% endblock %}

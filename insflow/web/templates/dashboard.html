@@ -1,0 +1,58 @@
+{% extends "base.html" %}
+{% block title %} · 仪表盘{% endblock %}
+{% block content %}
+<h1>仪表盘</h1>
+<p class="sub">工作区 <code>{{ workspace_id }}</code> · 阶段 {{ stage }} · 成熟度 {{ maturity }}</p>
+
+<div class="cards">
+  <div class="card"><div class="num">{{ counts.total }}</div><div class="label">累计洞察</div></div>
+  <div class="card"><div class="num">{{ counts.new }}</div><div class="label">待处理</div></div>
+  <div class="card"><div class="num">{{ counts.actioned }}</div><div class="label">已执行动作</div></div>
+  <div class="card"><div class="num">{{ counts.verified }}</div><div class="label">已验证闭环</div></div>
+  <div class="card"><div class="num">{{ feedback_effective }}</div><div class="label">验证有效 ✅</div></div>
+</div>
+
+<h2>最新洞察</h2>
+{% if recent_insights %}
+<table>
+  <tr><th>严重度</th><th>类型</th><th>标题</th><th>置信度</th><th>时间</th></tr>
+  {% for ins in recent_insights %}
+  <tr>
+    <td><span class="badge b-{{ ins.severity.value }}">{{ ins.severity.value }}</span></td>
+    <td>{{ ins.type }}</td>
+    <td><a href="/console/insights#{{ ins.id }}">{{ ins.title[:38] }}</a></td>
+    <td>{{ "%.0f%%" | format(ins.confidence * 100) }}</td>
+    <td>{{ ins.created_at.strftime('%m-%d %H:%M') }}</td>
+  </tr>
+  {% endfor %}
+</table>
+{% else %}
+<div class="empty">暂无洞察 —— 先创建数据源监控或触发一次诊断</div>
+{% endif %}
+
+<h2>快速操作</h2>
+<div class="toolbar">
+  <button onclick="runDiagnosis()">▶ 触发一次诊断</button>
+  <button class="secondary" onclick="weeklyReport()">📄 生成周报</button>
+  <span id="op-status" class="sub"></span>
+</div>
+
+<script>
+async function runDiagnosis() {
+  const s = document.getElementById('op-status');
+  s.textContent = '诊断运行中…';
+  const r = await fetch(`/api/v1/diagnosis/run`, {method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({workspace_id: '{{ workspace_id }}', domain: ''})});
+  const d = await r.json();
+  s.textContent = `完成：新增 ${d.insights_created} 条洞察`;
+  setTimeout(() => location.reload(), 1200);
+}
+async function weeklyReport() {
+  const s = document.getElementById('op-status');
+  s.textContent = '生成中…';
+  await fetch(`/api/v1/reports/weekly?workspace_id={{ workspace_id }}`, {method: 'POST'});
+  s.textContent = '周报已生成';
+  setTimeout(() => location.reload(), 1200);
+}
+</script>
+{% endblock %}

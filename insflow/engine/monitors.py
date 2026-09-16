@@ -6,9 +6,8 @@
 - 执行编排（按 kind 路由到对应引擎：site_change → ChangeMonitor 等）
 """
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
-from ..core.entities import MonitorState
 from ..core.files import EventBus
 from ..core.scheduler import Scheduler
 from ..core.statemachine import MONITOR_MACHINE
@@ -82,7 +81,7 @@ class MonitorService:
 
         try:
             result = await self._execute_by_kind(monitor)
-            await store.update_monitor_state(monitor_id, "ok", last_run_at=datetime.now(timezone.utc))
+            await store.update_monitor_state(monitor_id, "ok", last_run_at=datetime.now(UTC))
             self.bus.emit("monitor.run_finished", {
                 "monitor_id": monitor_id, "kind": monitor["kind"],
                 "summary": result,
@@ -90,7 +89,7 @@ class MonitorService:
             return result
         except Exception as e:
             await store.update_monitor_state(monitor_id, "error",
-                                             last_run_at=datetime.now(timezone.utc))
+                                             last_run_at=datetime.now(UTC))
             self.bus.emit("monitor.alert", {"monitor_id": monitor_id, "error": str(e)})
             return {"error": f"{type(e).__name__}: {e}"}
 
@@ -117,8 +116,8 @@ class MonitorService:
 
     async def _fetch_page(self, target: dict) -> str:
         """经 Firecrawl 插件抓取页面（配额账本保护）"""
-        from ..collectors.registry import get_registry
         from ..collectors.base import CollectContext
+        from ..collectors.registry import get_registry
 
         registry = get_registry()
         plugin = registry.get("firecrawl")
