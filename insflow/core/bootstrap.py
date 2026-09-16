@@ -86,6 +86,16 @@ async def bootstrap_scheduled_jobs() -> dict:
     scheduler.register_handler("backup.daily", _daily_backup)
     registered["jobs"].append("backup.daily@daily-09:15")
 
+    # 6. 每日 09:20：OAuth 授权过期审计（7 天预警，R2-3）
+    async def _token_audit():
+        from ..engine.token_manager import TokenManager
+        for ws in await store.list_workspaces():
+            TokenManager(ws.id).audit_all()
+
+    scheduler.add_job("token.audit", "20 9 * * *", "token.audit", {})
+    scheduler.register_handler("token.audit", _token_audit)
+    registered["jobs"].append("token.audit@daily-09:20")
+
     scheduler.start()
     logger.info(f"Bootstrap 完成: {registered}")
     return registered

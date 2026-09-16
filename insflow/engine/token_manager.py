@@ -11,7 +11,7 @@ refresh_token 缺失时不可轮换（Google 首次授权 access_type=offline �
 """
 
 import json
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, timezone
 
 import httpx
 
@@ -56,7 +56,46 @@ class TokenManager:
         vault.set(f"{provider}_oauth_tokens", json.dumps(tokens, ensure_ascii=False))
         vault.save()
 
-    # ========== 核心：确保 token 可用 ==========
+    # ========== 过期预警（R2-3：7 天前置预警，避免静默失效事故）==========
+
+    def expiry_status(self, provider: str) -> dict:
+        """检查授权剩余有效期
+
+        Returns:
+            {"provider", "state": ok|expiring_soon|expired|missing|legacy,
+             "remaining_days": float|None}
+        """
+        tokens = self.load_tokens(provider)
+        if not tokens:
+            return {"provider": provider, "state": "missing", "remaining_days": None}
+        expires_at = tokens.get("expires_at")
+        if not expires_at:
+            return {"provider": provider, "state": "legacy", "remaining_days": None}
+        try:
+            exp = datetime.fromisoformat(expires_at)
+        except (ValueError, TypeError):
+            return {"provider": provider, "state": "legacy", "remaining_days": None}
+        remaining = (exp - datetime.now(timezone.utc)).total_seconds()
+        if remaining <= 0:
+            state = "expired"
+        elif remaining <= 86400 * 7:
+            state = "expiring_soon"
+        else:
+            state = "ok"
+        return {"provider": provider, "state": state,
+                "remaining_days": round(remaining / 86400, 1)}
+
+    def audit_all(self) -> list[dict]:
+        """每日任务调用：全部 OAuth provider 的过期状态（进事件流供告警出站）"""
+        statuses = []
+        for provider in ("gsc", "ga4"):
+            status = self.expiry_status(provider)
+            if status["state"] in ("expiring_soon", "expired"):
+                self.bus.emit("auth.token_expiring", status)
+            statuses.append(status)
+        return statuses
+
+
 
     def ensure_fresh(self, provider: str, buffer_seconds: int = REFRESH_BUFFER_SECONDS) -> str:
         """返回可用的 access_token；临期自动轮换

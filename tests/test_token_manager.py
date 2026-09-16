@@ -1,3 +1,4 @@
+from datetime import timedelta, datetime, timezone
 """测试 OAuth token 自动轮换（R1-1）"""
 
 from datetime import UTC, datetime, timedelta
@@ -149,3 +150,42 @@ class TestForceRefresh:
         with pytest.raises(TokenRefreshError) as e:
             tm2.force_refresh("gsc")
         assert "GOOGLE_OAUTH" in str(e.value)
+
+
+class TestExpiryAudit:
+    async def test_expiry_status_states(self, tm, tmp_path):
+        from datetime import timedelta as td
+        # ok：剩余 30 天
+        tm.save_tokens("gsc", fresh_tokens(
+            expires_at=(datetime.now(timezone.utc) + timedelta(days=30)).isoformat()))
+        assert tm.expiry_status("gsc")["state"] == "ok"
+        # expiring_soon：剩余 3 天
+        soon = (datetime.now(timezone.utc) + td(days=3)).isoformat()
+        tm.save_tokens("ga4", fresh_tokens(expires_at=soon))
+        assert tm.expiry_status("ga4")["state"] == "expiring_soon"
+
+    async def test_expired_state(self, tm):
+        tm.save_tokens("gsc", fresh_tokens(
+            expires_at=(datetime.now(timezone.utc) - td(days=1) if False else
+                        datetime.now(timezone.utc) - timedelta(days=1)).isoformat()))
+        assert tm.expiry_status("gsc")["state"] == "expired"
+
+    async def test_missing_and_legacy(self, tm):
+        assert tm.expiry_status("ga4")["state"] == "missing"  # 未保存
+        tm.save_tokens("gsc", {"access_token": "x", "refresh_token": "rt"})  # 旧格式
+        assert tm.expiry_status("gsc")["state"] == "legacy"
+
+    async def test_audit_all_emits_expiring_event(self, tm, tmp_path, monkeypatch):
+        import insflow.core.files as fm
+        monkeypatch.setattr(fm, "DATA_DIR", tmp_path)
+        monkeypatch.setenv("INSFLOW_MASTER_KEY", "mk")
+        events = []
+        monkeypatch.setattr(tm, "bus", type("B", (), {"emit": staticmethod(lambda t, p: events.append((t, p)))})())
+
+        soon = (datetime.now(timezone.utc) + timedelta(days=3)).isoformat()
+        tm.save_tokens("gsc", fresh_tokens(expires_at=soon))
+
+        statuses = tm.audit_all()
+        assert len(statuses) == 2
+        assert any(ev[0] == "auth.token_expiring" for ev in events)
+        assert tm.expiry_status("gsc")["state"] == "expiring_soon"
