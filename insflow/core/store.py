@@ -483,6 +483,46 @@ class Store:
         )
         return {row["verdict"]: row["cnt"] for row in rows}
 
+    async def get_model_effectiveness(self, workspace_id: str) -> list[dict]:
+        """模型效果追踪（IM-5）：按模型聚合洞察命中率
+
+        链路：insight.models_json → action(insight_id) → feedback.verdict
+        命中率 = effective / (effective + neutral + harmful)
+        """
+        rows = await self._fetchall(
+            """SELECT i.models_json, f.verdict, COUNT(*) as cnt
+               FROM insights i
+               JOIN actions a ON a.insight_id = i.id
+               JOIN feedback f ON f.action_id = a.id
+               WHERE i.workspace_id = ?
+               GROUP BY i.models_json, f.verdict""",
+            (workspace_id,)
+        )
+        stats: dict[str, dict[str, int]] = {}
+        for row in rows:
+            try:
+                model_ids = json.loads(row["models_json"]) if row["models_json"] else []
+            except (json.JSONDecodeError, TypeError):
+                model_ids = []
+            for mid in model_ids:
+                entry = stats.setdefault(mid, {"effective": 0, "neutral": 0, "harmful": 0})
+                if row["verdict"] in entry:
+                    entry[row["verdict"]] += row["cnt"]
+
+        result = []
+        for mid, counts in stats.items():
+            total = counts["effective"] + counts["neutral"] + counts["harmful"]
+            hit_rate = counts["effective"] / total if total else 0.0
+            result.append({
+                "model_id": mid,
+                "effective": counts["effective"],
+                "neutral": counts["neutral"],
+                "harmful": counts["harmful"],
+                "hit_rate": round(hit_rate, 4),
+            })
+        result.sort(key=lambda x: -x["hit_rate"])
+        return result
+
     # ========== Competitors（M3: 竞品档案）==========
 
     def _parse_competitor_row(self, row: dict) -> dict:

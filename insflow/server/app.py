@@ -251,6 +251,47 @@ async def mcp_call_tool(data: McpToolCall):
         return {"raw": output}
 
 
+# ========== 自定义规则 DSL（IM-3）/ 模型效果（IM-5）==========
+
+class DSLRuleRequest(BaseModel):
+    spec: dict
+
+
+@app.post("/api/v1/models/dsl")
+async def register_dsl_rule(workspace_id: str, data: DSLRuleRequest):
+    """注册自定义规则模型（无代码配置）"""
+    from ..engine.dsl_models import DSLValidationError, get_dsl_registry
+    try:
+        model = get_dsl_registry().register(workspace_id, data.spec)
+        return {"ok": True, "rule_id": model.id, "name": model.name}
+    except DSLValidationError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+
+@app.get("/api/v1/models/dsl")
+async def list_dsl_rules(workspace_id: str = Query(...)):
+    from ..engine.dsl_models import get_dsl_registry
+    return {"rules": get_dsl_registry().list_for(workspace_id)}
+
+
+@app.delete("/api/v1/models/dsl/{rule_id}")
+async def delete_dsl_rule(workspace_id: str, rule_id: str):
+    from ..engine.dsl_models import get_dsl_registry
+    ok = get_dsl_registry().unregister(workspace_id, rule_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Rule not found")
+    return {"ok": True}
+
+
+@app.get("/api/v1/models/effectiveness")
+async def model_effectiveness(workspace_id: str = Query(...)):
+    """模型效果追踪（IM-5）：按模型聚合洞察命中率"""
+    store = await get_store()
+    if not await store.get_workspace(workspace_id):
+        raise HTTPException(status_code=404, detail="Workspace not found")
+    return {"models": await store.get_model_effectiveness(workspace_id)}
+
+
 # ========== 竞品 / 旅程 / 第一方 API（M3）==========
 
 class CompetitorProfileRequest(BaseModel):
