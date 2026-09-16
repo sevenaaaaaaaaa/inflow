@@ -65,6 +65,8 @@ class ActionState(str, Enum):
     FAILED = "failed"
     VERIFYING = "verifying"
     VERIFIED = "verified"
+    DEAD = "dead"
+    CANCELLED = "cancelled"
 
 
 class ActionVerdict(str, Enum):

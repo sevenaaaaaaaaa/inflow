@@ -8,6 +8,7 @@ import aiosqlite
 
 from .entities import (
     Action,
+    Feedback,
     Insight,
     Workspace,
 )
@@ -341,7 +342,99 @@ class Store:
             params.append(insight_id)
         query += " ORDER BY created_at DESC"
         rows = await self._fetchall(query, tuple(params))
-        return [Action(**row) for row in rows]
+        return [self._parse_action_row(row) for row in rows]
+
+    def _parse_action_row(self, row: dict) -> Action:
+        """解析动作行数据（JSON 字段反序列化）"""
+        for field in ["params_json", "result_json", "baseline_json"]:
+            row[field] = json.loads(row[field]) if row[field] else {}
+        return Action(**row)
+
+    async def get_action(self, action_id: str) -> Action | None:
+        """获取动作"""
+        row = await self._fetchone("SELECT * FROM actions WHERE id = ?", (action_id,))
+        if row:
+            return self._parse_action_row(row)
+        return None
+
+    async def update_action_state(
+        self,
+        action_id: str,
+        state: str,
+        result_json: dict | None = None,
+        dispatched_at: datetime | None = None,
+        verify_window_until: datetime | None = None,
+        baseline_json: dict | None = None,
+    ) -> bool:
+        """更新动作状态（配合状态机使用）"""
+        fields = ["state = ?"]
+        params: list = [state]
+        if result_json is not None:
+            fields.append("result_json = ?")
+            params.append(to_json(result_json))
+        if dispatched_at is not None:
+            fields.append("dispatched_at = ?")
+            params.append(dispatched_at.isoformat())
+        if verify_window_until is not None:
+            fields.append("verify_window_until = ?")
+            params.append(verify_window_until.isoformat())
+        if baseline_json is not None:
+            fields.append("baseline_json = ?")
+            params.append(to_json(baseline_json))
+        params.append(action_id)
+        await self._execute(
+            f"UPDATE actions SET {', '.join(fields)} WHERE id = ?", tuple(params)
+        )
+        await self._db.commit()
+        return True
+
+    async def list_actions_due_for_verification(self, now: datetime | None = None) -> list[Action]:
+        """列出验证窗口已到期、待评估的动作"""
+        now = now or datetime.now(UTC)
+        rows = await self._fetchall(
+            """SELECT * FROM actions
+               WHERE state IN ('verifying', 'done')
+                 AND verify_window_until IS NOT NULL
+                 AND verify_window_until <= ?""",
+            (now.isoformat(),)
+        )
+        return [self._parse_action_row(row) for row in rows]
+
+    # ========== Feedback ==========
+
+    async def create_feedback(self, fb: Feedback) -> Feedback:
+        """创建反馈"""
+        fb.id = fb.id or generate_id()
+        if fb.evaluated_at is None:
+            fb.evaluated_at = datetime.now(UTC)
+        await self._execute(
+            """INSERT INTO feedback (id, workspace_id, action_id, metric, before, after, delta, verdict, evaluated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (fb.id, fb.workspace_id, fb.action_id, fb.metric, fb.before, fb.after,
+             fb.delta, fb.verdict.value, fb.evaluated_at.isoformat())
+        )
+        await self._db.commit()
+        return fb
+
+    async def list_feedback(self, workspace_id: str, action_id: str | None = None) -> list[Feedback]:
+        """列出反馈"""
+        query = "SELECT * FROM feedback WHERE workspace_id = ?"
+        params = [workspace_id]
+        if action_id:
+            query += " AND action_id = ?"
+            params.append(action_id)
+        query += " ORDER BY evaluated_at DESC"
+        rows = await self._fetchall(query, tuple(params))
+        return [Feedback(**row) for row in rows]
+
+    async def get_feedback_stats(self, workspace_id: str) -> dict:
+        """模型效果统计（北极星指标）"""
+        rows = await self._fetchall(
+            """SELECT verdict, COUNT(*) as cnt FROM feedback
+               WHERE workspace_id = ? GROUP BY verdict""",
+            (workspace_id,)
+        )
+        return {row["verdict"]: row["cnt"] for row in rows}
 
 
 # 全局存储实例
