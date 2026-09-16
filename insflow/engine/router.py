@@ -99,12 +99,26 @@ _BUILTIN_MODELS_LOADED = False
 
 
 def _load_builtin_models(router: ModelRouter) -> None:
-    """加载内置模型"""
+    """加载内置模型库 v1（8 个）"""
     from .models.aarrr import AARRRModel
     from .models.competitor_momentum import CompetitorMomentumModel
+    from .models.growth_models import (
+        JourneyGapModel,
+        KeywordOpportunityModel,
+        NPSModel,
+        PricingWatchModel,
+        RetentionHealthModel,
+    )
+    from .models.ltv_cac import LTCACModel
 
     router.register(AARRRModel())
     router.register(CompetitorMomentumModel())
+    router.register(LTCACModel())
+    router.register(KeywordOpportunityModel())
+    router.register(RetentionHealthModel())
+    router.register(PricingWatchModel())
+    router.register(NPSModel())
+    router.register(JourneyGapModel())
 
 
 def get_model_router() -> ModelRouter:
