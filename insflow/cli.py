@@ -430,6 +430,28 @@ def backup(keep_days: int, restore_from: str, yes: bool):
 
 
 @main.command()
+@click.option("--workspace", "-w", default="default", help="工作区ID")
+def doctor(workspace: str):
+    """首次运行体检（环境/凭据/插件/调度/磁盘五项，含修复建议）"""
+    from .engine.doctor import Doctor
+
+    result = Doctor(workspace).run_all()
+    for section, checks in result["sections"].items():
+        console.print(f"\n[bold]{section}[/]")
+        for c in checks:
+            console.print(f"  {c.icon} {c.name}：{c.detail}")
+            if c.fix:
+                console.print(f"     [dim]→ {c.fix}[/]")
+
+    s = result["summary"]
+    verdict_color = {"healthy": "green", "degraded": "yellow", "unhealthy": "red"}[s["verdict"]]
+    console.print(f"\n[bold {verdict_color}]总体：{s['verdict']}[/]"
+                  f"（{s['total']} 项检查，{s['failed']} 失败 / {s['warned']} 警告）")
+    if s["failed"]:
+        sys.exit(1)
+
+
+@main.command()
 def init():
     """初始化 Insight Flow 数据目录"""
     data_dir = Path("data")
