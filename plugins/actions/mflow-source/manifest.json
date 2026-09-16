@@ -1,0 +1,27 @@
+{
+  "id": "mflow-source",
+  "type": "source",
+  "name": "MFlow 洞察信号源",
+  "version": "1.0.0",
+  "entry": "entry.py",
+  "permissions": ["network", "credentials:mflow"],
+  "config": {
+    "mflow_base_url": {
+      "desc": "MFlow 控制台地址",
+      "required": true,
+      "secret": false,
+      "default": "http://localhost:8088"
+    },
+    "mflow_password": {
+      "desc": "MFlow 控制台密码",
+      "required": true,
+      "secret": true
+    }
+  },
+  "provides": {
+    "metrics": ["insight_signal"],
+    "engines": ["mflow"],
+    "latency": "standard",
+    "cost_hint": "免费（本机通信）"
+  }
+}
