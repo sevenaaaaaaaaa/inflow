@@ -6,7 +6,7 @@
 
 from pathlib import Path
 
-from fastapi import APIRouter, Query, Request
+from fastapi import APIRouter, Form, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
@@ -201,3 +201,65 @@ async def onboarding_page(request: Request, workspace_id: str = Query("")):
 @router.get("/", include_in_schema=False)
 async def console_root():
     return RedirectResponse("/console")
+
+
+# ========== 账号（R4-1 多租户自助）==========
+
+
+
+@router.get("/login", response_class=HTMLResponse)
+async def login_page(request: Request, error: str = Query(""), next: str = Query("/console")):
+    return templates.TemplateResponse(request, "login.html", {
+        "request": request, "version": __version__, "error": error, "next": next,
+        "saas": _SAAS_MODE(),
+    })
+
+
+@router.post("/login", response_class=HTMLResponse)
+async def login_submit(request: Request, email: str = Form(...), password: str = Form(...),
+                       next: str = Form("/console")):
+    from ..core.accounts import COOKIE_NAME, AccountError, AccountManager
+    try:
+        result = await AccountManager().login(email, password)
+    except AccountError as e:
+        return RedirectResponse(f"/console/login?error={e}", status_code=303)
+    resp = RedirectResponse(next or "/console", status_code=303)
+    resp.set_cookie(COOKIE_NAME, result["token"], httponly=True, samesite="lax",
+                    max_age=30 * 86400)
+    return resp
+
+
+@router.get("/register", response_class=HTMLResponse)
+async def register_page(request: Request, error: str = Query("")):
+    return templates.TemplateResponse(request, "register.html", {
+        "request": request, "version": __version__, "error": error,
+    })
+
+
+@router.post("/register", response_class=HTMLResponse)
+async def register_submit(request: Request, email: str = Form(...),
+                          password: str = Form(...), name: str = Form(""),
+                          workspace_name: str = Form("")):
+    from ..core.accounts import COOKIE_NAME, AccountError, AccountManager
+    try:
+        result = await AccountManager().register(email, password, name, workspace_name)
+    except AccountError as e:
+        return RedirectResponse(f"/console/register?error={e}", status_code=303)
+    resp = RedirectResponse("/console/onboarding", status_code=303)
+    resp.set_cookie(COOKIE_NAME, result["token"], httponly=True, samesite="lax",
+                    max_age=30 * 86400)
+    return resp
+
+
+@router.get("/logout")
+async def logout(request: Request):
+    from ..core.accounts import COOKIE_NAME, AccountManager
+    await AccountManager().logout(request.cookies.get(COOKIE_NAME))
+    resp = RedirectResponse("/console/login", status_code=303)
+    resp.delete_cookie(COOKIE_NAME)
+    return resp
+
+
+def _SAAS_MODE() -> bool:
+    import os
+    return os.environ.get("INSFLOW_SAAS", "") == "1"

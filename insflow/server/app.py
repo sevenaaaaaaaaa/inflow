@@ -65,8 +65,27 @@ AUTH_ENABLED = _os.environ.get("INSFLOW_API_AUTH", "") == "1"
 
 # Web 控制台（Jinja2 SSR，零构建链）
 from ..web.routes import router as console_router  # noqa: E402
-
 app.include_router(console_router)
+
+
+# ========== SaaS 多租户守卫（R4-1：INSFLOW_SAAS=1 时控制台要求登录）==========
+
+@app.middleware("http")
+async def saas_guard(request, call_next):
+    if _os.environ.get("INSFLOW_SAAS", "") != "1":
+        return await call_next(request)
+    path = request.url.path
+    if path.startswith("/console") and not path.startswith(
+            ("/console/login", "/console/register", "/console/logout")):
+        from urllib.parse import quote
+        from fastapi.responses import RedirectResponse
+        from ..core.accounts import COOKIE_NAME, AccountManager
+        user = await AccountManager().verify_session(request.cookies.get(COOKIE_NAME))
+        if not user:
+            return RedirectResponse(
+                f"/console/login?next={quote(path)}", status_code=303)
+        request.state.user = user
+    return await call_next(request)
 
 
 async def require_auth(request, action: str):

@@ -185,6 +185,29 @@ MIGRATIONS = [
     CREATE INDEX IF NOT EXISTS idx_journey_identity ON journey_events(workspace_id, identity);
     CREATE INDEX IF NOT EXISTS idx_journey_stage ON journey_events(workspace_id, stage);
     """,
+    # V4: 多租户自助（R4）——用户账号 + 会话
+    """
+    CREATE TABLE IF NOT EXISTS users (
+        id TEXT PRIMARY KEY,
+        email TEXT NOT NULL UNIQUE,
+        password_hash TEXT NOT NULL,
+        name TEXT NOT NULL DEFAULT '',
+        role TEXT NOT NULL DEFAULT 'owner',
+        workspace_id TEXT,
+        created_at TEXT NOT NULL
+    );
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS sessions (
+        token TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL
+    );
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
+    """,
 ]
 
 # V3: metrics 幂等去重（R1-4）—— ALTER 语句需要幂等执行（检查列是否存在）
