@@ -402,6 +402,34 @@ def export(workspace: str, out: str, fmt: str):
 
 
 @main.command()
+@click.option("--keep-days", default=30, help="备份保留天数")
+@click.option("--restore-from", default=None, help="从指定备份恢复（危险操作）")
+@click.option("--yes", is_flag=True, help="恢复操作确认")
+def backup(keep_days: int, restore_from: str, yes: bool):
+    """数据备份（SQLite 在线 checkpoint + 报告/事件流打包）"""
+    from .engine.backup import BackupManager
+
+    if restore_from:
+        result = BackupManager().restore(restore_from, confirm=yes)
+    else:
+        result = BackupManager().run()
+        if result["ok"]:
+            removed = BackupManager().prune(keep_days=keep_days)
+            if removed:
+                console.print(f"[dim]已清理 {removed} 个过期备份[/]")
+
+    if result["ok"]:
+        console.print(f"[green]✓ {result.get('restored_from', result.get('backup_dir'))}[/]")
+        if result.get("previous_data_snapshot"):
+            console.print(f"原数据快照: {result['previous_data_snapshot']}")
+        if result.get("note"):
+            console.print(f"[yellow]{result['note']}[/]")
+    else:
+        console.print(f"[red]{result['detail']}[/]")
+        sys.exit(1)
+
+
+@main.command()
 def init():
     """初始化 Insight Flow 数据目录"""
     data_dir = Path("data")
