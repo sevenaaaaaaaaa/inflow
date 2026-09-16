@@ -1,0 +1,75 @@
+{% extends "base.html" %}
+{% block title %} · 接入向导{% endblock %}
+{% block content %}
+<h1>第一方数据接入向导</h1>
+<p class="sub">GSC / GA4 走 Google OAuth（须先配置 GOOGLE_OAUTH_CLIENT_ID）；CrUX / 手动 token 走凭据直配。凭据 AES-GCM 加密入保险库。</p>
+
+<h2>Google Search Console（TD-1 主数据源）</h2>
+<div class="toolbar">
+  <input id="gsc-site" placeholder="sc-domain:example.com 或 https://example.com/" style="width: 340px">
+  <button onclick="startOAuth('gsc')">🔐 Google 授权（OAuth）</button>
+  <span class="sub">或</span>
+  <input id="gsc-token" placeholder="粘贴 access_token（降级）" style="width: 260px" type="password">
+  <button class="secondary" onclick="saveToken('gsc')">保存 Token</button>
+</div>
+
+<h2>GA4（事件/转化/留存）</h2>
+<div class="toolbar">
+  <input id="ga4-property" placeholder="Property ID（如 123456789）" style="width: 220px">
+  <button onclick="startOAuth('ga4')">🔐 Google 授权（OAuth）</button>
+  <span class="sub">或</span>
+  <input id="ga4-token" placeholder="粘贴 access_token" style="width: 260px" type="password">
+  <button class="secondary" onclick="saveToken('ga4')">保存 Token</button>
+</div>
+
+<h2>CrUX（真实用户 CWV，API Key）</h2>
+<div class="toolbar">
+  <input id="crux-key" placeholder="CrUX API Key" style="width: 300px" type="password">
+  <button onclick="saveKey('crux')">保存并检测</button>
+</div>
+
+<h2>接入状态</h2>
+<table>
+  <tr><th>数据源</th><th>状态</th><th>详情</th></tr>
+  {% for st in health %}
+  <tr>
+    <td><code>{{ st.provider }}</code></td>
+    <td>{% if st.ok %}<span class="badge b-ok">✓ 有效</span>{% else %}<span class="badge b-high">✗ 未接入</span>{% endif %}</td>
+    <td>{{ st.detail }}</td>
+  </tr>
+  {% endfor %}
+</table>
+
+<div id="oauth-hint" class="sub" style="margin-top:16px"></div>
+
+<script>
+async function startOAuth(provider) {
+  const r = await fetch('/api/v1/onboarding/oauth/start', {method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({provider})});
+  if (!r.ok) { const d = await r.json(); alert(d.detail); return; }
+  const d = await r.json();
+  document.getElementById('oauth-hint').innerHTML =
+    `已生成授权链接：<a href="${d.auth_url}" target="_blank">在新窗口打开 Google 授权页 ↗</a><br>` +
+    `授权后把回调 URL 中 <code>code=</code> 与 <code>state=</code> 参数值粘贴到下方完成交换：`;
+}
+async function saveToken(provider) {
+  const input = document.getElementById(provider + '-token');
+  if (!input.value) { alert('先粘贴 token'); return; }
+  const r = await fetch(`/api/v1/onboarding/credential`, {method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({provider, credential: input.value})});
+  alert(r.ok ? 'Token 已入保险库 ✓' : '保存失败');
+  location.reload();
+}
+async function saveKey(provider) {
+  const r = await fetch('/api/v1/onboarding/credential', {method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({provider, credential: document.getElementById('crux-key').value})});
+  if (!r.ok) { alert('保存失败'); return; }
+  const h = await fetch(`/api/v1/onboarding/health?workspace_id={{ workspace_id }}&provider=crux`).then(x => x.json());
+  alert(h.ok ? 'Key 有效 ✓' : h.detail);
+  location.reload();
+}
+</script>
+{% endblock %}

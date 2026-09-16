@@ -45,6 +45,7 @@
 <aside>
   <div class="brand">Insight Flow<div>insflow {{ version }}</div></div>
   <a href="/console" {% if nav == 'dashboard' %}class="active"{% endif %}>📊 仪表盘</a>
+  <a href="/console/onboarding" {% if nav == 'onboarding' %}class="active"{% endif %}>🔌 接入向导</a>
   <a href="/console/insights" {% if nav == 'insights' %}class="active"{% endif %}>💡 洞察流</a>
   <a href="/console/monitors" {% if nav == 'monitors' %}class="active"{% endif %}>📡 监控任务</a>
   <a href="/console/reports" {% if nav == 'reports' %}class="active"{% endif %}>📄 报告中心</a>

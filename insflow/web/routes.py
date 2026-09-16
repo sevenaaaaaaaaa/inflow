@@ -164,6 +164,20 @@ async def usage_page(request: Request, workspace_id: str = Query("")):
     ))
 
 
+@router.get("/onboarding", response_class=HTMLResponse)
+async def onboarding_page(request: Request, workspace_id: str = Query("")):
+    if not workspace_id:
+        workspace_id = await _default_workspace()
+    from ..engine.onboarding import OnboardingService
+    svc = OnboardingService(workspace_id)
+    health = []
+    for provider in ("gsc", "ga4", "crux"):
+        health.append(await svc.check_health(provider))
+    return templates.TemplateResponse(request, "onboarding.html", _ctx(
+        request, "onboarding", workspace_id, health=health,
+    ))
+
+
 @router.get("/", include_in_schema=False)
 async def console_root():
     return RedirectResponse("/console")
