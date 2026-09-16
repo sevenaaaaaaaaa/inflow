@@ -178,6 +178,47 @@ async def list_workspaces():
     return {"workspaces": [ws.model_dump() for ws in workspaces]}
 
 
+# ========== 监控任务（M6）==========
+
+class MonitorCreateRequest(BaseModel):
+    kind: str
+    target: dict
+    schedule_cron: str = "0 */6 * * *"
+
+
+@app.get("/api/v1/monitors")
+async def list_monitors(workspace_id: str = Query(...)):
+    from ..engine.monitors import MonitorService
+    return {"monitors": await MonitorService(workspace_id).list()}
+
+
+@app.post("/api/v1/monitors")
+async def create_monitor(workspace_id: str, data: MonitorCreateRequest):
+    from ..engine.monitors import MonitorService
+    try:
+        return await MonitorService(workspace_id).create(data.kind, data.target, data.schedule_cron)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+
+@app.post("/api/v1/monitors/{monitor_id}/run")
+async def run_monitor(workspace_id: str, monitor_id: str):
+    from ..engine.monitors import MonitorService
+    result = await MonitorService(workspace_id).run(monitor_id)
+    if "error" in result and "not found" in result["error"]:
+        raise HTTPException(status_code=404, detail=result["error"])
+    return result
+
+
+@app.delete("/api/v1/monitors/{monitor_id}")
+async def delete_monitor(workspace_id: str, monitor_id: str):
+    from ..engine.monitors import MonitorService
+    ok = await MonitorService(workspace_id).delete(monitor_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Monitor not found")
+    return {"ok": True}
+
+
 # ========== 计费 / 白标 / 多租户（M5）==========
 
 class PlanSetRequest(BaseModel):

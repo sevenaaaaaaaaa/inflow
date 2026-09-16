@@ -667,6 +667,62 @@ class Store:
             row["props_json"] = json.loads(row["props_json"]) if row["props_json"] else {}
         return rows
 
+    # ========== Monitors（M6: 监控任务 CRUD）==========
+
+    def _parse_monitor_row(self, row: dict) -> dict:
+        row["target_json"] = json.loads(row["target_json"]) if row["target_json"] else {}
+        return row
+
+    async def create_monitor(self, workspace_id: str, kind: str,
+                             target: dict, schedule_cron: str = "0 */6 * * *") -> dict:
+        """创建监控任务（kind: site_change | keyword | brand_mention | journey）"""
+        mid = generate_id()
+        await self._execute(
+            """INSERT INTO monitors (id, workspace_id, kind, target_json, schedule_cron, state, created_at)
+               VALUES (?, ?, ?, ?, ?, 'idle', ?)""",
+            (mid, workspace_id, kind, to_json(target), schedule_cron,
+             datetime.now(UTC).isoformat()),
+        )
+        await self._db.commit()
+        row = await self._fetchone("SELECT * FROM monitors WHERE id = ?", (mid,))
+        return self._parse_monitor_row(dict(row))
+
+    async def get_monitor(self, workspace_id: str, monitor_id: str) -> dict | None:
+        row = await self._fetchone(
+            "SELECT * FROM monitors WHERE workspace_id = ? AND id = ?",
+            (workspace_id, monitor_id),
+        )
+        return self._parse_monitor_row(dict(row)) if row else None
+
+    async def update_monitor_state(self, monitor_id: str, state: str,
+                                   last_run_at: datetime | None = None) -> bool:
+        fields = ["state = ?"]
+        params: list = [state]
+        if last_run_at is not None:
+            fields.append("last_run_at = ?")
+            params.append(last_run_at.isoformat())
+        params.append(monitor_id)
+        await self._execute(
+            f"UPDATE monitors SET {', '.join(fields)} WHERE id = ?", tuple(params)
+        )
+        await self._db.commit()
+        return True
+
+    async def delete_monitor(self, workspace_id: str, monitor_id: str) -> bool:
+        cur = await self._execute(
+            "DELETE FROM monitors WHERE workspace_id = ? AND id = ?",
+            (workspace_id, monitor_id),
+        )
+        await self._db.commit()
+        return cur.rowcount > 0
+
+    async def list_monitors_full(self, workspace_id: str) -> list[dict]:
+        rows = await self._fetchall(
+            "SELECT * FROM monitors WHERE workspace_id = ? ORDER BY created_at DESC",
+            (workspace_id,),
+        )
+        return [self._parse_monitor_row(row) for row in rows]
+
 
 # 全局存储实例
 _store: Store | None = None
