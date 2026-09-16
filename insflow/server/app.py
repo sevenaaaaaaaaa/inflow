@@ -198,6 +198,32 @@ async def dismiss_insight(insight_id: str):
     return {"status": "ok"}
 
 
+# ========== Agent API ==========
+
+class AgentAskRequest(BaseModel):
+    question: str
+
+
+@app.post("/api/v1/agent/ask")
+async def agent_ask(data: AgentAskRequest, workspace_id: str = Query(...)):
+    """数据洞察问答（工具调用 + 引用溯源；SSE 流式在 v2 提供）"""
+    from ..agent import InsightAgent
+    store = await get_store()
+    ws = await store.get_workspace(workspace_id)
+    if not ws:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+
+    agent = InsightAgent(workspace_id)
+    return await agent.ask(data.question)
+
+
+@app.get("/api/v1/agent/skills")
+async def agent_skills():
+    """列出已加载的 Agent Skills"""
+    from ..agent import get_skills_host
+    return {"skills": get_skills_host().list_skills()}
+
+
 # ========== 入站事件（HMAC 验签）==========
 
 @app.post("/api/v1/ingest")
