@@ -1,0 +1,23 @@
+{
+  "id": "ecommerce-retention",
+  "name": "电商留存模板",
+  "description": "电商增长情报标配：竞品价格监控 + 热门品类词 + RFM 流失预警",
+  "monitors": [
+    {"kind": "site_change", "target": {"url": "https://competitor-shop.com/pricing"}, "schedule_cron": "0 */4 * * *"},
+    {"kind": "brand_mention", "target": {"query": "best online shop deals", "max_records": 80}, "schedule_cron": "0 3 * * *"}
+  ],
+  "dsl_rules": [
+    {
+      "id": "cart-abandon-rate",
+      "name": "购物车弃置率告警",
+      "metric": "cart_abandon_rate",
+      "condition": {"op": ">=", "value": 0.65},
+      "severity": "high",
+      "confidence": 0.8,
+      "title_template": "弃购率 {value:.0%}，超过基准 {threshold:.0%}",
+      "actions": [{"action_type": "openflow.automation", "description": "创建弃购召回旅程"}],
+      "stage_tags": ["S2", "journey"]
+    }
+  ],
+  "skills": ["journey-gap-analysis", "weekly-brief-writer"]
+}

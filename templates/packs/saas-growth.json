@@ -1,0 +1,38 @@
+{
+  "id": "saas-growth",
+  "name": "SaaS 增长模板",
+  "description": "SaaS 工具增长情报标配：3 竞品定价监控 + 关键词捡漏 + 品牌词舆情 + CAC 告警",
+  "monitors": [
+    {"kind": "site_change", "target": {"url": "https://competitor-1.com/pricing"}, "schedule_cron": "0 */6 * * *"},
+    {"kind": "site_change", "target": {"url": "https://competitor-2.com/changelog"}, "schedule_cron": "0 */6 * * *"},
+    {"kind": "keyword", "target": {"site": "sc-domain:example.com", "limit": 50}, "schedule_cron": "0 2 * * *"},
+    {"kind": "brand_mention", "target": {"query": "saas automation tools", "max_records": 50}, "schedule_cron": "0 4 * * *"}
+  ],
+  "dsl_rules": [
+    {
+      "id": "cac-overrun-saas",
+      "name": "CAC 超标告警",
+      "metric": "cac",
+      "condition": {"op": ">=", "value": 500},
+      "severity": "high",
+      "confidence": 0.85,
+      "insight_type": "cac_overrun",
+      "title_template": "CAC 达到 {value:.0f}，超过阈值 {threshold}",
+      "summary_template": "分渠道核算获客成本，暂停 ROI 为负的渠道。",
+      "actions": [{"action_type": "investigate", "description": "分渠道核算获客成本"}],
+      "stage_tags": ["S1", "S3"]
+    },
+    {
+      "id": "mrr-slowdown-saas",
+      "name": "MRR 增速告警",
+      "metric": "mrr_growth_pct",
+      "condition": {"op": "<", "value": 5},
+      "severity": "medium",
+      "confidence": 0.7,
+      "title_template": "MRR 月增速降至 {value:.1f}%（阈值 {threshold}%）",
+      "actions": [{"action_type": "investigate", "description": "交叉核对渠道与留存趋势"}],
+      "stage_tags": ["S1"]
+    }
+  ],
+  "skills": ["competitor-move-analysis", "traffic-attribution-diagnosis", "weekly-brief-writer"]
+}
