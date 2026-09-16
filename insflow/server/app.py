@@ -303,6 +303,17 @@ class FirstPartyAnalysisRequest(BaseModel):
     orders: list[dict] = []
 
 
+@app.post("/api/v1/reports/weekly")
+async def build_weekly(workspace_id: str = Query(...)):
+    """生成增长周报（无人值守）+ 同步落 MFlow 报告目录"""
+    from ..engine.weekly_report import WeeklyReportBuilder
+    store = await get_store()
+    if not await store.get_workspace(workspace_id):
+        raise HTTPException(status_code=404, detail="Workspace not found")
+    builder = WeeklyReportBuilder(workspace_id)
+    return await builder.build()
+
+
 @app.post("/api/v1/first-party/analyze")
 async def first_party_analyze(workspace_id: str, data: FirstPartyAnalysisRequest):
     """第一方情报：旅程重建（CJ-3）+ RFM 分层（CJ-5）

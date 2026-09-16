@@ -3,7 +3,7 @@
 import pytest
 
 from insflow.core.entities import Workspace
-from insflow.core.store import Store, get_store, reset_store
+from insflow.core.store import Store, reset_store
 from insflow.engine.journey import JourneyModule, get_framework
 
 

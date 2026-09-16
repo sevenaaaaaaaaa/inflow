@@ -5,12 +5,12 @@
 - CJ-5 RFM/价值分层：Recency / Frequency / Monetary 三维分群 + 分群策略建议
 """
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime
 
 from ..core.entities import Insight
 from ..core.files import EventBus
 from ..core.store import get_store
-from ..integrations.openflow.mcp_client import OpenFlowMCPClient, OpenFlowMCPError
+from ..integrations.openflow.mcp_client import OpenFlowMCPClient
 
 # RFM 阈值（1-5 分，按分位数或规则）
 RFM_SCORE_MAP = {
@@ -83,7 +83,7 @@ class FirstPartyIntelligence:
         anonymous（匿名）→ lead（线索）→ member（会员）→ paying（成交）→ repeat（复购）
         """
         orders = orders or []
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
 
         # 按身份归组订单
         orders_by_identity: dict[str, list[dict]] = {}
@@ -154,7 +154,7 @@ class FirstPartyIntelligence:
     async def persist_journey(self, rebuilt: dict) -> int:
         """把重建结果写入 journey_events（审计 + M3 验收证据）"""
         store = await get_store()
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
         count = 0
         # 只存分布 + 样本身份（不逐人全量写，防数据膨胀）
         for stage, n in rebuilt["stages_distribution"].items():
@@ -190,7 +190,7 @@ class FirstPartyIntelligence:
             if o.get("status") == "paid" and email:
                 orders_by_email.setdefault(email, []).append(o)
 
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         segments: dict[str, dict] = {}
         scored = []
 

@@ -5,7 +5,7 @@ CI-3 SEO 竞争情报：关键词重叠/缺口、排名追踪（DataForSEO Labs�
 CI-7 周报《竞品动向》：全渠道聚合 + "本周最值得注意的 3 件事"
 """
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from ..core.entities import Insight
 from ..core.files import EventBus, ReportStore
@@ -134,7 +134,7 @@ class CompetitorModule:
     async def build_weekly_report(self, monitor_summaries: list[dict] | None = None) -> str:
         """聚合本周竞品信号（变更监控 + SEO + 洞察）→ 《竞品动向》周报"""
         store = await get_store()
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         week_ago = now - timedelta(days=7)
 
         insights = await store.list_insights(self.workspace_id, limit=200)

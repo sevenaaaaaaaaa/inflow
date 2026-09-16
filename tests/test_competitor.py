@@ -2,7 +2,7 @@
 
 import pytest
 
-from insflow.core.entities import Insight, Workspace
+from insflow.core.entities import Workspace
 from insflow.core.store import Store, get_store, reset_store
 from insflow.engine.competitor import CompetitorModule
 

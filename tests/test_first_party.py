@@ -1,6 +1,6 @@
 """测试第一方情报（MCP 客户端 + CJ-3 旅程重建 + CJ-5 RFM）"""
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -11,7 +11,7 @@ from insflow.integrations.openflow.mcp_client import OpenFlowMCPClient, OpenFlow
 
 
 def days_ago(n: int) -> str:
-    return (datetime.now(timezone.utc) - timedelta(days=n)).isoformat()
+    return (datetime.now(UTC) - timedelta(days=n)).isoformat()
 
 
 @pytest.fixture
@@ -113,7 +113,7 @@ class TestRFMScoring:
 
 class TestJourneyRebuild:
     def test_stages_and_breakpoints(self):
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
         members = (
             [{"email": f"lead{i}@x.com", "registered": False, "form_submitted": True} for i in range(30)]  # lead
             + [{"email": f"member{i}@x.com", "registered": True} for i in range(20)]  # member
@@ -137,7 +137,7 @@ class TestJourneyRebuild:
 
     async def test_persist_journey_events(self, env):
         fi = FirstPartyIntelligence("test-ws", client=OpenFlowMCPClient(base_url="", api_key=""))
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
         members = [{"email": f"m{i}@x.com", "registered": True} for i in range(5)]
         rebuilt = fi.rebuild_journey(members, [])
 
@@ -151,7 +151,7 @@ class TestJourneyRebuild:
 
 class TestRFMFull:
     async def test_compute_and_insight(self, env):
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         members = (
             [{"email": f"risk{i}@x.com", "registered": True} for i in range(10)]
             + [{"email": f"champ{i}@x.com", "registered": True} for i in range(4)]
@@ -181,7 +181,7 @@ class TestRFMFull:
     async def test_full_analysis_injected(self, env):
         """无 MCP 时注入数据模式完整跑通"""
         fi = FirstPartyIntelligence("test-ws", client=OpenFlowMCPClient(base_url="", api_key=""))
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         members = [{"email": f"u{i}@x.com", "registered": True} for i in range(8)]
         # 6 人历史多单但 200 天未消费 → at_risk（触发流失预警洞察）
         orders = [{"member_email": f"u{i}@x.com", "amount": 500, "status": "paid",
