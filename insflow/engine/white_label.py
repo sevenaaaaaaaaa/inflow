@@ -8,7 +8,7 @@
 """
 
 import html
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from ..core.files import EventBus, ReportStore
 from ..engine.billing import BillingManager
@@ -55,7 +55,7 @@ class WhiteLabelRenderer:
         """Markdown 报告 → 品牌化自包含 HTML（可打印 PDF）"""
         body_html = self._md_to_html(markdown_content)
         cfg = self.config
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         logo_html = f'<img src="{html.escape(cfg.logo_url)}" alt="logo" class="logo">' if cfg.logo_url else ""
         header = (
             f'<div class="header"><div>{logo_html}'
@@ -105,7 +105,6 @@ class WhiteLabelRenderer:
                      client_name: str = "") -> dict:
         """把已有报告导出为品牌化 HTML（white_label 套餐门控）"""
         # 套餐门控
-        from ..engine.billing import BillingManager
         mgr = BillingManager(self.workspace_id)
         plan = await mgr.get_plan()
         if not plan["limits"].get("white_label"):

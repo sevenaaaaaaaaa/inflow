@@ -9,7 +9,7 @@
 配额产品化：用量可见（API）+ 超量告警（events.jsonl → webhook/飞书出站链路复用）
 """
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from ..core.files import EventBus
@@ -211,11 +211,10 @@ class BillingManager:
                 "competitors": {"limit": limits["competitors"]},
                 "white_label": limits["white_label"],
             },
-            "checked_at": datetime.now(timezone.utc).isoformat(),
+            "checked_at": datetime.now(UTC).isoformat(),
         }
 
     def bus_emit(self, event_type: str, payload: dict) -> None:
-        from ..core.files import EventBus
         EventBus(self.workspace_id).emit(event_type, payload)
 
     # ========== 超量告警出站（复用告警链路）==========

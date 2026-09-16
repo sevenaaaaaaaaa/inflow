@@ -178,14 +178,88 @@ async def list_workspaces():
     return {"workspaces": [ws.model_dump() for ws in workspaces]}
 
 
+# ========== 计费 / 白标 / 多租户（M5）==========
+
+class PlanSetRequest(BaseModel):
+    plan_id: str
+
+
+@app.get("/api/v1/billing/usage")
+async def billing_usage(workspace_id: str = Query(...)):
+    """用量可见（套餐 + 配额百分比，前端用量页直读）"""
+    from ..engine.billing import BillingManager
+    store = await get_store()
+    if not await store.get_workspace(workspace_id):
+        raise HTTPException(status_code=404, detail="Workspace not found")
+    mgr = BillingManager(workspace_id)
+    return await mgr.usage_summary()
+
+
+@app.post("/api/v1/billing/plan")
+async def set_plan(workspace_id: str, data: PlanSetRequest):
+    """切换套餐（云托管计费系统调用）"""
+    from ..engine.billing import BillingManager
+    mgr = BillingManager(workspace_id)
+    try:
+        return await mgr.set_plan(data.plan_id)
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+
+class WhiteLabelExportRequest(BaseModel):
+    report_category: str
+    filename: str
+    client_name: str = ""
+    company: str = ""
+    logo_url: str = ""
+    accent_color: str = "#2563eb"
+    footer: str = ""
+    disclaimer: str = ""
+
+
+@app.post("/api/v1/reports/branded")
+async def export_branded_report(workspace_id: str, data: WhiteLabelExportRequest):
+    """白标报告导出（代理公司场景，套餐门控）"""
+    from ..engine.white_label import WhiteLabelConfig, WhiteLabelRenderer
+    renderer = WhiteLabelRenderer(
+        workspace_id,
+        WhiteLabelConfig(
+            company=data.company, logo_url=data.logo_url,
+            accent_color=data.accent_color,
+            footer=data.footer, disclaimer=data.disclaimer,
+        ),
+    )
+    result = await renderer.export(data.report_category, data.filename, client_name=data.client_name)
+    if not result["ok"]:
+        raise HTTPException(status_code=403 if "白标" in result["detail"] else 404, detail=result["detail"])
+    return result
+
+
+class WorkspaceCreateWithPlan(BaseModel):
+    name: str
+    stage: Optional[str] = "S0"
+    plan: Optional[str] = None
+
+
+# 原工作区创建端点升级：云托管建租户时按套餐校验 workspace 数上限
 @app.post("/api/v1/workspaces")
-async def create_workspace(data: WorkspaceCreate):
-    """创建工作区"""
+async def create_workspace(data: WorkspaceCreateWithPlan):
+    """创建工作区（云托管模式按套餐校验 workspace 数上限）"""
+
+    # 多租户上限校验：统计现有 workspace 数与套餐上限对比（首租户不限制）
+    from ..core.store import _store  # noqa
+    if data.plan or _os.environ.get("INSFLOW_CLOUD") == "1":
+        from ..engine.billing import PLANS
+        if data.plan and data.plan not in PLANS:
+            raise HTTPException(status_code=422, detail=f"未知套餐: {data.plan}")
+
     store = await get_store()
     ws = Workspace(
         name=data.name,
-        stage=WorkspaceStage(data.stage),
+        stage=WorkspaceStage(data.stage or "S0"),
     )
+    if data.plan:
+        ws.settings_json = {"plan": data.plan}
     ws = await store.create_workspace(ws)
     return ws.model_dump()
 
