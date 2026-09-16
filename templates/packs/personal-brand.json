@@ -1,0 +1,26 @@
+{
+  "id": "personal-brand",
+  "name": "个人品牌/超级个体模板",
+  "description": "面向独立顾问、自媒体、操盘手：全域话题监测 + 舆情 + 竞品账号，无需自有网站",
+  "monitors": [
+    {"kind": "topic", "target": {"query": "你的品牌或话题", "channels": ["news", "search", "reddit"], "min_mentions": 15}, "schedule_cron": "0 */6 * * *"},
+    {"kind": "topic", "target": {"query": "所在行业关键词", "channels": ["news"], "min_mentions": 20}, "schedule_cron": "0 3 * * *"},
+    {"kind": "brand_mention", "target": {"query": "你的名字", "max_records": 50}, "schedule_cron": "0 */12 * * *"}
+  ],
+  "dsl_rules": [
+    {
+      "id": "mention-spike",
+      "name": "提及量激增告警",
+      "metric": "brand_mention",
+      "condition": {"op": ">=", "value": 50},
+      "severity": "high",
+      "confidence": 0.75,
+      "insight_type": "mention_spike",
+      "title_template": "提及量激增：{value:.0f} 条（阈值 {threshold}）",
+      "summary_template": "监测主体热度异常上升，建议立即复核来源与情绪倾向。",
+      "actions": [{"action_type": "investigate", "description": "复核高提及来源与情绪"}],
+      "stage_tags": ["voice"]
+    }
+  ],
+  "skills": ["voice-of-market-mining", "weekly-brief-writer", "growth-experiment-design"]
+}

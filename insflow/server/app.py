@@ -381,6 +381,18 @@ async def list_templates():
     return {"templates": TemplateRegistry().list()}
 
 
+@app.get("/api/v1/audit/export")
+async def audit_export(workspace_id: str = Query(...), format: str = Query("json"),
+                       date_from: str | None = Query(None),
+                       date_to: str | None = Query(None),
+                       event_type: str | None = Query(None),
+                       keyword: str | None = Query(None)):
+    """审计导出（企业采购合规）"""
+    from ..engine.audit import AuditExporter
+    events = AuditExporter(workspace_id).collect(date_from, date_to, event_type, keyword)
+    return {"count": len(events), "events": events}
+
+
 @app.post("/api/v1/templates/apply")
 async def apply_template(workspace_id: str, data: TemplateApplyRequest):
     """一键应用行业模板包（幂等）"""

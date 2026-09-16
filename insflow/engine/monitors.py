@@ -19,7 +19,7 @@ class MonitorService:
     """监控任务 CRUD + 调度 + 执行"""
 
     # 支持的监控类型 → 引擎路由
-    KINDS = ("site_change", "keyword", "brand_mention", "journey")
+    KINDS = ("site_change", "keyword", "brand_mention", "topic", "journey")
 
     def __init__(self, workspace_id: str, scheduler: Scheduler | None = None):
         self.workspace_id = workspace_id
@@ -114,6 +114,8 @@ class MonitorService:
             return await router.run_keyword(monitor["id"], target)
         if kind == "brand_mention":
             return await router.run_brand_mention(monitor["id"], target)
+        if kind == "topic":
+            return await router.run_topic(monitor["id"], target)
         if kind == "journey":
             return await router.run_journey(monitor["id"], target)
         raise ValueError(f"未知监控类型: {kind}")

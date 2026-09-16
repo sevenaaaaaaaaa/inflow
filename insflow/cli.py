@@ -565,6 +565,29 @@ def invoice(workspace: str, month: str):
 
 
 @main.command()
+@click.option("--workspace", "-w", default="default", help="工作区ID")
+@click.option("--out", "-o", default=None, help="导出路径（默认 audit-<ws>-<时间>.csv）")
+@click.option("--format", "-f", "fmt", default="csv", type=click.Choice(["csv", "json"]))
+@click.option("--from", "date_from", default=None, help="起始日期 YYYY-MM-DD")
+@click.option("--to", "date_to", default=None, help="结束日期 YYYY-MM-DD")
+@click.option("--type", "event_type", default=None, help="事件类型前缀（如 action.）")
+@click.option("--keyword", default=None, help="关键字过滤")
+def audit(workspace: str, out: str, fmt: str, date_from: str, date_to: str,
+          event_type: str, keyword: str):
+    """审计导出（企业采购合规）"""
+    from .engine.audit import AuditExporter
+
+    if not out:
+        import datetime as _dt
+        out = f"audit-{workspace}-{_dt.datetime.now().strftime('%Y%m%d-%H%M')}.{fmt}"
+
+    result = AuditExporter(workspace).run(
+        out, fmt=fmt, date_from=date_from, date_to=date_to,
+        event_type=event_type, keyword=keyword)
+    console.print(f"[green]✓ 审计导出 {result['count']} 条 → {result['path']}[/]")
+
+
+@main.command()
 def init():
     """初始化 Insight Flow 数据目录"""
     data_dir = Path("data")

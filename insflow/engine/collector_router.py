@@ -7,7 +7,7 @@
 """
 
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timezone
 
 from ..collectors.base import CollectContext
 from ..core.entities import Insight, InsightAction, Metric
@@ -205,6 +205,141 @@ class CollectorRouter:
 
         return {"kind": "brand_mention", "mentions": mentions,
                 "insights_created": created}
+
+    # ========== topic（全域主题监测：多渠道聚合，面向超级个体）==========
+
+    async def run_topic(self, monitor_id: str, target: dict) -> dict:
+        """主题监测：搜索 + 新闻 + 论坛多渠道聚合 → 统一时间线 + 舆情洞察
+
+        target: {
+          "query": "品牌/话题/关键词",
+          "channels": ["news", "reddit", "search"],   # 渠道清单（可选，默认 news）
+          "sentiment": true                            # 是否做情绪概览
+        }
+        不要求任何自有网站——面向个人 IP / 品牌 / 话题 / 行业事件。
+        """
+        query = _require(target, "query")
+        channels = target.get("channels") or ["news"]
+        if not isinstance(channels, list):
+            raise ValueError("target.channels 必须是数组")
+
+        # 渠道采集（逐渠道容错：单渠道失败不影响整体）
+        results: dict[str, list] = {}
+        errors: dict[str, str] = {}
+        if "news" in channels:
+            try:
+                results["news"] = await self._collect_gdelt(query, target)
+            except Exception as e:
+                errors["news"] = f"{type(e).__name__}: {e}"
+        if "search" in channels:
+            try:
+                results["search"] = await self._collect_search(query, target)
+            except Exception as e:
+                errors["search"] = f"{type(e).__name__}: {e}"
+        if "reddit" in channels:
+            try:
+                results["reddit"] = await self._collect_reddit(query, target)
+            except Exception as e:
+                errors["reddit"] = f"{type(e).__name__}: {e}"
+
+        total = sum(len(v) for v in results.values())
+        now = datetime.now(timezone.utc)
+
+        # 各渠道提及量入库（统一时间线的基础）
+        metric_rows = []
+        for channel, items in results.items():
+            metric_rows.append({
+                "entity_type": "topic", "entity_id": query,
+                "metric": f"topic_mentions_{channel}", "value": len(items),
+                "dim": {"query": query, "channel": channel,
+                        "domains": sorted({str(i.get("domain") or i.get("source") or "")
+                                           for i in items})[:10]},
+                "ts": now.isoformat(),
+            })
+        if metric_rows:
+            await _save_metrics(self.workspace_id, monitor_id=monitor_id, rows=metric_rows)
+
+        # 舆情概览洞察（总量达阈值）
+        drafts: list[dict] = []
+        if total >= target.get("min_mentions", 15):
+            channel_desc = "、".join(f"{c} {len(results[c])}" for c in results)
+            samples = [(i.get("title") or i.get("text") or "")[:60]
+                       for items in results.values() for i in items[:3]][:6]
+            drafts.append({
+                "type": "topic_digest",
+                "title": f"「{query}」全域提及 {total} 条",
+                "summary": (f"多渠道聚合：{channel_desc}。"
+                            f"近期信号示例：{'; '.join(s for s in samples if s)}"),
+                "severity": "medium", "confidence": 0.7,
+                "evidence_json": [{
+                    "type": "topic_aggregate", "query": query,
+                    "channels": {c: len(v) for c, v in results.items()},
+                    "errors": errors,
+                }],
+                "actions_json": [
+                    {"action_type": "investigate", "description": "复核高提及来源，评估跟进角度"},
+                    {"action_type": "mflow.create_content",
+                     "description": f"围绕「{query}」产出解读内容"},
+                ],
+                "stage_tags_json": ["S0", "S1", "voice"],
+            })
+        if drafts:
+            await _save_insights(self.workspace_id, drafts)
+
+        EventBus(self.workspace_id).emit("source.collected", {
+            "source": "topic", "kind": "topic_monitor",
+            "channels": {c: len(v) for c, v in results.items()},
+        })
+        return {"kind": "topic", "query": query,
+                "channels": {c: len(v) for c, v in results.items()},
+                "total_mentions": total, "errors": errors,
+                "insights_created": len(drafts)}
+
+    async def _collect_gdelt(self, query: str, target: dict) -> list[dict]:
+        import httpx
+        params = {"query": query, "mode": "artlist",
+                  "maxrecords": target.get("max_records", 50), "format": "json"}
+        async with httpx.AsyncClient() as client:
+            resp = await client.get("https://api.gdeltproject.org/api/v2/doc/doc",
+                                    params=params, timeout=30.0)
+            resp.raise_for_status()
+            return [{"title": a.get("title", ""), "domain": a.get("domain", ""),
+                     "url": a.get("url", ""), "seendate": a.get("seendate", "")}
+                    for a in resp.json().get("articles", [])]
+
+    async def _collect_search(self, query: str, target: dict) -> list[dict]:
+        """搜索渠道：优先 serper（有凭据时），否则跳过"""
+        vault_key = get_vault().get("serper_api_key") or target.get("serper_api_key", "")
+        if not vault_key:
+            raise RuntimeError("serper_api_key 未配置（搜索渠道跳过）")
+        import httpx
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(
+                "https://google.serper.dev/search",
+                json={"q": query, "num": target.get("num", 10)},
+                headers={"X-API-KEY": vault_key, "Content-Type": "application/json"},
+                timeout=30.0)
+            resp.raise_for_status()
+            return [{"title": i.get("title", ""), "domain": i.get("domain", ""),
+                     "url": i.get("link", ""), "text": i.get("snippet", "")}
+                    for i in resp.json().get("organic", [])]
+
+    async def _collect_reddit(self, query: str, target: dict) -> list[dict]:
+        """论坛渠道：Reddit 公开 JSON 端点（无需 OAuth，速率受限）"""
+        import httpx
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(
+                "https://www.reddit.com/search.json",
+                params={"q": query, "limit": target.get("reddit_limit", 25)},
+                headers={"User-Agent": "InsightFlow/1.0"},
+                timeout=30.0)
+            resp.raise_for_status()
+            children = resp.json().get("data", {}).get("children", [])
+            return [{"title": c.get("data", {}).get("title", ""),
+                     "domain": "reddit.com",
+                     "url": "https://reddit.com" + c.get("data", {}).get("permalink", ""),
+                     "text": c.get("data", {}).get("selftext", "")[:200]}
+                    for c in children]
 
     # ========== journey（GA4 漏斗步 → 断点模型）==========
 
