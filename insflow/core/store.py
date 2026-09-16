@@ -16,6 +16,13 @@ from .entities import (
 # 默认数据库路径
 DEFAULT_DB_PATH = Path(__file__).parent.parent.parent / "data" / "insflow.db"
 
+
+def default_db_path() -> Path:
+    """运行时推导 db 路径（跟随 DATA_DIR，支持测试/私有化重定向）"""
+    from . import files as files_mod
+    base = files_mod.DATA_DIR or DEFAULT_DB_PATH.parent
+    return Path(base) / "insflow.db"
+
 # SQL 迁移脚本
 MIGRATIONS = [
     # V1: 核心表
@@ -239,7 +246,7 @@ class Store:
     """SQLite 存储层"""
 
     def __init__(self, db_path: Path | None = None):
-        self.db_path = db_path or DEFAULT_DB_PATH
+        self.db_path = db_path or default_db_path()
         self._db: aiosqlite.Connection | None = None
 
     async def connect(self):
