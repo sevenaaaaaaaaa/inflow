@@ -51,6 +51,7 @@ NAV_AREA = {
     "reports": "report",
     "plugins": "ecosystem",
     "usage": "settings",
+    "subscriptions": "settings",
 }
 
 
@@ -162,6 +163,17 @@ async def plugins_page(request: Request, workspace_id: str = Query("")):
     return templates.TemplateResponse(request, "plugins.html", _ctx(
         request, "plugins", workspace_id,
         installed=market.installed(), market=market.scan(),
+    ))
+
+
+@router.get("/subscriptions", response_class=HTMLResponse)
+async def subscriptions_page(request: Request, workspace_id: str = Query("")):
+    if not workspace_id:
+        workspace_id = await _default_workspace()
+    from ..engine.subscriptions import SubscriptionService
+    subs = await SubscriptionService(workspace_id).list()
+    return templates.TemplateResponse(request, "subscriptions.html", _ctx(
+        request, "subscriptions", workspace_id, subs=subs,
     ))
 
 

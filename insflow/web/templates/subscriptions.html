@@ -1,0 +1,97 @@
+{% extends "base.html" %}
+{% block title %} · 洞察订阅{% endblock %}
+{% block content %}
+<h1>洞察订阅</h1>
+<p class="sub">让洞察主动送达——按严重度/类型/关键字订阅，推送到飞书、Webhook 或 Slack。即时模式在洞察创建时立刻推送；每日模式在每日汇总里推送。</p>
+
+<h2>新建订阅</h2>
+<div class="toolbar">
+  <input id="s-name" placeholder="订阅名称（如：高危舆情告警）" style="width: 220px">
+  <select id="s-channel">
+    <option value="feishu">飞书</option>
+    <option value="webhook">Webhook</option>
+    <option value="slack">Slack</option>
+  </select>
+  <input id="s-url" placeholder="机器人 webhook 地址" style="width: 340px">
+  <input id="s-secret" placeholder="Webhook HMAC 密钥（可选）" style="width: 200px">
+  <select id="s-mode">
+    <option value="immediate">即时推送</option>
+    <option value="daily">每日汇总</option>
+  </select>
+  <button onclick="createSub()">创建</button>
+  <span id="s-status" class="sub"></span>
+</div>
+<div class="toolbar">
+  <input id="s-severity" placeholder="严重度过滤：critical,high（可选）" style="width: 260px">
+  <input id="s-prefix" placeholder="类型前缀：topic_,competitor_（可选）" style="width: 280px">
+  <input id="s-query" placeholder="关键字过滤（可选）" style="width: 220px">
+</div>
+
+<h2>订阅列表（{{ subs | length }}）</h2>
+{% if subs %}
+<table>
+  <tr><th>名称</th><th>渠道</th><th>模式</th><th>过滤</th><th>状态</th><th>操作</th></tr>
+  {% for s in subs %}
+  <tr>
+    <td><strong>{{ s.name }}</strong><br><code>{{ s.id }}</code></td>
+    <td>{{ s.channels | join('、') }}</td>
+    <td>{% if s.mode == 'immediate' %}即时{% else %}每日{% endif %}</td>
+    <td>
+      {% if s.filters.severity %}<span class="badge b-high">{{ s.filters.severity | join('/') }}</span> {% endif %}
+      {% if s.filters.type_prefix %}<code>{{ s.filters.type_prefix | join('/') }}</code> {% endif %}
+      {% if s.filters.query %}<code>{{ s.filters.query }}</code>{% endif %}
+      {% if not s.filters %}<span class="sub">全部洞察</span>{% endif %}
+    </td>
+    <td>{% if s.enabled %}<span class="badge b-ok">启用</span>{% else %}<span class="badge b-gray">停用</span>{% endif %}</td>
+    <td>
+      <button class="secondary" onclick="toggleSub('{{ s.id }}', {{ 'false' if s.enabled else 'true' }})">
+        {{ '停用' if s.enabled else '启用' }}</button>
+      <button class="secondary" onclick="delSub('{{ s.id }}')">删除</button>
+    </td>
+  </tr>
+  {% endfor %}
+</table>
+{% else %}
+<div class="empty">暂无订阅 —— 上面填一个飞书机器人地址即可开始接收洞察推送</div>
+{% endif %}
+
+<script>
+async function createSub() {
+  const st = document.getElementById('s-status');
+  const channel = document.getElementById('s-channel').value;
+  const url = document.getElementById('s-url').value;
+  const target = {};
+  if (channel === 'feishu') target.feishu_url = url;
+  else if (channel === 'slack') target.slack_url = url;
+  else { target.webhook_url = url; target.webhook_secret = document.getElementById('s-secret').value; }
+
+  const filters = {};
+  const sev = document.getElementById('s-severity').value.trim();
+  const prefix = document.getElementById('s-prefix').value.trim();
+  const query = document.getElementById('s-query').value.trim();
+  if (sev) filters.severity = sev.split(',').map(s => s.trim());
+  if (prefix) filters.type_prefix = prefix.split(',').map(s => s.trim());
+  if (query) filters.query = query;
+
+  const r = await fetch('/api/v1/subscriptions?workspace_id={{ workspace_id }}', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({
+      name: document.getElementById('s-name').value || '未命名订阅',
+      channels: [channel], target, filters,
+      mode: document.getElementById('s-mode').value,
+    })});
+  if (r.ok) { location.reload(); }
+  else { const d = await r.json(); st.textContent = d.detail || '创建失败'; }
+}
+async function toggleSub(id, enabled) {
+  await fetch(`/api/v1/subscriptions/${id}/toggle?workspace_id={{ workspace_id }}&enabled=${enabled}`,
+              {method: 'POST'});
+  location.reload();
+}
+async function delSub(id) {
+  if (!confirm('确认删除该订阅？')) return;
+  await fetch(`/api/v1/subscriptions/${id}?workspace_id={{ workspace_id }}`, {method: 'DELETE'});
+  location.reload();
+}
+</script>
+{% endblock %}

@@ -381,6 +381,50 @@ async def list_templates():
     return {"templates": TemplateRegistry().list()}
 
 
+# ========== 洞察订阅（G-5）==========
+
+class SubscriptionCreate(BaseModel):
+    name: str
+    channels: list[str]
+    target: dict = {}
+    filters: dict = {}
+    mode: str = "immediate"
+
+
+@app.get("/api/v1/subscriptions")
+async def list_subscriptions(workspace_id: str = Query(...)):
+    from ..engine.subscriptions import SubscriptionService
+    return {"subscriptions": await SubscriptionService(workspace_id).list()}
+
+
+@app.post("/api/v1/subscriptions")
+async def create_subscription(workspace_id: str, data: SubscriptionCreate):
+    from ..engine.subscriptions import SubscriptionError, SubscriptionService
+    try:
+        return await SubscriptionService(workspace_id).create(
+            data.name, data.channels, data.target, data.filters, data.mode)
+    except SubscriptionError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+
+@app.delete("/api/v1/subscriptions/{subscription_id}")
+async def delete_subscription(workspace_id: str, subscription_id: str):
+    from ..engine.subscriptions import SubscriptionService
+    ok = await SubscriptionService(workspace_id).delete(subscription_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Subscription not found")
+    return {"ok": True}
+
+
+@app.post("/api/v1/subscriptions/{subscription_id}/toggle")
+async def toggle_subscription(workspace_id: str, subscription_id: str, enabled: bool = Query(...)):
+    from ..engine.subscriptions import SubscriptionService
+    ok = await SubscriptionService(workspace_id).set_enabled(subscription_id, enabled)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Subscription not found")
+    return {"ok": True, "enabled": enabled}
+
+
 @app.get("/api/v1/audit/export")
 async def audit_export(workspace_id: str = Query(...), format: str = Query("json"),
                        date_from: str | None = Query(None),
@@ -508,6 +552,8 @@ async def create_insight(data: InsightCreate):
         stage_tags_json=data.stage_tags_json,
     )
     insight = await store.create_insight(insight)
+    from ..engine.subscriptions import notify_new_insight
+    await notify_new_insight(data.workspace_id, insight.id)
     return insight.model_dump()
 
 

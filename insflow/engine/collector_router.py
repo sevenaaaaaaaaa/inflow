@@ -107,6 +107,7 @@ async def _save_insights(workspace_id: str, drafts: list[dict]) -> int:
             })
             continue
         s = await store.create_insight(insight)
+        await _notify_insight(workspace_id, s.id)
         EventBus(workspace_id).emit("insight.created", {
             "insight_id": s.id, "type": s.type,
         })
@@ -245,7 +246,19 @@ class CollectorRouter:
         total = sum(len(v) for v in results.values())
         now = datetime.now(timezone.utc)
 
-        # 各渠道提及量入库（统一时间线的基础）
+        # 情绪分布（G-3：舆情核心指标）
+        from .sentiment import distribution as sentiment_distribution
+        texts = []
+        for items in results.values():
+            for i in items:
+                texts.append(f"{i.get('title', '')} {i.get('text', '')}".strip())
+        sent = sentiment_distribution(texts) if texts else {
+            "total": 0, "counts": {"positive": 0, "neutral": 0, "negative": 0},
+            "ratios": {"positive": 0.0, "neutral": 0.0, "negative": 0.0},
+            "avg_score": 0.0, "negative_examples": [],
+        }
+
+        # 各渠道提及量 + 情绪分布入库（统一时间线的基础）
         metric_rows = []
         for channel, items in results.items():
             metric_rows.append({
@@ -256,25 +269,40 @@ class CollectorRouter:
                                            for i in items})[:10]},
                 "ts": now.isoformat(),
             })
+        if sent["total"]:
+            metric_rows.append({
+                "entity_type": "topic", "entity_id": query,
+                "metric": "topic_negative_ratio", "value": sent["ratios"]["negative"],
+                "dim": {"query": query, "counts": sent["counts"]},
+                "ts": now.isoformat(),
+            })
+            metric_rows.append({
+                "entity_type": "topic", "entity_id": query,
+                "metric": "topic_sentiment_score", "value": sent["avg_score"],
+                "dim": {"query": query, "counts": sent["counts"]},
+                "ts": now.isoformat(),
+            })
         if metric_rows:
             await _save_metrics(self.workspace_id, monitor_id=monitor_id, rows=metric_rows)
 
-        # 舆情概览洞察（总量达阈值）
+        # 舆情洞察：概览 + 负面预警
         drafts: list[dict] = []
         if total >= target.get("min_mentions", 15):
             channel_desc = "、".join(f"{c} {len(results[c])}" for c in results)
             samples = [(i.get("title") or i.get("text") or "")[:60]
                        for items in results.values() for i in items[:3]][:6]
+            sent_desc = (f"情绪：正 {sent['counts']['positive']} / 中 {sent['counts']['neutral']}"
+                         f" / 负 {sent['counts']['negative']}（负向占比 {sent['ratios']['negative']:.0%}）")
             drafts.append({
                 "type": "topic_digest",
                 "title": f"「{query}」全域提及 {total} 条",
-                "summary": (f"多渠道聚合：{channel_desc}。"
+                "summary": (f"多渠道聚合：{channel_desc}。{sent_desc}。"
                             f"近期信号示例：{'; '.join(s for s in samples if s)}"),
                 "severity": "medium", "confidence": 0.7,
                 "evidence_json": [{
                     "type": "topic_aggregate", "query": query,
                     "channels": {c: len(v) for c, v in results.items()},
-                    "errors": errors,
+                    "sentiment": sent, "errors": errors,
                 }],
                 "actions_json": [
                     {"action_type": "investigate", "description": "复核高提及来源，评估跟进角度"},
@@ -283,16 +311,53 @@ class CollectorRouter:
                 ],
                 "stage_tags_json": ["S0", "S1", "voice"],
             })
+
+        # 负面预警（G-3）：负向占比超阈值 → 高级别告警
+        neg_ratio = sent["ratios"]["negative"]
+        alert_threshold = target.get("negative_alert_ratio", 0.35)
+        min_negative = target.get("negative_alert_min", 5)
+        if (sent["counts"]["negative"] >= min_negative
+                and neg_ratio >= alert_threshold):
+            examples = "；".join(
+                f"「{e['text'][:40]}」({','.join(e['hits'][:2])})"
+                for e in sent["negative_examples"][:3])
+            drafts.append({
+                "type": "topic_negative_alert",
+                "title": f"舆情负面预警：「{query}」负向占比 {neg_ratio:.0%}",
+                "summary": (f"监测到 {sent['counts']['negative']} 条负面提及"
+                            f"（占比 {neg_ratio:.0%}，阈值 {alert_threshold:.0%}）。"
+                            f"典型负面：{examples}。建议立即响应并归档处置过程。"),
+                "severity": "critical" if neg_ratio >= 0.5 else "high",
+                "confidence": 0.8,
+                "evidence_json": [{
+                    "type": "negative_sentiment", "query": query,
+                    "negative_count": sent["counts"]["negative"],
+                    "negative_ratio": neg_ratio,
+                    "threshold": alert_threshold,
+                    "examples": sent["negative_examples"],
+                    "channels": {c: len(v) for c, v in results.items()},
+                }],
+                "actions_json": [
+                    {"action_type": "investigate", "description": "定位负面来源与传播路径"},
+                    {"action_type": "openflow.automation",
+                     "description": "触发负面舆情响应流程（分群+通知）"},
+                    {"action_type": "mflow.create_content",
+                     "description": "产出澄清/回应内容"},
+                ],
+                "stage_tags_json": ["S2", "voice", "crisis"],
+            })
         if drafts:
             await _save_insights(self.workspace_id, drafts)
 
         EventBus(self.workspace_id).emit("source.collected", {
             "source": "topic", "kind": "topic_monitor",
             "channels": {c: len(v) for c, v in results.items()},
+            "sentiment": sent["ratios"],
         })
         return {"kind": "topic", "query": query,
                 "channels": {c: len(v) for c, v in results.items()},
                 "total_mentions": total, "errors": errors,
+                "sentiment": sent,
                 "insights_created": len(drafts)}
 
     async def _collect_gdelt(self, query: str, target: dict) -> list[dict]:
@@ -405,3 +470,12 @@ def _Metric_stub(workspace_id: str, entity_id: str, value: float, ts,
     """Metric 构造（避免循环 import 的轻量封装）"""
     return Metric(workspace_id=workspace_id, entity_type="site", entity_id=entity_id,
                   metric=metric, value=float(value), dim_json=dim, ts=ts)
+
+
+async def _notify_insight(workspace_id: str, insight_id: str) -> None:
+    """洞察创建 → 订阅推送（失败静默，不阻断主流程）"""
+    try:
+        from .subscriptions import notify_new_insight
+        await notify_new_insight(workspace_id, insight_id)
+    except Exception:
+        pass

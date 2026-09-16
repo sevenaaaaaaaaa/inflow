@@ -124,6 +124,7 @@ class CompetitorModule:
         if not report.passed:
             return None
         saved = await store.create_insight(insight)
+        await _notify(self.workspace_id, saved.id)
         self.bus.emit("insight.created", {
             "insight_id": saved.id, "type": saved.type, "title": saved.title,
         })
@@ -203,3 +204,12 @@ class CompetitorModule:
 def theirs_ranks(theirs: list[dict]) -> list[dict]:
     """辅助：过滤有效排名"""
     return [r for r in theirs if r.get("position") and r.get("keyword")]
+
+
+async def _notify(workspace_id: str, insight_id: str) -> None:
+    """洞察创建 → 订阅推送（失败静默，不阻断主流程）"""
+    try:
+        from .subscriptions import notify_new_insight
+        await notify_new_insight(workspace_id, insight_id)
+    except Exception:
+        pass

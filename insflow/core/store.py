@@ -215,6 +215,23 @@ MIGRATIONS = [
     """
     CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
     """,
+    # V5: 洞察订阅（G-5）——规则 + 渠道 + 过滤
+    """
+    CREATE TABLE IF NOT EXISTS subscriptions (
+        id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL,
+        name TEXT NOT NULL,
+        channels_json TEXT NOT NULL DEFAULT '[]',
+        target_json TEXT NOT NULL DEFAULT '{}',
+        filters_json TEXT NOT NULL DEFAULT '{}',
+        mode TEXT NOT NULL DEFAULT 'immediate',
+        enabled INTEGER NOT NULL DEFAULT 1,
+        created_at TEXT NOT NULL
+    );
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_subscriptions_ws ON subscriptions(workspace_id);
+    """,
 ]
 
 # V3: metrics 幂等去重（R1-4）—— ALTER 语句需要幂等执行（检查列是否存在）

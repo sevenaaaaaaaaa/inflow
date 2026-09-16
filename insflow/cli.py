@@ -600,3 +600,87 @@ def init():
 
 if __name__ == "__main__":
     main()
+
+
+@main.group()
+def subscribe():
+    """洞察订阅推送"""
+    pass
+
+
+@subscribe.command("list")
+@click.option("--workspace", "-w", required=True, help="工作区ID")
+def subscribe_list(workspace: str):
+    """列出订阅"""
+    from .engine.subscriptions import SubscriptionService
+
+    async def _list():
+        subs = await SubscriptionService(workspace).list()
+        if not subs:
+            console.print("[yellow]暂无订阅 —— 用 insflow subscribe add 创建[/]")
+            return
+        table = Table(title="洞察订阅")
+        table.add_column("ID", style="cyan")
+        table.add_column("名称", style="green")
+        table.add_column("渠道", style="magenta")
+        table.add_column("模式", style="yellow")
+        table.add_column("启用", style="blue")
+        for s in subs:
+            table.add_row(s["id"], s["name"], ",".join(s["channels"]),
+                          s["mode"], "✓" if s["enabled"] else "✗")
+        console.print(table)
+
+    run_async(_list())
+
+
+@subscribe.command("add")
+@click.option("--workspace", "-w", required=True, help="工作区ID")
+@click.option("--name", "-n", required=True, help="订阅名称")
+@click.option("--feishu-url", default=None, help="飞书机器人 webhook")
+@click.option("--webhook-url", default=None, help="通用 Webhook URL")
+@click.option("--webhook-secret", default="", help="Webhook HMAC 密钥")
+@click.option("--severity", default=None, help="严重度过滤（逗号分隔：critical,high）")
+@click.option("--type-prefix", default=None, help="类型前缀过滤（逗号分隔）")
+@click.option("--query", default=None, help="关键字过滤")
+@click.option("--mode", default="immediate", type=click.Choice(["immediate", "daily"]))
+def subscribe_add(workspace, name, feishu_url, webhook_url, webhook_secret,
+                  severity, type_prefix, query, mode):
+    """创建订阅（洞察创建即推 / 每日汇总）"""
+    from .engine.subscriptions import SubscriptionError, SubscriptionService
+
+    channels, target = [], {}
+    if feishu_url:
+        channels.append("feishu"); target["feishu_url"] = feishu_url
+    if webhook_url:
+        channels.append("webhook"); target["webhook_url"] = webhook_url
+        target["webhook_secret"] = webhook_secret
+    filters = {}
+    if severity:
+        filters["severity"] = [s.strip() for s in severity.split(",")]
+    if type_prefix:
+        filters["type_prefix"] = [s.strip() for s in type_prefix.split(",")]
+    if query:
+        filters["query"] = query
+
+    async def _create():
+        try:
+            sub = await SubscriptionService(workspace).create(name, channels, target, filters, mode)
+            console.print(f"[green]✓ 订阅已创建 {sub['id']}（{','.join(channels)} / {mode}）[/]")
+        except SubscriptionError as e:
+            console.print(f"[red]{e}[/]"); sys.exit(1)
+
+    run_async(_create())
+
+
+@subscribe.command("rm")
+@click.argument("subscription_id")
+@click.option("--workspace", "-w", required=True, help="工作区ID")
+def subscribe_rm(subscription_id: str, workspace: str):
+    """删除订阅"""
+    from .engine.subscriptions import SubscriptionService
+
+    async def _rm():
+        ok = await SubscriptionService(workspace).delete(subscription_id)
+        console.print(f"[green]已删除[/]" if ok else "[red]订阅不存在[/]")
+
+    run_async(_rm())

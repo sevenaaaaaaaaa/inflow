@@ -96,6 +96,19 @@ async def bootstrap_scheduled_jobs() -> dict:
     scheduler.register_handler("token.audit", _token_audit)
     registered["jobs"].append("token.audit@daily-09:20")
 
+    # 7. 每日 09:25：订阅每日汇总推送（G-5 daily 模式）
+    async def _subscription_daily():
+        from ..engine.subscriptions import SubscriptionService
+        for ws in await store.list_workspaces():
+            try:
+                await SubscriptionService(ws.id).dispatch_daily()
+            except Exception:
+                logger.exception(f"订阅日报推送失败: {ws.id}")
+
+    scheduler.add_job("subscription.daily", "25 9 * * *", "subscription.daily", {})
+    scheduler.register_handler("subscription.daily", _subscription_daily)
+    registered["jobs"].append("subscription.daily@daily-09:25")
+
     scheduler.start()
     logger.info(f"Bootstrap 完成: {registered}")
     return registered

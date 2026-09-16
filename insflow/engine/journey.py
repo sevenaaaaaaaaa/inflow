@@ -171,9 +171,19 @@ class JourneyModule:
             from ..engine.quality_gates import get_quality_gates
             if get_quality_gates().validate(insight).passed:
                 saved = await store.create_insight(insight)
+                await _notify(self.workspace_id, saved.id)
                 self.bus.emit("insight.created", {
                     "insight_id": saved.id, "type": saved.type,
                 })
                 insights.append(saved)
 
         return insights
+
+
+async def _notify(workspace_id: str, insight_id: str) -> None:
+    """洞察创建 → 订阅推送（失败静默，不阻断主流程）"""
+    try:
+        from .subscriptions import notify_new_insight
+        await notify_new_insight(workspace_id, insight_id)
+    except Exception:
+        pass

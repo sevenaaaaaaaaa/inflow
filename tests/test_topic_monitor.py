@@ -117,3 +117,70 @@ class TestTopicMonitor:
     async def test_topic_kind_registered(self, env):
         from insflow.engine.monitors import MonitorService as MS
         assert "topic" in MS.KINDS
+
+
+class TestNegativeAlert:
+    async def test_negative_alert_triggered(self, env, monkeypatch):
+        """负向占比超阈值 → topic_negative_alert（high/critical）"""
+        svc = env["service"]
+        m = await svc.create("topic", {
+            "query": "某品牌", "channels": ["news"], "min_mentions": 5,
+            "negative_alert_ratio": 0.3, "negative_alert_min": 3,
+        })
+
+        import httpx
+        negative_articles = [
+            {"title": "某品牌产品质量太差，已申请退款", "domain": "n1.com"},
+            {"title": "垃圾服务，客服态度糟糕", "domain": "n2.com"},
+            {"title": "某品牌涉嫌虚假宣传，用户维权", "domain": "n3.com"},
+            {"title": "某品牌发布会顺利举行", "domain": "n4.com"},
+            {"title": "某品牌获行业奖项", "domain": "n5.com"},
+        ]
+
+        class FakeResp:
+            def raise_for_status(self): pass
+            def json(self): return {"articles": negative_articles}
+
+        class FakeClient:
+            async def __aenter__(self): return self
+            async def __aexit__(self, *a): return None
+            async def get(self, *a, **kw): return FakeResp()
+
+        monkeypatch.setattr(httpx, "AsyncClient", lambda **kw: FakeClient())
+
+        result = await svc.run(m["id"])
+        assert result["sentiment"]["counts"]["negative"] >= 3
+        assert result["sentiment"]["ratios"]["negative"] >= 0.3
+
+        from insflow.core.store import get_store
+        insights = await (await get_store()).list_insights("test-ws")
+        types = {i.type for i in insights}
+        assert "topic_negative_alert" in types
+        alert = next(i for i in insights if i.type == "topic_negative_alert")
+        assert alert.severity.value in ("high", "critical")
+
+    async def test_no_alert_below_threshold(self, env, monkeypatch):
+        svc = env["service"]
+        m = await svc.create("topic", {"query": "x", "channels": ["news"],
+                                       "min_mentions": 3, "negative_alert_min": 10})
+
+        import httpx
+
+        class FakeResp:
+            def raise_for_status(self): pass
+            def json(self): return {"articles": [
+                {"title": "不错的产品", "domain": "a.com"},
+                {"title": "很好用", "domain": "b.com"},
+                {"title": "推荐", "domain": "c.com"},
+            ]}
+
+        class FakeClient:
+            async def __aenter__(self): return self
+            async def __aexit__(self, *a): return None
+            async def get(self, *a, **kw): return FakeResp()
+
+        monkeypatch.setattr(httpx, "AsyncClient", lambda **kw: FakeClient())
+        result = await svc.run(m["id"])
+        from insflow.core.store import get_store
+        insights = await (await get_store()).list_insights("test-ws")
+        assert not any(i.type == "topic_negative_alert" for i in insights)
