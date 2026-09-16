@@ -108,13 +108,17 @@ class OnboardingService:
         if "access_token" not in token_data:
             return {"ok": False, "error": f"token 交换失败: {token_data.get('error_description', token_data)}"}
 
-        # 凭据入保险库（只存，不回显）
+        # 凭据入保险库（只存，不回显；带过期时间供自动轮换）
         vault = get_vault()
         vault_key = f"{provider}_oauth_tokens"
+        from datetime import datetime, timedelta, timezone
+        expires_in = int(token_data.get("expires_in", 3600))
         vault.set(vault_key, encode_json({
             "access_token": token_data["access_token"],
             "refresh_token": token_data.get("refresh_token", ""),
-            "expires_in": token_data.get("expires_in", 3600),
+            "expires_in": expires_in,
+            "expires_at": (datetime.now(timezone.utc)
+                           + timedelta(seconds=expires_in)).isoformat(),
             "workspace_id": self.workspace_id,
         }))
         vault.save()

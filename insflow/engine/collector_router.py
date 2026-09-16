@@ -113,15 +113,14 @@ class CollectorRouter:
 
     async def run_keyword(self, monitor_id: str, target: dict) -> dict:
         site = _require(target, "site", "先完成 GSC 授权（接入向导）")
-        tokens = _vault_json("gsc_oauth_tokens")
-        if not tokens.get("access_token"):
-            raise RuntimeError("GSC 未授权（接入向导未完成）")
+        from .token_manager import TokenManager
+        token = TokenManager(self.workspace_id).ensure_fresh("gsc")
 
         plugin = _load_source_plugin("gsc")
         result = await plugin.collect(CollectContext(
             workspace_id=self.workspace_id, monitor_id=monitor_id,
             config={
-                "access_token": tokens["access_token"],
+                "access_token": token,
                 "site_url": site,
                 "dimension": "query",
                 "row_limit": target.get("limit", 50),
@@ -203,15 +202,14 @@ class CollectorRouter:
         if not steps:
             raise ValueError("journey 监控缺少 target.steps")
         property_id = _require(target, "property_id")
-        tokens = _vault_json("ga4_oauth_tokens")
-        if not tokens.get("access_token"):
-            raise RuntimeError("GA4 未授权（接入向导未完成）")
+        from .token_manager import TokenManager
+        token = TokenManager(self.workspace_id).ensure_fresh("ga4")
 
         plugin = _load_source_plugin("ga4")
         result = await plugin.collect(CollectContext(
             workspace_id=self.workspace_id, monitor_id=monitor_id,
             config={
-                "access_token": tokens["access_token"],
+                "access_token": token,
                 "property_id": property_id,
                 "metrics": ["eventCount"],
                 "dimensions": ["eventName"],
