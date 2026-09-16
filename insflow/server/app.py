@@ -237,8 +237,8 @@ async def export_branded_report(workspace_id: str, data: WhiteLabelExportRequest
 
 class WorkspaceCreateWithPlan(BaseModel):
     name: str
-    stage: Optional[str] = "S0"
-    plan: Optional[str] = None
+    stage: str = "S0"
+    plan: str | None = None
 
 
 # 原工作区创建端点升级：云托管建租户时按套餐校验 workspace 数上限
@@ -256,7 +256,7 @@ async def create_workspace(data: WorkspaceCreateWithPlan):
     store = await get_store()
     ws = Workspace(
         name=data.name,
-        stage=WorkspaceStage(data.stage or "S0"),
+        stage=WorkspaceStage(data.stage),
     )
     if data.plan:
         ws.settings_json = {"plan": data.plan}
