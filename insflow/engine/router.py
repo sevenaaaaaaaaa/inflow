@@ -5,9 +5,8 @@
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Optional
 
-from ..core.entities import Insight, Metric
+from ..core.entities import Metric
 
 
 @dataclass
@@ -67,7 +66,7 @@ class ModelRouter:
         """注册模型"""
         self._models[model.id] = model
 
-    def get(self, model_id: str) -> Optional[InsightModel]:
+    def get(self, model_id: str) -> InsightModel | None:
         """获取模型"""
         return self._models.get(model_id)
 
@@ -94,7 +93,7 @@ class ModelRouter:
 
 
 # 全局实例
-_model_router: Optional[ModelRouter] = None
+_model_router: ModelRouter | None = None
 
 _BUILTIN_MODELS_LOADED = False
 

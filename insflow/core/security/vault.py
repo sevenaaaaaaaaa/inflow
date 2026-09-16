@@ -3,17 +3,15 @@
 AES-GCM 加密落盘，主密钥 INSFLOW_MASTER_KEY（环境变量，未设则 fail-closed）
 """
 
+import base64
 import json
 import os
-import base64
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Optional
 
-from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2
-
 
 # 默认保险库路径
 DEFAULT_VAULT_PATH = Path(__file__).parent.parent.parent.parent / "data" / "vault.json"
@@ -36,9 +34,9 @@ class Vault:
     主密钥从环境变量 INSFLOW_MASTER_KEY 派生。
     """
 
-    def __init__(self, vault_path: Optional[Path] = None):
+    def __init__(self, vault_path: Path | None = None):
         self.vault_path = vault_path or DEFAULT_VAULT_PATH
-        self._master_key: Optional[bytes] = None
+        self._master_key: bytes | None = None
         self._data: dict = {}
 
     def _get_master_key(self) -> bytes:
@@ -114,7 +112,7 @@ class Vault:
 
         vault_content = {
             "version": 1,
-            "updated_at": datetime.now(timezone.utc).isoformat(),
+            "updated_at": datetime.now(UTC).isoformat(),
             "credentials": encrypted_data,
         }
 
@@ -123,7 +121,7 @@ class Vault:
         tmp_path.write_text(json.dumps(vault_content, indent=2))
         tmp_path.rename(self.vault_path)
 
-    def get(self, key: str) -> Optional[str]:
+    def get(self, key: str) -> str | None:
         """获取凭据"""
         return self._data.get(key)
 
@@ -150,7 +148,7 @@ class Vault:
 
 
 # 全局实例
-_vault: Optional[Vault] = None
+_vault: Vault | None = None
 
 
 def get_vault() -> Vault:

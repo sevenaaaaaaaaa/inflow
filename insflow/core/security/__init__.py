@@ -1,7 +1,7 @@
 """Insight Flow 安全模块"""
 
+from .quota import CircuitBreaker, QuotaLedger, get_quota_ledger
 from .vault import Vault, get_vault
-from .quota import QuotaLedger, get_quota_ledger, CircuitBreaker
 
 __all__ = [
     "Vault",

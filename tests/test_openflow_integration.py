@@ -8,7 +8,6 @@ import pytest
 
 from insflow.actions.router import (
     ActionContext,
-    ActionResult,
     GenericWebhookAdapter,
     OpenFlowWebhookAdapter,
     get_action_router,

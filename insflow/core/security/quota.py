@@ -3,13 +3,9 @@
 每个 source 实例的配额账本超阈值（金额/次数）自动暂停并告警
 """
 
-import json
-from datetime import datetime, timezone, timedelta
+from datetime import UTC, datetime, timedelta
 from enum import Enum
 from pathlib import Path
-from typing import Optional
-
-import aiosqlite
 
 
 class CircuitState(str, Enum):
@@ -47,12 +43,12 @@ class CircuitBreaker:
         self.state = CircuitState.CLOSED
         self.call_count = 0
         self.total_cost = 0.0
-        self.last_failure: Optional[datetime] = None
-        self.window_start = datetime.now(timezone.utc)
+        self.last_failure: datetime | None = None
+        self.window_start = datetime.now(UTC)
 
     def _reset_window_if_needed(self) -> None:
         """重置窗口（如果需要）"""
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         if now - self.window_start > timedelta(hours=self.window_hours):
             self.window_start = now
             self.call_count = 0
@@ -75,7 +71,7 @@ class CircuitBreaker:
             # 检查是否可以尝试恢复
             if self.last_failure:
                 recovery_time = self.last_failure + timedelta(minutes=self.recovery_timeout_minutes)
-                if datetime.now(timezone.utc) > recovery_time:
+                if datetime.now(UTC) > recovery_time:
                     self.state = CircuitState.HALF_OPEN
                     return True
             return False
@@ -110,7 +106,7 @@ class CircuitBreaker:
     def _trip(self, reason: str) -> None:
         """触发熔断"""
         self.state = CircuitState.OPEN
-        self.last_failure = datetime.now(timezone.utc)
+        self.last_failure = datetime.now(UTC)
 
     def to_dict(self) -> dict:
         return {
@@ -131,7 +127,7 @@ class QuotaLedger:
     追踪每个 source 的调用次数和费用。
     """
 
-    def __init__(self, db_path: Optional[Path] = None):
+    def __init__(self, db_path: Path | None = None):
         self._breakers: dict[str, CircuitBreaker] = {}
 
     def get_breaker(self, source_id: str, **kwargs) -> CircuitBreaker:
@@ -163,14 +159,14 @@ class QuotaLedger:
         """重置窗口"""
         if source_id in self._breakers:
             breaker = self._breakers[source_id]
-            breaker.window_start = datetime.now(timezone.utc)
+            breaker.window_start = datetime.now(UTC)
             breaker.call_count = 0
             breaker.total_cost = 0.0
             breaker.state = CircuitState.CLOSED
 
 
 # 全局实例
-_quota_ledger: Optional[QuotaLedger] = None
+_quota_ledger: QuotaLedger | None = None
 
 
 def get_quota_ledger() -> QuotaLedger:

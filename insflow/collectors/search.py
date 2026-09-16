@@ -6,9 +6,8 @@ Bing 2025-08 退役、Google CSE 2027-01 停服的教训：供应商不可绑定
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import Enum
-from typing import Optional
 
 
 class SearchEngine(str, Enum):
@@ -29,8 +28,8 @@ class SearchQuery:
     language: str = "en"
     num_results: int = 10
     page: int = 1
-    date_from: Optional[str] = None  # YYYY-MM-DD
-    date_to: Optional[str] = None
+    date_from: str | None = None  # YYYY-MM-DD
+    date_to: str | None = None
     extra: dict = field(default_factory=dict)
 
 
@@ -54,7 +53,7 @@ class SearchResponse:
     total_results: int = 0
     search_time_ms: int = 0
     cost: dict = field(default_factory=dict)  # {"units": 0.006, "currency": "USD"}
-    captured_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    captured_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     raw: dict = field(default_factory=dict)  # 原始响应（调试用）
 
     def to_dict(self) -> dict:

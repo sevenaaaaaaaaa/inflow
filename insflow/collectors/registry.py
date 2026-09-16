@@ -3,7 +3,6 @@
 import importlib
 import json
 from pathlib import Path
-from typing import Optional
 
 from .base import SourcePlugin
 
@@ -18,7 +17,7 @@ class Registry:
         """注册插件"""
         self._plugins[plugin.id] = plugin
 
-    def get(self, plugin_id: str) -> Optional[SourcePlugin]:
+    def get(self, plugin_id: str) -> SourcePlugin | None:
         """获取插件"""
         return self._plugins.get(plugin_id)
 
@@ -70,7 +69,7 @@ class Registry:
 
 
 # 全局注册表实例
-_registry: Optional[Registry] = None
+_registry: Registry | None = None
 
 
 def get_registry() -> Registry:

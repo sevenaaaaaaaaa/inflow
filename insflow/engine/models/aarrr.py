@@ -1,7 +1,5 @@
 """内置洞察模型 - AARRR 流量诊断"""
 
-from datetime import datetime, timezone
-from typing import Any
 
 from ..router import InsightModel, ModelContext
 

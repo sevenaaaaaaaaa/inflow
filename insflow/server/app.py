@@ -1,20 +1,16 @@
 """Insight Flow FastAPI 应用"""
 
 from contextlib import asynccontextmanager
-from datetime import datetime
-from typing import Optional
 
 from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
 from ..core.entities import (
     Insight,
     InsightSeverity,
-    InsightStatus,
     Workspace,
     WorkspaceStage,
-    MaturityLevel,
 )
 from ..core.store import get_store
 
@@ -39,7 +35,7 @@ app = FastAPI(
 
 class WorkspaceCreate(BaseModel):
     name: str
-    stage: Optional[str] = "S0"
+    stage: str | None = "S0"
 
 
 class InsightCreate(BaseModel):
@@ -144,8 +140,8 @@ async def get_workspace(workspace_id: str):
 @app.get("/api/v1/insights")
 async def list_insights(
     workspace_id: str = Query(...),
-    status: Optional[str] = Query(None),
-    severity: Optional[str] = Query(None),
+    status: str | None = Query(None),
+    severity: str | None = Query(None),
     limit: int = Query(50, ge=1, le=200),
 ):
     """列出洞察"""
@@ -208,7 +204,7 @@ class ActionDispatchRequest(BaseModel):
     workspace_id: str
     insight_id: str
     action_type: str
-    target_ref: Optional[str] = None
+    target_ref: str | None = None
     params_json: dict = {}
     description: str = ""
     title: str = ""
@@ -273,8 +269,8 @@ class MaturityAssessRequest(BaseModel):
     answers: dict[str, int]
     monthly_sessions: float = 0
     conversion_rate: float = 0.0
-    user_confirmed_stage: Optional[str] = None
-    months_since_launch: Optional[int] = None
+    user_confirmed_stage: str | None = None
+    months_since_launch: int | None = None
 
 
 @app.post("/api/v1/maturity/assess")

@@ -1,16 +1,14 @@
 """测试核心实体和存储"""
 
+
 import pytest
-import asyncio
-from pathlib import Path
 
 from insflow.core.entities import (
-    Workspace,
     Insight,
     InsightSeverity,
     InsightStatus,
+    Workspace,
     WorkspaceStage,
-    MaturityLevel,
 )
 from insflow.core.store import Store
 
@@ -46,7 +44,7 @@ async def test_get_workspace(store):
     """测试获取工作区"""
     ws = Workspace(name="Test")
     ws = await store.create_workspace(ws)
-    
+
     fetched = await store.get_workspace(ws.id)
     assert fetched is not None
     assert fetched.name == "Test"
@@ -57,7 +55,7 @@ async def test_list_workspaces(store):
     """测试列出工作区"""
     await store.create_workspace(Workspace(name="WS1"))
     await store.create_workspace(Workspace(name="WS2"))
-    
+
     workspaces = await store.list_workspaces()
     assert len(workspaces) >= 2
 
@@ -66,7 +64,7 @@ async def test_list_workspaces(store):
 async def test_create_insight(store):
     """测试创建洞察"""
     ws = await store.create_workspace(Workspace(name="Test"))
-    
+
     insight = Insight(
         workspace_id=ws.id,
         type="competitor_move",
@@ -84,7 +82,7 @@ async def test_create_insight(store):
 async def test_list_insights(store):
     """测试列出洞察"""
     ws = await store.create_workspace(Workspace(name="Test"))
-    
+
     for i in range(3):
         await store.create_insight(Insight(
             workspace_id=ws.id,
@@ -92,7 +90,7 @@ async def test_list_insights(store):
             title=f"Insight {i}",
             summary="Test",
         ))
-    
+
     insights = await store.list_insights(ws.id)
     assert len(insights) >= 3
 
@@ -107,7 +105,7 @@ async def test_update_insight_status(store):
         title="Test",
         summary="Test",
     ))
-    
+
     await store.update_insight_status(insight.id, "acknowledged")
     fetched = await store.get_insight(insight.id)
     assert fetched.status == InsightStatus.ACKNOWLEDGED

@@ -14,8 +14,7 @@ import json
 import os
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
-from typing import Optional
+from datetime import UTC, datetime
 
 import httpx
 
@@ -130,7 +129,7 @@ class GenericWebhookAdapter(ActionAdapter):
             "action": action.get("action_type", self.action_type),
             "description": action.get("description", ""),
             "data": params.get("data", {}),
-            "ts": datetime.now(timezone.utc).isoformat(),
+            "ts": datetime.now(UTC).isoformat(),
         }
         raw = json.dumps(payload, ensure_ascii=False).encode()
         headers = {"Content-Type": "application/json"}
@@ -160,7 +159,7 @@ class ActionRouter:
     def register(self, adapter: ActionAdapter) -> None:
         self._adapters[adapter.action_type] = adapter
 
-    def get(self, action_type: str) -> Optional[ActionAdapter]:
+    def get(self, action_type: str) -> ActionAdapter | None:
         return self._adapters.get(action_type)
 
     def list_types(self) -> list[str]:
@@ -196,14 +195,17 @@ class ActionRouter:
 
 
 # 全局实例
-_router: Optional[ActionRouter] = None
+_router: ActionRouter | None = None
 
 
 def get_action_router() -> ActionRouter:
     """获取全局动作路由（含内置适配器）"""
     global _router
     if _router is None:
+        from .notify import FeishuNotifyAdapter, SlackNotifyAdapter
         _router = ActionRouter()
         _router.register(OpenFlowWebhookAdapter())
         _router.register(GenericWebhookAdapter())
+        _router.register(FeishuNotifyAdapter())
+        _router.register(SlackNotifyAdapter())
     return _router

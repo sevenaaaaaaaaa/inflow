@@ -1,7 +1,7 @@
 """Serper.dev Google SERP API 适配器"""
 
+
 import httpx
-from typing import Any
 
 from insflow.collectors.base import CollectContext, CollectResult, SourcePlugin
 from insflow.collectors.search import (

@@ -6,8 +6,9 @@
 使用纯 httpx 调用 GA4 Data API v1beta REST 接口
 """
 
-import httpx
 from datetime import date, timedelta
+
+import httpx
 
 from insflow.collectors.base import CollectContext, CollectResult, SourcePlugin
 

@@ -1,8 +1,7 @@
 """Insight Flow 核心实体模型定义"""
 
-from datetime import datetime, timezone
+from datetime import datetime
 from enum import Enum
-from typing import Optional
 
 from pydantic import BaseModel, Field
 
@@ -104,7 +103,7 @@ class Monitor(BaseModel):
     kind: str  # keyword | competitor_site | brand_mention | journey
     target_json: dict = Field(default_factory=dict)
     schedule_cron: str = "0 */6 * * *"  # 默认每6小时
-    last_run_at: Optional[datetime] = None
+    last_run_at: datetime | None = None
     state: MonitorState = MonitorState.IDLE
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
@@ -135,7 +134,7 @@ class Metric(BaseModel):
 class InsightAction(BaseModel):
     """洞察推荐动作"""
     action_type: str  # mflow.create_content | openflow.automation | webhook
-    target_ref: Optional[str] = None
+    target_ref: str | None = None
     params_json: dict = Field(default_factory=dict)
     description: str = ""
 
@@ -155,7 +154,7 @@ class Insight(BaseModel):
     stage_tags_json: list[str] = Field(default_factory=list)
     status: InsightStatus = InsightStatus.NEW
     created_at: datetime = Field(default_factory=datetime.utcnow)
-    verified_at: Optional[datetime] = None
+    verified_at: datetime | None = None
 
 
 class Action(BaseModel):
@@ -164,12 +163,12 @@ class Action(BaseModel):
     workspace_id: str
     insight_id: str
     action_type: str
-    target_ref: Optional[str] = None
+    target_ref: str | None = None
     params_json: dict = Field(default_factory=dict)
     state: ActionState = ActionState.PENDING
-    dispatched_at: Optional[datetime] = None
+    dispatched_at: datetime | None = None
     result_json: dict = Field(default_factory=dict)
-    verify_window_until: Optional[datetime] = None
+    verify_window_until: datetime | None = None
     baseline_json: dict = Field(default_factory=dict)
     created_at: datetime = Field(default_factory=datetime.utcnow)
 

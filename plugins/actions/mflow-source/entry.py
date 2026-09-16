@@ -3,9 +3,9 @@
 将 Insight Flow 的洞察推送到 MFlow 的信号选题流中。
 """
 
+from datetime import UTC, datetime
+
 import httpx
-from datetime import datetime, timezone
-from typing import Any
 
 from insflow.collectors.base import CollectContext, CollectResult, SourcePlugin
 
@@ -67,7 +67,7 @@ class MFlowSourcePlugin(SourcePlugin):
             "confidence": insight.get("confidence", 0.5),
             "tags": insight.get("stage_tags_json", []),
             "actions": insight.get("actions_json", []),
-            "captured_at": datetime.now(timezone.utc).isoformat(),
+            "captured_at": datetime.now(UTC).isoformat(),
         }
 
         # 推送到 MFlow 的 source 信号接口

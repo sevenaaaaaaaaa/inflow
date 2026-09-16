@@ -5,13 +5,11 @@ DM-4: 阶段判定引擎（综合成熟度/流量/转化/用户确认 → S0–S
 DM-3: 《数据成熟度报告》生成（雷达图数据 + 五级定位 + Top5 补课清单）
 """
 
-import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
-from ..core.entities import MaturityLevel, Workspace, WorkspaceStage
-from ..core.files import EventBus, ReportStore, atomic_write_json
+from ..core.entities import MaturityLevel, WorkspaceStage
+from ..core.files import EventBus, ReportStore
 from ..core.store import get_store
-
 
 # ========== DM-1: 成熟度评估问卷定义（5 维度 × 6 题，共 30 题）==========
 # 每题 0–3 分：0=无，1=基础，2=进阶，3=成熟
@@ -213,7 +211,7 @@ class MaturityEngine:
 
     def build_report(self, score_result: dict, stage_result: dict) -> str:
         """生成《数据成熟度报告》Markdown（雷达数据 + 五级定位 + Top5 补课清单）"""
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         radar = score_result["radar"]
         level = score_result["level"]
 

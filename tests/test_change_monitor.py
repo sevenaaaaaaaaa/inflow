@@ -9,8 +9,8 @@ from insflow.engine.change_monitor import ChangeMonitor, extract_prices
 async def monitor(tmp_path, monkeypatch):
     """变更监控（数据目录与全局 store 重定向到临时目录）"""
     import insflow.core.files as files_mod
-    from insflow.core.store import Store, reset_store
     from insflow.core.entities import Workspace
+    from insflow.core.store import Store, reset_store
 
     monkeypatch.setattr(files_mod, "DATA_DIR", tmp_path)
 

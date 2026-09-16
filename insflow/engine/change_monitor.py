@@ -4,13 +4,12 @@
 快照存 data/snapshots/{workspace}/{monitor_id}/YYYY-MM-DD/content.html
 """
 
-import re
 import difflib
-from datetime import datetime, timezone
+import re
 
+from ..core.entities import Insight
 from ..core.files import EventBus, SnapshotStore
 from ..core.store import get_store
-from ..core.entities import Insight, InsightAction
 
 # 价格数字模式（$49 / ¥499 / 99 USD / $1,299.00 等）
 PRICE_PATTERN = re.compile(

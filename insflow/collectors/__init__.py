@@ -1,11 +1,11 @@
 """Insight Flow 采集器 - Source 插件宿主"""
 
-from .base import SourcePlugin, CollectContext, CollectResult
+from .base import CollectContext, CollectResult, SourcePlugin
 from .registry import Registry, get_registry
 
 __all__ = [
     "SourcePlugin",
-    "CollectContext", 
+    "CollectContext",
     "CollectResult",
     "Registry",
     "get_registry",

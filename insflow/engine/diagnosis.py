@@ -5,13 +5,13 @@
 """
 
 import statistics
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from ..core.entities import Insight, InsightAction
 from ..core.files import EventBus, ReportStore
 from ..core.store import get_store
 from ..engine.quality_gates import get_quality_gates
-from ..engine.router import get_model_router, ModelContext
+from ..engine.router import ModelContext, get_model_router
 
 
 class DiagnosisEngine:
@@ -196,7 +196,7 @@ class DiagnosisEngine:
             "insights_created": len(saved_ids),
             "insight_ids": saved_ids,
             "quality_gate_failed": failed,
-            "ran_at": datetime.now(timezone.utc).isoformat(),
+            "ran_at": datetime.now(UTC).isoformat(),
         }
 
         # 6. 诊断报告落盘（报告即文件）
@@ -244,12 +244,12 @@ class DiagnosisEngine:
         failed: list[dict],
     ) -> str:
         """渲染诊断报告 Markdown"""
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         lines = [
-            f"# 流量诊断报告",
+            "# 流量诊断报告",
             "",
-            f"| 项 | 内容 |",
-            f"|---|---|",
+            "| 项 | 内容 |",
+            "|---|---|",
             f"| 工作区 | {self.workspace_id} |",
             f"| 生成时间 | {now.strftime('%Y-%m-%d %H:%M UTC')} |",
             f"| AARRR 映射 | {' / '.join(v['name'] for v in aarrr.values())} |",

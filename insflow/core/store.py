@@ -1,21 +1,14 @@
 """Insight Flow SQLite 存储层"""
 
 import json
-import os
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Optional
 
 import aiosqlite
 
 from .entities import (
     Action,
-    Feedback,
     Insight,
-    Metric,
-    Monitor,
-    RawRecord,
-    Source,
     Workspace,
 )
 
@@ -165,9 +158,9 @@ def to_json(value) -> str:
 class Store:
     """SQLite 存储层"""
 
-    def __init__(self, db_path: Optional[Path] = None):
+    def __init__(self, db_path: Path | None = None):
         self.db_path = db_path or DEFAULT_DB_PATH
-        self._db: Optional[aiosqlite.Connection] = None
+        self._db: aiosqlite.Connection | None = None
 
     async def connect(self):
         """连接数据库"""
@@ -198,7 +191,7 @@ class Store:
             raise RuntimeError("Database not connected")
         return await self._db.execute(query, params)
 
-    async def _fetchone(self, query: str, params: tuple = ()) -> Optional[dict]:
+    async def _fetchone(self, query: str, params: tuple = ()) -> dict | None:
         """获取单条记录"""
         cursor = await self._execute(query, params)
         row = await cursor.fetchone()
@@ -215,19 +208,19 @@ class Store:
     async def create_workspace(self, ws: Workspace) -> Workspace:
         """创建工作区"""
         ws.id = ws.id or generate_id()
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         ws.created_at = now
         ws.updated_at = now
         await self._execute(
             """INSERT INTO workspaces (id, name, stage, maturity_level, settings_json, created_at, updated_at)
                VALUES (?, ?, ?, ?, ?, ?, ?)""",
-            (ws.id, ws.name, ws.stage.value, ws.maturity_level.value, 
+            (ws.id, ws.name, ws.stage.value, ws.maturity_level.value,
              to_json(ws.settings_json), ws.created_at.isoformat(), ws.updated_at.isoformat())
         )
         await self._db.commit()
         return ws
 
-    async def get_workspace(self, workspace_id: str) -> Optional[Workspace]:
+    async def get_workspace(self, workspace_id: str) -> Workspace | None:
         """获取工作区"""
         row = await self._fetchone("SELECT * FROM workspaces WHERE id = ?", (workspace_id,))
         if row:
@@ -246,7 +239,7 @@ class Store:
 
     async def update_workspace(self, ws: Workspace) -> Workspace:
         """更新工作区（成熟度引擎写回 stage/maturity_level 等）"""
-        ws.updated_at = datetime.now(timezone.utc)
+        ws.updated_at = datetime.now(UTC)
         await self._execute(
             """UPDATE workspaces
                SET name = ?, stage = ?, maturity_level = ?, settings_json = ?, updated_at = ?
@@ -262,7 +255,7 @@ class Store:
     async def create_insight(self, insight: Insight) -> Insight:
         """创建洞察"""
         insight.id = insight.id or generate_id()
-        insight.created_at = datetime.now(timezone.utc)
+        insight.created_at = datetime.now(UTC)
         await self._execute(
             """INSERT INTO insights (id, workspace_id, type, title, summary, severity, confidence,
                evidence_json, models_json, actions_json, stage_tags_json, status, created_at)
@@ -282,7 +275,7 @@ class Store:
         row["actions_json"] = json.loads(row["actions_json"]) if row["actions_json"] else []
         return Insight(**row)
 
-    async def get_insight(self, insight_id: str) -> Optional[Insight]:
+    async def get_insight(self, insight_id: str) -> Insight | None:
         """获取洞察"""
         row = await self._fetchone("SELECT * FROM insights WHERE id = ?", (insight_id,))
         if row:
@@ -290,10 +283,10 @@ class Store:
         return None
 
     async def list_insights(
-        self, 
+        self,
         workspace_id: str,
-        status: Optional[str] = None,
-        severity: Optional[str] = None,
+        status: str | None = None,
+        severity: str | None = None,
         limit: int = 50
     ) -> list[Insight]:
         """列出洞察"""
@@ -324,7 +317,7 @@ class Store:
     async def create_action(self, action: Action) -> Action:
         """创建动作"""
         action.id = action.id or generate_id()
-        action.created_at = datetime.now(timezone.utc)
+        action.created_at = datetime.now(UTC)
         await self._execute(
             """INSERT INTO actions (id, workspace_id, insight_id, action_type, target_ref,
                params_json, state, dispatched_at, result_json, verify_window_until, baseline_json, created_at)
@@ -339,7 +332,7 @@ class Store:
         await self._db.commit()
         return action
 
-    async def list_actions(self, workspace_id: str, insight_id: Optional[str] = None) -> list[Action]:
+    async def list_actions(self, workspace_id: str, insight_id: str | None = None) -> list[Action]:
         """列出动作"""
         query = "SELECT * FROM actions WHERE workspace_id = ?"
         params = [workspace_id]
@@ -352,7 +345,7 @@ class Store:
 
 
 # 全局存储实例
-_store: Optional[Store] = None
+_store: Store | None = None
 
 
 async def get_store() -> Store:
@@ -373,7 +366,7 @@ async def close_store() -> None:
         _store = None
 
 
-def reset_store(store: Optional[Store]) -> None:
+def reset_store(store: Store | None) -> None:
     """替换全局 store（测试隔离用）"""
     global _store
     _store = store

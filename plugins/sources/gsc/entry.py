@@ -5,8 +5,9 @@
 使用纯 httpx 调用（不依赖 google-api-python-client，保持轻依赖家族哲学）
 """
 
-import httpx
 from datetime import date, timedelta
+
+import httpx
 
 from insflow.collectors.base import CollectContext, CollectResult, SourcePlugin
 

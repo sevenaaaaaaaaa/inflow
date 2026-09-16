@@ -6,14 +6,12 @@ MCP Server 骨架（stdio 传输）
 
 import asyncio
 import json
-from typing import Any, Optional
 
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
-from mcp.types import Tool, TextContent
+from mcp.types import TextContent, Tool
 
 from ..core.store import get_store
-
 
 # 创建 MCP Server 实例
 server = Server("insight-flow")

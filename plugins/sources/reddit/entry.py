@@ -4,9 +4,9 @@
 免费 API，需要 OAuth2 认证
 """
 
+from datetime import UTC, datetime
+
 import httpx
-from datetime import datetime, timezone
-from typing import Any
 
 from insflow.collectors.base import CollectContext, CollectResult, SourcePlugin
 
@@ -19,11 +19,11 @@ class RedditProvider:
 
     def __init__(self):
         self._token: str = ""
-        self._token_expires: datetime = datetime.min.replace(tzinfo=timezone.utc)
+        self._token_expires: datetime = datetime.min.replace(tzinfo=UTC)
 
     async def _get_token(self, config: dict) -> str:
         """获取 OAuth2 访问令牌"""
-        if self._token and datetime.now(timezone.utc) < self._token_expires:
+        if self._token and datetime.now(UTC) < self._token_expires:
             return self._token
 
         client_id = config.get("client_id", "")
@@ -49,8 +49,8 @@ class RedditProvider:
 
         self._token = token_data["access_token"]
         # Token 有效期 24 小时，提前 1 小时刷新
-        self._token_expires = datetime.now(timezone.utc).replace(
-            hour=datetime.now(timezone.utc).hour + 23
+        self._token_expires = datetime.now(UTC).replace(
+            hour=datetime.now(UTC).hour + 23
         )
         return self._token
 

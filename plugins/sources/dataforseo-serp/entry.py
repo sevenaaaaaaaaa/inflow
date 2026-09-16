@@ -1,8 +1,8 @@
 """DataForSEO SERP API 适配器"""
 
-import httpx
 import base64
-from typing import Any
+
+import httpx
 
 from insflow.collectors.base import CollectContext, CollectResult, SourcePlugin
 from insflow.collectors.search import (

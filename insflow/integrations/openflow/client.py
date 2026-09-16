@@ -12,7 +12,7 @@ import hashlib
 import hmac
 import json
 import os
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import httpx
 
@@ -87,6 +87,6 @@ class OpenFlowClient:
             "severity": insight.get("severity", "medium"),
             "confidence": insight.get("confidence", 0.5),
             "source_system": "insight-flow",
-            "captured_at": datetime.now(timezone.utc).isoformat(),
+            "captured_at": datetime.now(UTC).isoformat(),
         }
         return await self.push_inbound(connector_id, event_payload, "cdp_event")

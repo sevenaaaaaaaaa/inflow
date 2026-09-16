@@ -12,10 +12,9 @@ data/
 import json
 import os
 import tempfile
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Optional
-
+from typing import Any
 
 # 项目根目录（insflow 包的上上级）
 ROOT_DIR = Path(__file__).parent.parent.parent
@@ -23,7 +22,7 @@ DATA_DIR = ROOT_DIR / "data"
 
 
 def _now() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 class EventBus:
@@ -35,7 +34,7 @@ class EventBus:
     3. 回放（调试与复盘）
     """
 
-    def __init__(self, workspace_id: str = "default", base_dir: Optional[Path] = None):
+    def __init__(self, workspace_id: str = "default", base_dir: Path | None = None):
         self.workspace_id = workspace_id
         base = base_dir or DATA_DIR
         self.events_dir = base / "events" / workspace_id
@@ -76,7 +75,7 @@ class EventBus:
         if not self.events_file.exists():
             return []
         events = []
-        with open(self.events_file, "r", encoding="utf-8") as f:
+        with open(self.events_file, encoding="utf-8") as f:
             for line in f:
                 line = line.strip()
                 if not line:
@@ -96,7 +95,7 @@ class EventBus:
 class ReportStore:
     """报告文件存储"""
 
-    def __init__(self, workspace_id: str, base_dir: Optional[Path] = None):
+    def __init__(self, workspace_id: str, base_dir: Path | None = None):
         self.workspace_id = workspace_id
         self.base = (base_dir or DATA_DIR) / "reports" / workspace_id
         self.base.mkdir(parents=True, exist_ok=True)
@@ -146,7 +145,7 @@ class SnapshotStore:
     data/snapshots/{workspace}/{monitor_id}/YYYY-MM-DD/content.html
     """
 
-    def __init__(self, workspace_id: str, base_dir: Optional[Path] = None):
+    def __init__(self, workspace_id: str, base_dir: Path | None = None):
         self.workspace_id = workspace_id
         self.base = (base_dir or DATA_DIR) / "snapshots" / workspace_id
 

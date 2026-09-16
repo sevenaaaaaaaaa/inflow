@@ -6,8 +6,6 @@
 - 每次迁移写入事件流
 """
 
-from enum import Enum
-from typing import Optional
 
 
 class InvalidTransition(Exception):

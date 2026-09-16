@@ -7,16 +7,13 @@
 - 熔断：每个 source 实例的配额账本超阈值自动暂停并告警
 """
 
-import asyncio
 import logging
-from datetime import datetime, timezone
-from typing import Callable, Optional
+from collections.abc import Callable
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 
 from .files import EventBus
-from .statemachine import MONITOR_MACHINE
 
 logger = logging.getLogger("insflow.scheduler")
 
@@ -180,7 +177,7 @@ class Scheduler:
 
 
 # 全局实例
-_scheduler: Optional[Scheduler] = None
+_scheduler: Scheduler | None = None
 
 
 def get_scheduler(workspace_id: str = "default") -> Scheduler:

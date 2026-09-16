@@ -2,15 +2,15 @@
 
 import pytest
 
-from insflow.engine.maturity import MaturityEngine, QUESTIONNAIRE
+from insflow.engine.maturity import QUESTIONNAIRE, MaturityEngine
 
 
 @pytest.fixture
 async def engine(tmp_path, monkeypatch):
     """成熟度引擎（数据目录与全局 store 重定向到临时目录）"""
     import insflow.core.files as files_mod
-    from insflow.core.store import Store, reset_store
     from insflow.core.entities import Workspace
+    from insflow.core.store import Store, reset_store
 
     monkeypatch.setattr(files_mod, "DATA_DIR", tmp_path)
 
@@ -108,8 +108,8 @@ class TestReportAndAssess:
         assert result["score"]["level"] == "L3"
         assert result["report_path"]
 
+        from insflow.core.entities import MaturityLevel
         from insflow.core.store import get_store
-        from insflow.core.entities import MaturityLevel, WorkspaceStage
         store = await get_store()
         ws = await store.get_workspace("test-ws")
         assert ws.maturity_level == MaturityLevel.L3

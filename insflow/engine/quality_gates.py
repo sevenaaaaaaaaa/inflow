@@ -6,9 +6,8 @@
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import Optional
 
-from ..core.entities import Insight, InsightAction, InsightSeverity
+from ..core.entities import Insight, InsightSeverity
 
 
 class GateResult(str, Enum):
@@ -178,7 +177,7 @@ class QualityGates:
 
 
 # 全局实例
-_quality_gates: Optional[QualityGates] = None
+_quality_gates: QualityGates | None = None
 
 
 def get_quality_gates() -> QualityGates:

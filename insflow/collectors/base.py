@@ -2,8 +2,7 @@
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
-from typing import Any, Optional
+from datetime import UTC, datetime
 
 
 @dataclass
@@ -20,7 +19,7 @@ class CollectResult:
     """采集结果信封"""
     source: str
     kind: str
-    captured_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    captured_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     items: list[dict] = field(default_factory=list)
     cost: dict = field(default_factory=dict)  # {"units": 0.06, "currency": "USD"}
     metadata: dict = field(default_factory=dict)

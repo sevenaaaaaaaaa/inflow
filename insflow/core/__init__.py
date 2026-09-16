@@ -1,14 +1,14 @@
 """Insight Flow 核心实体模型"""
 
 from .entities import (
-    Workspace,
-    Source,
-    Monitor,
-    RawRecord,
-    Metric,
-    Insight,
     Action,
     Feedback,
+    Insight,
+    Metric,
+    Monitor,
+    RawRecord,
+    Source,
+    Workspace,
 )
 from .store import Store, get_store
 
