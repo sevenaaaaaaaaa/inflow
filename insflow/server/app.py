@@ -3,6 +3,8 @@
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Query, Request
+
+from .. import __version__
 from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel
 
@@ -36,7 +38,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Insight Flow",
     description="增长情报与策略操作系统 API",
-    version="0.1.0",
+    version=__version__,
     lifespan=lifespan,
     # OpenAPI 3.1（可直接导入 n8n / Dify / Postman 生成节点与 SDK）
     openapi_version="3.1.0",
@@ -163,7 +165,7 @@ async def index():
         <p>增长情报与策略操作系统</p>
         <div class="status">
             <strong>Status:</strong> Running ✅<br>
-            <strong>Version:</strong> 0.1.0<br>
+            <strong>Version:</strong> {__version__}<br>
             <strong>API Docs:</strong> <a href="/docs">/docs</a>
         </div>
         <h2>API Endpoints</h2>
@@ -180,7 +182,7 @@ async def index():
 @app.get("/health")
 async def health():
     """健康检查"""
-    return {"status": "ok", "version": "0.1.0"}
+    return {"status": "ok", "version": __version__}
 
 
 # ========== 工作区 API ==========
