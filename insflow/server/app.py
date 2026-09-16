@@ -75,53 +75,10 @@ AUTH_ENABLED = _os.environ.get("INSFLOW_API_AUTH", "") == "1"
 from ..web.routes import router as console_router  # noqa: E402
 app.include_router(console_router)
 
-
-# ========== 基路径重写（子路径反代，如 https://host/inflow）==========
+# ========== SaaS 多租户守卫（R4-1：INSFLOW_SAAS=1 时控制台要求登录）==========
 
 BASE_PATH = _os.environ.get("INSFLOW_BASE_PATH", "").rstrip("/")
 
-
-def _rewrite_html(text: str) -> str:
-    """把控制台页面里的根路径链接/请求改写到基路径（子路径反代必需）"""
-    if not BASE_PATH:
-        return text
-    for quote in ('"', "'"):
-        text = text.replace(f"href={quote}/", f"href={quote}{BASE_PATH}/")
-        text = text.replace(f"action={quote}/", f"action={quote}{BASE_PATH}/")
-        text = text.replace(f"{quote}/api/v1/", f"{quote}{BASE_PATH}/api/v1/")
-        text = text.replace(f"{quote}/console", f"{quote}{BASE_PATH}/console")
-    return text
-
-
-@app.middleware("http")
-async def base_path_middleware(request, call_next):
-    response = await call_next(request)
-    if not BASE_PATH:
-        return response
-
-    # 1) 跳转 Location 头
-    loc = response.headers.get("location")
-    if loc and loc.startswith("/") and not loc.startswith(BASE_PATH + "/"):
-        response.headers["location"] = BASE_PATH + loc
-
-    # 2) HTML 正文内的链接/请求
-    ctype = response.headers.get("content-type", "")
-    if ctype.startswith("text/html") and hasattr(response, "body_iterator"):
-        body = b"".join([chunk async for chunk in response.body_iterator])
-        text = _rewrite_html(body.decode("utf-8", "ignore"))
-        new_body = text.encode("utf-8")
-        from starlette.responses import Response
-        new = Response(content=new_body, status_code=response.status_code,
-                       media_type="text/html")
-        for k, v in response.raw_headers:
-            if k.lower() in (b"content-length", b"content-type"):
-                continue
-            new.raw_headers.append((k, v))
-        return new
-    return response
-
-
-# ========== SaaS 多租户守卫（R4-1：INSFLOW_SAAS=1 时控制台要求登录）==========
 
 @app.middleware("http")
 async def saas_guard(request, call_next):
@@ -136,9 +93,45 @@ async def saas_guard(request, call_next):
         user = await AccountManager().verify_session(request.cookies.get(COOKIE_NAME))
         if not user:
             return RedirectResponse(
-                f"/console/login?next={quote(path)}", status_code=303)
+                f"{BASE_PATH}/console/login?next={quote(path)}", status_code=303)
         request.state.user = user
     return await call_next(request)
+
+
+# ========== 基路径重写（子路径反代，如 https://host/inflow）==========
+# 注意：本中间件必须最后注册（最外层），才能改写守卫返回的 Location 头。
+
+def _rewrite_html(text: str) -> str:
+    if not BASE_PATH:
+        return text
+    for q in ('"', "'"):
+        text = text.replace(f"href={q}/", f"href={q}{BASE_PATH}/")
+        text = text.replace(f"action={q}/", f"action={q}{BASE_PATH}/")
+        text = text.replace(f"{q}/api/v1/", f"{q}{BASE_PATH}/api/v1/")
+        text = text.replace(f"{q}/console", f"{q}{BASE_PATH}/console")
+    return text
+
+
+@app.middleware("http")
+async def base_path_middleware(request, call_next):
+    response = await call_next(request)
+    if not BASE_PATH:
+        return response
+    loc = response.headers.get("location")
+    if loc and loc.startswith("/") and not loc.startswith(BASE_PATH + "/"):
+        response.headers["location"] = BASE_PATH + loc
+    ctype = response.headers.get("content-type", "")
+    if ctype.startswith("text/html") and hasattr(response, "body_iterator"):
+        from starlette.responses import Response
+        body = b"".join([chunk async for chunk in response.body_iterator])
+        new = Response(content=_rewrite_html(body.decode("utf-8", "ignore")).encode("utf-8"),
+                       status_code=response.status_code, media_type="text/html")
+        for k, v in response.raw_headers:
+            if k.lower() in (b"content-length", b"content-type"):
+                continue
+            new.raw_headers.append((k, v))
+        return new
+    return response
 
 
 async def require_auth(request, action: str):
