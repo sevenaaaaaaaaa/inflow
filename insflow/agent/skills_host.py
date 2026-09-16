@@ -57,7 +57,6 @@ def parse_skill(md_text: str) -> Skill:
 
 def yaml_safe_load(text: str) -> dict:
     """加载 YAML frontmatter（PyYAML 已在依赖中）"""
-    import yaml
     data = yaml.safe_load(text)
     return data if isinstance(data, dict) else {}
 

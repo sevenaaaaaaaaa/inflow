@@ -13,7 +13,6 @@
 """
 
 import os
-from typing import Optional
 
 import httpx
 

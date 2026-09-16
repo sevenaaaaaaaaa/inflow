@@ -6,7 +6,6 @@ ask 问答：工具调用（query_insights / get_insight_detail / ...）+ 引用
 """
 
 import json
-import os
 import re
 
 from .llm import LLMGateway

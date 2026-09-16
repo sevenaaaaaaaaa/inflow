@@ -9,9 +9,9 @@ verify_window_until 到期（默认 14 天）→ feedback.evaluate 拉取对比
 → 写 feedback + 更新模型效果分 → 《验证报告》落盘
 """
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
-from ..core.entities import Action, ActionState, ActionVerdict, Feedback, InsightStatus
+from ..core.entities import Action, ActionVerdict, Feedback, InsightStatus
 from ..core.files import EventBus, ReportStore
 from ..core.statemachine import ACTION_MACHINE
 from ..core.store import get_store
@@ -49,7 +49,7 @@ class FeedbackTracker:
         """
         ACTION_MACHINE.validate(action.state.value if hasattr(action.state, "value") else action.state,
                                 "dispatched")
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         store = await get_store()
         await store.update_action_state(
             action.id,
@@ -196,7 +196,7 @@ class FeedbackTracker:
         final: ActionVerdict,
         current_metrics: dict | None = None,
     ) -> str:
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         verdict_cn = {
             ActionVerdict.EFFECTIVE: "✅ 有效",
             ActionVerdict.NEUTRAL: "➖ 中性",

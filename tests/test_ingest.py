@@ -3,7 +3,6 @@
 import hashlib
 import hmac as hmac_mod
 import json
-from datetime import timedelta, timezone
 
 import pytest
 

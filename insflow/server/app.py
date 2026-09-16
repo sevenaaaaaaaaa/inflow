@@ -224,6 +224,33 @@ async def agent_skills():
     return {"skills": get_skills_host().list_skills()}
 
 
+# ========== MCP over HTTP（OpenFlow McpGuard / 任意 MCP HTTP 客户端）==========
+
+@app.get("/api/v1/mcp/tools")
+async def mcp_list_tools():
+    """MCP 工具清单（10 个，与 stdio server 同源）"""
+    from ..mcp_server.tools import MCP_TOOLS_SCHEMA
+    return {"tools": MCP_TOOLS_SCHEMA, "transport": "http", "server": "insight-flow"}
+
+
+class McpToolCall(BaseModel):
+    name: str
+    arguments: dict = {}
+
+
+@app.post("/api/v1/mcp/tools/call")
+async def mcp_call_tool(data: McpToolCall):
+    """MCP 工具调用（HTTP 传输；多 Key 认证由部署层反代注入）"""
+    import json as jsonlib
+
+    from ..mcp_server.tools import call_mcp_tool
+    output = await call_mcp_tool(data.name, data.arguments)
+    try:
+        return JSONResponse(content=jsonlib.loads(output))
+    except (jsonlib.JSONDecodeError, TypeError):
+        return {"raw": output}
+
+
 # ========== 入站事件（HMAC 验签）==========
 
 @app.post("/api/v1/ingest")

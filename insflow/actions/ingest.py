@@ -13,10 +13,9 @@ import hmac
 import json
 import os
 
-from .feedback_tracker import FeedbackTracker
-from .router import ActionResult
 from ..core.files import EventBus
 from ..core.store import get_store
+from .feedback_tracker import FeedbackTracker
 
 # 支持的签名头（与 OpenFlow 对齐 + 自有出站格式）
 SIGNATURE_HEADERS = ("x-if-signature", "x-inbound-signature")

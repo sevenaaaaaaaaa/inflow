@@ -1,6 +1,5 @@
 """内置洞察模型 - 关键词机会 / 留存健康 / 定价异动 / NPS / 旅程缺口"""
 
-import statistics
 
 from ..router import InsightModel, ModelContext
 

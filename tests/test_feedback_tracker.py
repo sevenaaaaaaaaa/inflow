@@ -1,10 +1,10 @@
 """测试动作验证状态机（基线记录 + 14 天窗口 + 验证报告）"""
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from insflow.actions.feedback_tracker import FeedbackTracker, MAX_RETRIES
+from insflow.actions.feedback_tracker import MAX_RETRIES, FeedbackTracker
 from insflow.core.entities import Action, ActionState, ActionVerdict, Insight, Workspace
 from insflow.core.statemachine import ACTION_MACHINE, InvalidTransition
 from insflow.core.store import Store, get_store, reset_store
@@ -65,7 +65,7 @@ class TestLifecycle:
         assert updated.state == ActionState.DISPATCHED
         assert updated.baseline_json == baseline
         assert updated.dispatched_at is not None
-        remaining = updated.verify_window_until - datetime.now(timezone.utc)
+        remaining = updated.verify_window_until - datetime.now(UTC)
         assert 13 <= remaining.days <= 14
 
     async def test_done_enters_verifying(self, env):
@@ -153,7 +153,7 @@ class TestEvaluation:
 
         await store.update_action_state(
             action.id, "verifying",
-            verify_window_until=datetime.now(timezone.utc) - timedelta(days=1),
+            verify_window_until=datetime.now(UTC) - timedelta(days=1),
         )
 
         async def provider(a):

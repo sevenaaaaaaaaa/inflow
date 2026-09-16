@@ -1,17 +1,12 @@
 """测试内置模型库 v1（8 个模型）"""
 
-from datetime import datetime, timedelta, timezone
-
-import pytest
+from datetime import UTC, datetime, timedelta
 
 from insflow.core.entities import Metric
-from insflow.engine.models.aarrr import AARRRModel
-from insflow.engine.models.competitor_momentum import CompetitorMomentumModel
 from insflow.engine.models.growth_models import (
     JourneyGapModel,
     KeywordOpportunityModel,
     NPSModel,
-    PricingWatchModel,
     RetentionHealthModel,
 )
 from insflow.engine.models.ltv_cac import LTCACModel
@@ -22,7 +17,7 @@ def _metric(metric, value, entity="main", dim=None, ts=None):
     return Metric(
         workspace_id="ws", entity_type="site", entity_id=entity,
         metric=metric, value=float(value), dim_json=dim or {},
-        ts=ts or datetime.now(timezone.utc),
+        ts=ts or datetime.now(UTC),
     )
 
 
@@ -38,7 +33,7 @@ class TestRegistry:
 
 class TestLTCAC:
     async def test_unhealthy(self):
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         ctx = ModelContext(workspace_id="ws", metrics=[
             _metric("ltv", 900, ts=now - timedelta(hours=1)),
             _metric("cac", 400, ts=now),
@@ -48,7 +43,7 @@ class TestLTCAC:
         assert insights[0]["severity"] == "medium"  # 2.25:1
 
     async def test_opportunity(self):
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         ctx = ModelContext(workspace_id="ws", metrics=[
             _metric("ltv", 3000, ts=now - timedelta(hours=1)),
             _metric("cac", 400, ts=now),
@@ -57,7 +52,7 @@ class TestLTCAC:
         assert insights[0]["type"] == "ltv_cac_opportunity"  # 7.5:1
 
     async def test_healthy_no_insight(self):
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         ctx = ModelContext(workspace_id="ws", metrics=[
             _metric("ltv", 1500, ts=now),  # 3.75:1 → 无洞察
             _metric("cac", 400, ts=now),
@@ -67,7 +62,7 @@ class TestLTCAC:
 
 class TestKeywordOpportunity:
     async def test_opportunity_detected(self):
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         ctx = ModelContext(workspace_id="ws", metrics=[
             _metric("gsc_impressions", 800, dim={
                 "key": "增长自动化工具", "position": 8, "ctr": 0.02,
@@ -78,7 +73,7 @@ class TestKeywordOpportunity:
         assert "增长自动化工具" in insights[0]["title"]
 
     async def test_top_rank_skipped(self):
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         ctx = ModelContext(workspace_id="ws", metrics=[
             _metric("gsc_impressions", 800, dim={
                 "key": "kw", "position": 2, "ctr": 0.15,
@@ -89,7 +84,7 @@ class TestKeywordOpportunity:
 
 class TestRetention:
     async def test_decline(self):
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         ctx = ModelContext(workspace_id="ws", metrics=[
             _metric("ga4_retention", 0.50, ts=now - timedelta(days=4)),
             _metric("ga4_retention", 0.44, ts=now - timedelta(days=3)),
@@ -100,7 +95,7 @@ class TestRetention:
         assert insights[0]["severity"] == "high"
 
     async def test_stable_ok(self):
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         ctx = ModelContext(workspace_id="ws", metrics=[
             _metric("ga4_retention", 0.45, ts=now - timedelta(days=i)) for i in range(3, 0, -1)
         ])
@@ -109,7 +104,7 @@ class TestRetention:
 
 class TestNPS:
     async def test_big_drop(self):
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         ctx = ModelContext(workspace_id="ws", metrics=[
             _metric("nps_score", 45, ts=now - timedelta(days=7)),
             _metric("nps_score", 25, ts=now),
@@ -118,7 +113,7 @@ class TestNPS:
         assert insights[0]["type"] == "nps_shift"
 
     async def test_negative(self):
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         ctx = ModelContext(workspace_id="ws", metrics=[
             _metric("nps_score", -5, ts=now),
         ])
@@ -128,7 +123,7 @@ class TestNPS:
 
 class TestJourneyGap:
     async def test_funnel_drop(self):
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         ctx = ModelContext(workspace_id="ws", metrics=[
             _metric("journey_step", 1000, dim={"step_name": "visit_pricing", "step": 1000},
                     ts=now - timedelta(hours=2)),
