@@ -123,6 +123,49 @@ MIGRATIONS = [
         evaluated_at TEXT NOT NULL
     );
     """,
+    # V2: 竞品档案 + 关键词排名追踪 + 旅程事件
+    """
+    CREATE TABLE IF NOT EXISTS competitors (
+        id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL REFERENCES workspaces(id),
+        domain TEXT NOT NULL,
+        name TEXT NOT NULL DEFAULT '',
+        positioning TEXT NOT NULL DEFAULT '',
+        pricing_json TEXT NOT NULL DEFAULT '[]',
+        product_lines_json TEXT NOT NULL DEFAULT '[]',
+        social_json TEXT NOT NULL DEFAULT '{}',
+        monitors_json TEXT NOT NULL DEFAULT '[]',
+        seo_json TEXT NOT NULL DEFAULT '{}',
+        status TEXT NOT NULL DEFAULT 'active',
+        created_at TEXT NOT NULL,
+        UNIQUE(workspace_id, domain)
+    );
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS keyword_ranks (
+        id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL REFERENCES workspaces(id),
+        competitor_domain TEXT NOT NULL,
+        keyword TEXT NOT NULL,
+        position INTEGER,
+        volume INTEGER,
+        url TEXT NOT NULL DEFAULT '',
+        is_mine INTEGER NOT NULL DEFAULT 0,
+        checked_at TEXT NOT NULL
+    );
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS journey_events (
+        id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL REFERENCES workspaces(id),
+        identity TEXT NOT NULL,
+        stage TEXT NOT NULL,
+        event TEXT NOT NULL,
+        props_json TEXT NOT NULL DEFAULT '{}',
+        source TEXT NOT NULL DEFAULT 'openflow',
+        ts TEXT NOT NULL
+    );
+    """,
     # 索引
     """
     CREATE INDEX IF NOT EXISTS idx_sources_workspace ON sources(workspace_id);
@@ -137,6 +180,10 @@ MIGRATIONS = [
     CREATE INDEX IF NOT EXISTS idx_actions_workspace ON actions(workspace_id);
     CREATE INDEX IF NOT EXISTS idx_actions_insight ON actions(insight_id);
     CREATE INDEX IF NOT EXISTS idx_actions_state ON actions(state);
+    CREATE INDEX IF NOT EXISTS idx_competitors_workspace ON competitors(workspace_id);
+    CREATE INDEX IF NOT EXISTS idx_keyword_ranks_ws ON keyword_ranks(workspace_id, competitor_domain);
+    CREATE INDEX IF NOT EXISTS idx_journey_identity ON journey_events(workspace_id, identity);
+    CREATE INDEX IF NOT EXISTS idx_journey_stage ON journey_events(workspace_id, stage);
     """,
 ]
 
@@ -435,6 +482,150 @@ class Store:
             (workspace_id,)
         )
         return {row["verdict"]: row["cnt"] for row in rows}
+
+    # ========== Competitors（M3: 竞品档案）==========
+
+    def _parse_competitor_row(self, row: dict) -> dict:
+        for field in ["pricing_json", "product_lines_json", "social_json",
+                      "monitors_json", "seo_json"]:
+            row[field] = json.loads(row[field]) if row[field] else ([] if field == "pricing_json" else {} if field != "monitors_json" else [])
+        return row
+
+    async def upsert_competitor(self, workspace_id: str, domain: str, profile: dict) -> dict:
+        """创建或更新竞品档案"""
+        existing = await self._fetchone(
+            "SELECT id FROM competitors WHERE workspace_id = ? AND domain = ?",
+            (workspace_id, domain),
+        )
+        now = datetime.now(UTC).isoformat()
+        if existing:
+            fields = []
+            params: list = []
+            mapping = {
+                "name": "name", "positioning": "positioning", "status": "status",
+            }
+            for key, col in mapping.items():
+                if key in profile:
+                    fields.append(f"{col} = ?")
+                    params.append(profile[key])
+            for key, col in [("pricing", "pricing_json"), ("product_lines", "product_lines_json"),
+                             ("social", "social_json"), ("monitors", "monitors_json"),
+                             ("seo", "seo_json")]:
+                if key in profile:
+                    fields.append(f"{col} = ?")
+                    params.append(to_json(profile[key]))
+            params.extend([existing["id"]])
+            await self._execute(
+                f"UPDATE competitors SET {', '.join(fields) if fields else 'name = name'} WHERE id = ?",
+                tuple(params),
+            )
+            await self._db.commit()
+            row = await self._fetchone("SELECT * FROM competitors WHERE id = ?", (existing["id"],))
+            return self._parse_competitor_row(dict(row))
+        else:
+            cid = generate_id()
+            await self._execute(
+                """INSERT INTO competitors (id, workspace_id, domain, name, positioning,
+                   pricing_json, product_lines_json, social_json, monitors_json, seo_json, status, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (cid, workspace_id, domain,
+                 profile.get("name", domain), profile.get("positioning", ""),
+                 to_json(profile.get("pricing", [])),
+                 to_json(profile.get("product_lines", [])),
+                 to_json(profile.get("social", {})),
+                 to_json(profile.get("monitors", [])),
+                 to_json(profile.get("seo", {})),
+                 profile.get("status", "active"), now),
+            )
+            await self._db.commit()
+            row = await self._fetchone("SELECT * FROM competitors WHERE id = ?", (cid,))
+            return self._parse_competitor_row(dict(row))
+
+    async def get_competitor(self, workspace_id: str, domain: str) -> dict | None:
+        row = await self._fetchone(
+            "SELECT * FROM competitors WHERE workspace_id = ? AND domain = ?",
+            (workspace_id, domain),
+        )
+        return self._parse_competitor_row(dict(row)) if row else None
+
+    async def list_competitors(self, workspace_id: str) -> list[dict]:
+        rows = await self._fetchall(
+            "SELECT * FROM competitors WHERE workspace_id = ? ORDER BY created_at",
+            (workspace_id,),
+        )
+        return [self._parse_competitor_row(row) for row in rows]
+
+    # ========== Keyword Ranks（M3: 排名追踪）==========
+
+    async def save_keyword_ranks(self, workspace_id: str, competitor_domain: str,
+                                 ranks: list[dict], checked_at: datetime | None = None) -> int:
+        """批量保存关键词排名快照"""
+        checked_at = (checked_at or datetime.now(UTC)).isoformat()
+        for r in ranks:
+            await self._execute(
+                """INSERT INTO keyword_ranks (id, workspace_id, competitor_domain, keyword,
+                   position, volume, url, is_mine, checked_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (generate_id(), workspace_id, competitor_domain,
+                 r.get("keyword", ""), r.get("position"), r.get("volume", 0),
+                 r.get("url", ""), 1 if r.get("is_mine") else 0, checked_at),
+            )
+        await self._db.commit()
+        return len(ranks)
+
+    async def latest_keyword_ranks(self, workspace_id: str, competitor_domain: str | None = None,
+                                   mine_only: bool = False) -> list[dict]:
+        """最近一次检查的关键词排名"""
+        where = "workspace_id = ?"
+        params: list = [workspace_id]
+        if competitor_domain:
+            where += " AND competitor_domain = ?"
+            params.append(competitor_domain)
+        if mine_only:
+            where += " AND is_mine = 1"
+        rows = await self._fetchall(
+            f"""SELECT * FROM keyword_ranks
+                WHERE {where}
+                ORDER BY checked_at DESC, position ASC""",
+            tuple(params),
+        )
+        # 只取最近一次 checked_at 的数据
+        if not rows:
+            return []
+        latest_ts = rows[0]["checked_at"]
+        return [r for r in rows if r["checked_at"] == latest_ts]
+
+    # ========== Journey Events（M3: 旅程重建数据底座）==========
+
+    async def save_journey_event(self, workspace_id: str, identity: str, stage: str,
+                                 event: str, props: dict | None = None,
+                                 source: str = "openflow", ts: str | None = None) -> str:
+        eid = generate_id()
+        await self._execute(
+            """INSERT INTO journey_events (id, workspace_id, identity, stage, event, props_json, source, ts)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (eid, workspace_id, identity, stage, event,
+             to_json(props or {}), source, ts or datetime.now(UTC).isoformat()),
+        )
+        await self._db.commit()
+        return eid
+
+    async def list_journey_events(self, workspace_id: str, identity: str | None = None,
+                                  stage: str | None = None, limit: int = 500) -> list[dict]:
+        query = "SELECT * FROM journey_events WHERE workspace_id = ?"
+        params: list = [workspace_id]
+        if identity:
+            query += " AND identity = ?"
+            params.append(identity)
+        if stage:
+            query += " AND stage = ?"
+            params.append(stage)
+        query += " ORDER BY ts ASC LIMIT ?"
+        params.append(limit)
+        rows = await self._fetchall(query, tuple(params))
+        for row in rows:
+            row["props_json"] = json.loads(row["props_json"]) if row["props_json"] else {}
+        return rows
 
 
 # 全局存储实例

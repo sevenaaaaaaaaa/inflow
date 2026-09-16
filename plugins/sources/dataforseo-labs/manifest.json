@@ -1,0 +1,18 @@
+{
+  "id": "dataforseo-labs",
+  "type": "source",
+  "name": "DataForSEO Labs（关键词缺口/竞品域名）",
+  "version": "1.0.0",
+  "entry": "entry.py",
+  "permissions": ["network", "credentials:dataforseo"],
+  "config": {
+    "login": {"desc": "DataForSEO login email", "required": true, "secret": false},
+    "password": {"desc": "API password", "required": true, "secret": true}
+  },
+  "provides": {
+    "metrics": ["keyword_gap", "domain_ranks", "domain_intersection"],
+    "engines": ["google"],
+    "latency": "standard",
+    "cost_hint": "按量计费（domain_intersection ~$0.05/次量级）；成本受控需配额账本"
+  }
+}
