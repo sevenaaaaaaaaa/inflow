@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "insflow"
-version = "0.1.0"
+version = "1.0.0"
 description = "Insight Flow - 增长情报与策略操作系统"
 readme = "README.md"
 license = { text = "MIT" }
