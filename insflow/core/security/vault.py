@@ -11,10 +11,19 @@ from pathlib import Path
 
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2
+try:
+    from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC as _PBKDF2
+except ImportError:  # 兼容不同 cryptography 版本命名
+    from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2 as _PBKDF2
 
 # 默认保险库路径
 DEFAULT_VAULT_PATH = Path(__file__).parent.parent.parent.parent / "data" / "vault.json"
+
+
+def _vault_path() -> Path:
+    """运行时推导（测试/私有化可重定向 data 目录）"""
+    from .. import files as files_mod
+    return (files_mod.DATA_DIR or DEFAULT_VAULT_PATH.parent) / "vault.json"
 
 # 密钥派生参数
 SALT_SIZE = 16
@@ -35,7 +44,7 @@ class Vault:
     """
 
     def __init__(self, vault_path: Path | None = None):
-        self.vault_path = vault_path or DEFAULT_VAULT_PATH
+        self.vault_path = vault_path or _vault_path()
         self._master_key: bytes | None = None
         self._data: dict = {}
 
@@ -54,7 +63,7 @@ class Vault:
         # 使用 PBKDF2 从密码派生密钥
         # 注意：生产环境应使用固定的 salt（存储在 vault 文件中）
         salt = os.environ.get("INSFLOW_VAULT_SALT", "insflow-default-salt").encode()
-        kdf = PBKDF2(
+        kdf = _PBKDF2(
             algorithm=hashes.SHA256(),
             length=32,  # AES-256
             salt=salt,
@@ -152,10 +161,11 @@ _vault: Vault | None = None
 
 
 def get_vault() -> Vault:
-    """获取全局保险库实例"""
+    """获取全局保险库实例（DATA_DIR 变化时重建路径）"""
     global _vault
-    if _vault is None:
-        _vault = Vault()
+    target = _vault_path()
+    if _vault is None or _vault.vault_path != target:
+        _vault = Vault(vault_path=target)
         try:
             _vault.load()
         except VaultError:

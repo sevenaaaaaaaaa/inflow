@@ -193,6 +193,78 @@ async def list_workspaces():
     return {"workspaces": [ws.model_dump() for ws in workspaces]}
 
 
+# ========== 接入向导（TD-1，M7）==========
+
+class OAuthStartRequest(BaseModel):
+    provider: str  # gsc | ga4
+
+
+class OAuthExchangeRequest(BaseModel):
+    provider: str
+    code: str
+    state: str
+
+
+class APICredentialRequest(BaseModel):
+    provider: str
+    credential: str
+    site: str = ""
+
+
+@app.post("/api/v1/onboarding/oauth/start")
+async def oauth_start(workspace_id: str, data: OAuthStartRequest):
+    """生成 OAuth 授权跳转 URL（须先配置 GOOGLE_OAUTH_CLIENT_ID）"""
+    from ..engine.onboarding import OnboardingService
+    client_id = _os.environ.get("GOOGLE_OAUTH_CLIENT_ID", "")
+    if not client_id:
+        raise HTTPException(status_code=422, detail="GOOGLE_OAUTH_CLIENT_ID 未配置")
+    base = _os.environ.get("INSFLOW_BASE_URL", "http://localhost:8400").rstrip("/")
+    svc = OnboardingService(workspace_id)
+    return {
+        "auth_url": svc.auth_url(
+            data.provider, client_id,
+            redirect_uri=f"{base}/api/v1/onboarding/oauth/callback",
+        ),
+    }
+
+
+@app.post("/api/v1/onboarding/oauth/callback")
+async def oauth_callback(workspace_id: str, data: OAuthExchangeRequest):
+    """OAuth 回调交换（code → token → 保险库；state 一次性防重放）"""
+    from ..engine.onboarding import OnboardingService
+    client_id = _os.environ.get("GOOGLE_OAUTH_CLIENT_ID", "")
+    client_secret = _os.environ.get("GOOGLE_OAUTH_CLIENT_SECRET", "")
+    if not client_id or not client_secret:
+        raise HTTPException(status_code=422, detail="GOOGLE_OAUTH_CLIENT_ID/SECRET 未配置")
+    base = _os.environ.get("INSFLOW_BASE_URL", "http://localhost:8400").rstrip("/")
+    svc = OnboardingService(workspace_id)
+    result = await svc.exchange_code(
+        data.provider, data.code, data.state, client_id, client_secret,
+        f"{base}/api/v1/onboarding/oauth/callback",
+    )
+    if not result["ok"]:
+        raise HTTPException(status_code=400, detail=result["error"])
+    return result
+
+
+@app.post("/api/v1/onboarding/credential")
+async def save_credential(workspace_id: str, data: APICredentialRequest):
+    """API Key 类凭据直配（CrUX / 手动粘贴 token 等）→ 保险库"""
+    from ..engine.onboarding import OnboardingService
+    svc = OnboardingService(workspace_id)
+    result = await svc.save_api_credential(data.provider, data.credential, data.site)
+    if not result["ok"]:
+        raise HTTPException(status_code=422, detail=result["error"])
+    return result
+
+
+@app.get("/api/v1/onboarding/health")
+async def onboarding_health(workspace_id: str, provider: str = Query(...)):
+    """接入健康检查（DM-2 实测能否拉数）"""
+    from ..engine.onboarding import OnboardingService
+    return await OnboardingService(workspace_id).check_health(provider)
+
+
 # ========== 监控任务（M6）==========
 
 class MonitorCreateRequest(BaseModel):
