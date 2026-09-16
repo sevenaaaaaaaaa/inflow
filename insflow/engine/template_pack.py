@@ -27,7 +27,7 @@ from ..core.store import get_store
 from .dsl_models import get_dsl_registry, validate_dsl
 from .monitors import MonitorService
 
-VALID_KINDS = ("site_change", "keyword", "brand_mention", "journey")
+VALID_KINDS = ("site_change", "keyword", "brand_mention", "topic", "journey")
 
 
 def validate_template(spec: dict) -> list[str]:
