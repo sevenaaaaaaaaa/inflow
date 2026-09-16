@@ -98,21 +98,25 @@ class MonitorService:
         kind = monitor["kind"]
         target = monitor["target_json"]
 
+        from .collector_router import CollectorRouter
+
         if kind == "site_change":
-            # Firecrawl 抓取 → 语义 diff（CI-2）
             url = target.get("url", "")
             if not url:
                 raise ValueError("site_change 监控缺少 target.url")
             markdown = await self._fetch_page(target)
-            monitor_engine = ChangeMonitor(self.workspace_id)
-            return await monitor_engine.check(monitor["id"], url, current_markdown=markdown,
-                                              cost=target.get("_cost"))
+            engine = ChangeMonitor(self.workspace_id)
+            return await engine.check(monitor["id"], url, current_markdown=markdown,
+                                      cost=target.get("_cost"))
 
-        # keyword / brand_mention / journey 的采集由调度器 + source 插件链路处理（M7 扩展点）
-        self.bus.emit("monitor.run_finished", {
-            "monitor_id": monitor["id"], "kind": kind, "note": "kind dispatcher pending",
-        })
-        return {"ok": True, "kind": kind, "detail": "queued for collector"}
+        router = CollectorRouter(self.workspace_id)
+        if kind == "keyword":
+            return await router.run_keyword(monitor["id"], target)
+        if kind == "brand_mention":
+            return await router.run_brand_mention(monitor["id"], target)
+        if kind == "journey":
+            return await router.run_journey(monitor["id"], target)
+        raise ValueError(f"未知监控类型: {kind}")
 
     async def _fetch_page(self, target: dict) -> str:
         """经 Firecrawl 插件抓取页面（配额账本保护）"""
