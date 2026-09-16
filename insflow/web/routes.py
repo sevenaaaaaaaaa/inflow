@@ -43,10 +43,22 @@ async def _default_workspace() -> str:
     return wss[0].id if wss else "default"
 
 
+NAV_AREA = {
+    "dashboard": "overview",
+    "onboarding": "monitor",
+    "monitors": "monitor",
+    "insights": "insight",
+    "reports": "report",
+    "plugins": "ecosystem",
+    "usage": "settings",
+}
+
+
 def _ctx(request: Request, nav: str, workspace_id: str, **extra) -> dict:
     return {
         "request": request,
         "nav": nav,
+        "area": NAV_AREA.get(nav, "overview"),
         "version": __version__,
         "workspace_id": workspace_id,
         **extra,

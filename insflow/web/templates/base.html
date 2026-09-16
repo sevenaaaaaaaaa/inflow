@@ -1,58 +1,196 @@
 <!DOCTYPE html>
-<html lang="zh">
+<html lang="zh-CN">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Insight Flow{% block title %}{% endblock %}</title>
+<title>{% block title %}{% endblock %} | Insight Flow 情报台</title>
+<script>try{var t=localStorage.getItem('if_theme');if(t==='dark')document.documentElement.setAttribute('data-theme','dark');}catch(e){}</script>
 <style>
-  * { box-sizing: border-box; }
-  body { margin: 0; font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; color: #1e293b; background: #f8fafc; display: flex; min-height: 100vh; }
-  aside { width: 220px; background: #0f172a; color: #cbd5e1; padding: 24px 0; flex-shrink: 0; }
-  aside .brand { color: #fff; font-weight: 700; font-size: 18px; padding: 0 24px 20px; }
-  aside .brand small { display: block; color: #64748b; font-weight: 400; font-size: 12px; margin-top: 4px; }
-  aside a { display: block; padding: 10px 24px; color: #cbd5e1; text-decoration: none; font-size: 14px; }
-  aside a:hover, aside a.active { background: #1e293b; color: #60a5fa; }
-  main { flex: 1; padding: 32px 40px; max-width: 1100px; }
-  h1 { font-size: 22px; margin: 0 0 6px; }
-  h2 { font-size: 16px; margin: 28px 0 12px; color: #334155; }
-  .sub { color: #64748b; font-size: 13px; margin-bottom: 24px; }
-  .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 16px; }
-  .card { background: #fff; border: 1px solid #e2e8f0; border-radius: 10px; padding: 18px; }
-  .card .num { font-size: 26px; font-weight: 700; color: #2563eb; }
-  .card .label { color: #64748b; font-size: 12px; margin-top: 4px; }
-  table { width: 100%; border-collapse: collapse; background: #fff; border: 1px solid #e2e8f0; border-radius: 8px; overflow: hidden; font-size: 13px; }
-  th, td { padding: 10px 14px; border-bottom: 1px solid #f1f5f9; text-align: left; }
-  th { background: #f1f5f9; color: #475569; font-weight: 600; }
-  tr:hover td { background: #f8fafc; }
-  .badge { display: inline-block; padding: 2px 10px; border-radius: 999px; font-size: 11px; font-weight: 600; }
-  .b-high { background: #fee2e2; color: #b91c1c; }
-  .b-medium { background: #fef3c7; color: #92400e; }
-  .b-low { background: #e0f2fe; color: #0369a1; }
-  .b-ok { background: #dcfce7; color: #166534; }
-  .b-gray { background: #f1f5f9; color: #64748b; }
-  button { background: #2563eb; color: #fff; border: 0; border-radius: 6px; padding: 6px 14px; font-size: 13px; cursor: pointer; }
-  button.secondary { background: #64748b; }
-  button:hover { opacity: 0.9; }
-  .toolbar { display: flex; gap: 12px; margin-bottom: 16px; align-items: center; }
-  input, select { padding: 8px 12px; border: 1px solid #cbd5e1; border-radius: 6px; font-size: 13px; }
-  .empty { color: #94a3b8; padding: 32px; text-align: center; background: #fff; border: 1px dashed #e2e8f0; border-radius: 8px; }
-  .pct-bar { height: 8px; background: #e2e8f0; border-radius: 4px; width: 120px; display: inline-block; vertical-align: middle; }
-  .pct-fill { height: 8px; border-radius: 4px; background: #2563eb; }
-  pre { background: #0f172a; color: #e2e8f0; padding: 14px; border-radius: 8px; font-size: 12px; overflow-x: auto; }
+/* ── 设计令牌（对齐 OpenFlow 运营台：oklch + 统一字阶/圆角/阴影）── */
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:oklch(96.5% .016 85); --bg-soft:oklch(94% .02 85);
+  --surface:oklch(100% 0 0 / .62); --surface-strong:oklch(100% 0 0 / .88);
+  --fg:oklch(22% .02 70); --muted:oklch(46% .016 70); --faint:oklch(51% .014 75);
+  --border:oklch(86% .014 80); --border-strong:oklch(76% .02 80);
+  --hover:oklch(22% .02 70 / .055); --hover-strong:oklch(22% .02 70 / .11);
+  --accent:oklch(52% .17 258); --accent-strong:oklch(46% .17 258); --accent-soft:oklch(52% .17 258/.12); --on-accent:oklch(100% 0 0);
+  --ok:oklch(58% .17 152); --ok-soft:oklch(58% .17 152/.12);
+  --warn:oklch(66% .15 75); --warn-soft:oklch(66% .15 75/.14);
+  --danger:oklch(55% .2 25); --danger-soft:oklch(55% .2 25/.12);
+  --glass:oklch(100% 0 0 / .5); --glass-bright:oklch(100% 0 0 / .68);
+  --shadow:0 24px 60px -24px oklch(30% .04 80 / .3); --shadow-sm:0 10px 28px -14px oklch(30% .04 80 / .24);
+  --r-lg:26px; --r-md:18px; --r-sm:12px;
+  --chrome-h:56px; --sb-w:236px;
+  --fs-xs:10.5px; --fs-sm:11.5px; --fs-md:12.5px; --fs-lg:13.5px;
+  --fs-xl:15px; --fs-2xl:17px; --fs-3xl:clamp(21px,2.2vw,26px); --fs-metric:30px;
+  --main-max:1240px;
+  --grad:linear-gradient(135deg,oklch(52% .17 258),oklch(58% .16 285));
+  --font-body:-apple-system,BlinkMacSystemFont,"PingFang SC","HarmonyOS Sans SC","MiSans","Segoe UI",system-ui,sans-serif;
+  --font-mono:ui-monospace,'SF Mono','JetBrains Mono',Menlo,monospace;
+  --ease-spring:cubic-bezier(.32,.72,0,1);
+  color-scheme:light;
+}
+[data-theme="dark"]{
+  --bg:oklch(19% .014 70); --bg-soft:oklch(22.5% .014 72);
+  --surface:oklch(27% .016 75 / .55); --surface-strong:oklch(30% .016 75 / .82);
+  --fg:oklch(93% .008 85); --muted:oklch(72% .014 80); --faint:oklch(62% .012 80);
+  --border:oklch(100% 0 0 / .1); --border-strong:oklch(100% 0 0 / .22);
+  --hover:oklch(93% .008 85 / .07); --hover-strong:oklch(93% .008 85 / .13);
+  --accent:oklch(74% .13 258); --accent-strong:oklch(80% .12 258); --accent-soft:oklch(74% .13 258/.15); --on-accent:oklch(16% .03 260);
+  --ok:oklch(74% .15 152); --ok-soft:oklch(74% .15 152/.15);
+  --warn:oklch(76% .13 75); --warn-soft:oklch(76% .13 75/.16);
+  --danger:oklch(72% .16 25); --danger-soft:oklch(72% .16 25/.14);
+  --glass:oklch(30% .014 75 / .5); --glass-bright:oklch(34% .014 75 / .64);
+  --shadow:0 24px 60px -24px oklch(0% 0 0 / .55); --shadow-sm:0 10px 28px -14px oklch(0% 0 0 / .5);
+  --grad:linear-gradient(135deg,oklch(74% .13 258),oklch(70% .14 285));
+  color-scheme:dark;
+}
+body{font-family:var(--font-body); color:var(--fg); background:var(--bg); line-height:1.5; -webkit-font-smoothing:antialiased}
+::selection{background:var(--accent-soft)}
+:focus-visible{outline:2px solid var(--accent); outline-offset:2px; border-radius:8px}
+button{font:inherit; color:inherit; background:none; border:0; cursor:pointer}
+input,select,textarea{font:inherit; color:inherit}
+a{color:var(--accent); text-decoration:none}
+a:hover{text-decoration:underline}
+h1,h2,h3,p{margin:0}
+::-webkit-scrollbar{width:10px;height:10px}
+::-webkit-scrollbar-thumb{background:var(--border-strong); border-radius:99px; border:3px solid transparent; background-clip:padding-box}
+
+/* ── 顶栏 ── */
+#chrome{position:fixed;top:0;left:0;right:0;height:var(--chrome-h);z-index:60;display:flex;align-items:center;gap:8px;padding:0 18px;
+  background:var(--glass-bright); -webkit-backdrop-filter:blur(24px) saturate(170%); backdrop-filter:blur(24px) saturate(170%); border-bottom:1px solid var(--border)}
+.brand{font-weight:800; font-size:var(--fs-2xl); letter-spacing:-.01em; margin-right:10px; display:flex; align-items:baseline; gap:8px}
+.brand small{font-weight:500; font-size:var(--fs-sm); color:var(--faint)}
+.main-tabs{display:flex; gap:2px; flex:1; overflow-x:auto; scrollbar-width:none}
+.main-tabs::-webkit-scrollbar{display:none}
+.main-tab{padding:7px 13px; border-radius:999px; font-size:var(--fs-lg); font-weight:600; color:var(--muted); white-space:nowrap}
+.main-tab:hover{background:var(--hover); text-decoration:none}
+.main-tab.on{background:var(--accent-soft); color:var(--accent-strong)}
+.chrome-actions{display:flex; gap:8px; align-items:center}
+.icon-btn{width:34px;height:34px;border-radius:10px;display:grid;place-items:center;border:1px solid var(--border); background:var(--surface-strong); font-size:var(--fs-xl)}
+.icon-btn:hover{background:var(--hover)}
+
+/* ── 侧栏 ── */
+#sidebar{position:fixed; top:calc(var(--chrome-h) + 14px); left:14px; bottom:14px; width:var(--sb-w); z-index:50;
+  padding:12px 10px; border-radius:var(--r-lg); background:var(--glass); -webkit-backdrop-filter:blur(24px) saturate(170%); backdrop-filter:blur(24px) saturate(170%);
+  border:1px solid var(--border); box-shadow:var(--shadow-sm); overflow:auto}
+.sb-title{font-size:var(--fs-xs); font-weight:700; letter-spacing:.08em; text-transform:uppercase; color:var(--faint); padding:6px 10px 8px}
+.sb-panel{display:none}
+.sb-panel.on{display:block}
+.sb-link{display:flex; align-items:center; gap:9px; padding:9px 11px; border-radius:var(--r-sm); font-size:var(--fs-lg); color:var(--fg); font-weight:500}
+.sb-link:hover{background:var(--hover); text-decoration:none}
+.sb-link.on{background:var(--accent); color:var(--on-accent)}
+.sb-foot{margin-top:14px; padding-top:10px; border-top:1px solid var(--border); font-size:var(--fs-sm); color:var(--faint); padding-left:10px}
+
+/* ── 主区 ── */
+main{margin:calc(var(--chrome-h) + 24px) 24px 40px calc(var(--sb-w) + 42px); max-width:var(--main-max)}
+h1.page{font-size:var(--fs-3xl); font-weight:800; letter-spacing:-.02em; margin-bottom:6px}
+.sub{color:var(--muted); font-size:var(--fs-md); margin-bottom:20px}
+h2.sec{font-size:var(--fs-xl); font-weight:700; margin:26px 0 12px; color:var(--fg)}
+
+/* ── 组件 ── */
+.card{background:var(--surface); -webkit-backdrop-filter:blur(20px) saturate(160%); backdrop-filter:blur(20px) saturate(160%);
+  border:1px solid var(--border); border-radius:var(--r-md); padding:20px; box-shadow:var(--shadow-sm)}
+.cards{display:grid; grid-template-columns:repeat(auto-fill,minmax(168px,1fr)); gap:14px; margin-bottom:20px}
+.card .num{font-size:var(--fs-metric); font-weight:800; color:var(--accent); line-height:1.1}
+.card .label{color:var(--muted); font-size:var(--fs-sm); margin-top:4px}
+.toolbar{display:flex; flex-wrap:wrap; gap:10px; align-items:center; margin-bottom:16px}
+.toolbar .sub{margin:0}
+input,select{padding:8px 12px; border:1px solid var(--border); border-radius:var(--r-sm); background:var(--surface-strong); font-size:var(--fs-lg); outline:none; transition:border-color .2s, box-shadow .2s}
+input:focus,select:focus{border-color:var(--accent); box-shadow:0 0 0 3px var(--accent-soft)}
+.btn{display:inline-flex; align-items:center; gap:6px; padding:8px 15px; border-radius:var(--r-sm); background:var(--accent); color:var(--on-accent); font-size:var(--fs-lg); font-weight:600}
+.btn:hover{background:var(--accent-strong); text-decoration:none}
+.btn.secondary{background:var(--surface-strong); color:var(--fg); border:1px solid var(--border)}
+.btn.secondary:hover{background:var(--hover)}
+.btn.danger{background:var(--danger-soft); color:var(--danger)}
+table{width:100%; border-collapse:collapse; background:var(--surface); border:1px solid var(--border); border-radius:var(--r-md); overflow:hidden; font-size:var(--fs-lg)}
+th,td{padding:10px 14px; border-bottom:1px solid var(--border); text-align:left; vertical-align:top}
+th{background:var(--bg-soft); color:var(--muted); font-weight:700; font-size:var(--fs-md); letter-spacing:.02em}
+tbody tr:hover td{background:var(--hover)}
+tr:last-child td{border-bottom:0}
+.badge{display:inline-block; padding:2px 10px; border-radius:999px; font-size:var(--fs-xs); font-weight:700; letter-spacing:.02em}
+.b-critical{background:var(--danger); color:var(--on-accent)}
+.b-high{background:var(--danger-soft); color:var(--danger)}
+.b-medium{background:var(--warn-soft); color:var(--warn)}
+.b-low{background:var(--accent-soft); color:var(--accent-strong)}
+.b-info,.b-gray{background:var(--hover-strong); color:var(--muted)}
+.b-ok{background:var(--ok-soft); color:var(--ok)}
+.empty{color:var(--faint); padding:34px; text-align:center; background:var(--surface); border:1px dashed var(--border-strong); border-radius:var(--r-md)}
+code{background:var(--bg-soft); padding:2px 6px; border-radius:6px; font-size:var(--fs-md); font-family:var(--font-mono)}
+pre{background:var(--glass-bright); border:1px solid var(--border); padding:14px; border-radius:var(--r-sm); font-size:var(--fs-md); overflow-x:auto; font-family:var(--font-mono)}
+blockquote{border-left:4px solid var(--accent); margin:0; padding:4px 16px; color:var(--muted)}
+.pct-bar{height:8px; background:var(--hover-strong); border-radius:4px; width:120px; display:inline-block; vertical-align:middle; overflow:hidden}
+.pct-fill{display:block; height:8px; border-radius:4px; background:var(--grad)}
+@media(max-width:840px){
+  #sidebar{transform:translateX(-110%); transition:transform .3s var(--ease-spring)}
+  body.sb-open #sidebar{transform:none}
+  main{margin-left:24px}
+}
+/* 裸标签兜底（页面模板无需逐处加类） */
+main > h1{font-size:var(--fs-3xl); font-weight:800; letter-spacing:-.02em; margin-bottom:6px}
+main > h2, main > section > h2{font-size:var(--fs-xl); font-weight:700; margin:26px 0 12px}
+main button:not([class]){display:inline-flex; align-items:center; gap:6px; padding:8px 15px; border-radius:var(--r-sm); background:var(--accent); color:var(--on-accent); font-size:var(--fs-lg); font-weight:600}
+main button:not([class]):hover{background:var(--accent-strong)}
+main button.secondary{display:inline-flex; align-items:center; gap:6px; padding:8px 15px; border-radius:var(--r-sm); background:var(--surface-strong); color:var(--fg); border:1px solid var(--border); font-size:var(--fs-lg); font-weight:600}
+main button.secondary:hover{background:var(--hover)}
 </style>
 </head>
 <body>
-<aside>
-  <div class="brand">Insight Flow<div>insflow {{ version }}</div></div>
-  <a href="/console" {% if nav == 'dashboard' %}class="active"{% endif %}>📊 仪表盘</a>
-  <a href="/console/onboarding" {% if nav == 'onboarding' %}class="active"{% endif %}>🔌 接入向导</a>
-  <a href="/console/insights" {% if nav == 'insights' %}class="active"{% endif %}>💡 洞察流</a>
-  <a href="/console/monitors" {% if nav == 'monitors' %}class="active"{% endif %}>📡 监控任务</a>
-  <a href="/console/reports" {% if nav == 'reports' %}class="active"{% endif %}>📄 报告中心</a>
-  <a href="/console/plugins" {% if nav == 'plugins' %}class="active"{% endif %}>🧩 插件与市场</a>
-  <a href="/console/usage" {% if nav == 'usage' %}class="active"{% endif %}>💳 套餐用量</a>
-  <a href="/api/v1/docs" target="_blank">🛠 API 文档 ↗</a>
+{% set groups = {
+  'overview': {'label':'概览', 'links':[('dashboard','/console','📊 仪表盘')]},
+  'monitor': {'label':'数据监测', 'links':[('onboarding','/console/onboarding','🔌 接入向导'),('monitors','/console/monitors','📡 监控任务')]},
+  'insight': {'label':'洞察', 'links':[('insights','/console/insights','💡 洞察流')]},
+  'report': {'label':'交付', 'links':[('reports','/console/reports','📄 报告中心')]},
+  'ecosystem': {'label':'生态', 'links':[('plugins','/console/plugins','🧩 插件与市场')]},
+  'settings': {'label':'设置', 'links':[('usage','/console/usage','💳 套餐用量'),('api','/api/v1/docs','🛠 API 文档 ↗')]},
+} %}
+
+<header id="chrome">
+  <div class="brand">Insight Flow<small>情报台 {{ version }}</small></div>
+  <nav class="main-tabs">
+    {% for key, g in groups.items() %}
+    <a class="main-tab {% if area == key %}on{% endif %}" href="{{ g.links[0][1] }}" data-area-tab="{{ key }}">{{ g.label }}</a>
+    {% endfor %}
+  </nav>
+  <div class="chrome-actions">
+    <button class="icon-btn" onclick="toggleTheme()" title="切换明暗主题">◐</button>
+    <button class="icon-btn" onclick="document.body.classList.toggle('sb-open')" title="侧栏">☰</button>
+  </div>
+</header>
+
+<aside id="sidebar" data-area="{{ area }}">
+  {% for key, g in groups.items() %}
+  <div class="sb-panel {% if area == key %}on{% endif %}" data-area="{{ key }}">
+    <div class="sb-title">{{ g.label }}</div>
+    {% for nav_key, url, label in g.links %}
+    <a class="sb-link {% if nav == nav_key %}on{% endif %}" href="{{ url }}">{{ label }}</a>
+    {% endfor %}
+  </div>
+  {% endfor %}
+  <div class="sb-foot">工作区 <code>{{ workspace_id or '—' }}</code></div>
 </aside>
+
 <main>{% block content %}{% endblock %}</main>
+
+<div id="toast"></div>
+<script>
+function toggleTheme(){
+  var dark = document.documentElement.getAttribute('data-theme') === 'dark';
+  if (dark) { document.documentElement.removeAttribute('data-theme'); }
+  else { document.documentElement.setAttribute('data-theme','dark'); }
+  try{ localStorage.setItem('if_theme', dark ? 'light' : 'dark'); }catch(e){}
+}
+function toast(text, type){
+  var box = document.getElementById('toast'); if(!box) return;
+  var el = document.createElement('div');
+  el.textContent = text;
+  el.style.cssText = 'position:fixed;right:22px;bottom:22px;z-index:99999;padding:12px 18px;border-radius:12px;font-size:13px;min-width:240px;box-shadow:0 12px 32px rgba(0,0,0,.25);background:' +
+    (type==='error' ? 'var(--danger)' : type==='warn' ? 'var(--warn)' : 'var(--ok)') + ';color:var(--on-accent)';
+  box.appendChild(el);
+  setTimeout(function(){ el.remove(); }, 3200);
+}
+</script>
+{% block script %}{% endblock %}
 </body>
 </html>
