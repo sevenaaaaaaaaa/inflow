@@ -6,6 +6,14 @@ from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel
 
+# 环境配置（支持仓库根目录 .env：INSFLOW_SAAS / INSFLOW_BASE_PATH / SMTP_* 等）
+try:
+    from pathlib import Path as _Path
+    from dotenv import load_dotenv as _load_dotenv
+    _load_dotenv(_Path(__file__).parent.parent.parent / ".env")
+except Exception:
+    pass
+
 from .. import __version__
 from ..core.entities import (
     Insight,
@@ -66,6 +74,51 @@ AUTH_ENABLED = _os.environ.get("INSFLOW_API_AUTH", "") == "1"
 # Web 控制台（Jinja2 SSR，零构建链）
 from ..web.routes import router as console_router  # noqa: E402
 app.include_router(console_router)
+
+
+# ========== 基路径重写（子路径反代，如 https://host/inflow）==========
+
+BASE_PATH = _os.environ.get("INSFLOW_BASE_PATH", "").rstrip("/")
+
+
+def _rewrite_html(text: str) -> str:
+    """把控制台页面里的根路径链接/请求改写到基路径（子路径反代必需）"""
+    if not BASE_PATH:
+        return text
+    for quote in ('"', "'"):
+        text = text.replace(f"href={quote}/", f"href={quote}{BASE_PATH}/")
+        text = text.replace(f"action={quote}/", f"action={quote}{BASE_PATH}/")
+        text = text.replace(f"{quote}/api/v1/", f"{quote}{BASE_PATH}/api/v1/")
+        text = text.replace(f"{quote}/console", f"{quote}{BASE_PATH}/console")
+    return text
+
+
+@app.middleware("http")
+async def base_path_middleware(request, call_next):
+    response = await call_next(request)
+    if not BASE_PATH:
+        return response
+
+    # 1) 跳转 Location 头
+    loc = response.headers.get("location")
+    if loc and loc.startswith("/") and not loc.startswith(BASE_PATH + "/"):
+        response.headers["location"] = BASE_PATH + loc
+
+    # 2) HTML 正文内的链接/请求
+    ctype = response.headers.get("content-type", "")
+    if ctype.startswith("text/html") and hasattr(response, "body_iterator"):
+        body = b"".join([chunk async for chunk in response.body_iterator])
+        text = _rewrite_html(body.decode("utf-8", "ignore"))
+        new_body = text.encode("utf-8")
+        from starlette.responses import Response
+        new = Response(content=new_body, status_code=response.status_code,
+                       media_type="text/html")
+        for k, v in response.raw_headers:
+            if k.lower() in (b"content-length", b"content-type"):
+                continue
+            new.raw_headers.append((k, v))
+        return new
+    return response
 
 
 # ========== SaaS 多租户守卫（R4-1：INSFLOW_SAAS=1 时控制台要求登录）==========
