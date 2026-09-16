@@ -82,15 +82,23 @@ async def dashboard(request: Request, workspace_id: str = Query("")):
 
 @router.get("/insights", response_class=HTMLResponse)
 async def insights_page(request: Request, workspace_id: str = Query(""),
-                        severity: str = Query(""), status: str = Query("")):
+                        severity: str = Query(""), status: str = Query(""),
+                        page: int = Query(1, ge=1)):
     if not workspace_id:
         workspace_id = await _default_workspace()
     store = await get_store()
+    page_size = 25
+    offset = (page - 1) * page_size
     insights = await store.list_insights(
-        workspace_id, status=status or None, severity=severity or None, limit=100)
+        workspace_id, status=status or None, severity=severity or None,
+        limit=page_size, offset=offset)
+    total = await store.count_insights(workspace_id, status=status or None,
+                                       severity=severity or None)
+    pages = (total + page_size - 1) // page_size or 1
     return templates.TemplateResponse(request, "insights.html", _ctx(
         request, "insights", workspace_id,
         insights=insights, severity=severity, status=status,
+        page=page, pages=pages, total=total,
     ))
 
 

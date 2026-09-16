@@ -17,7 +17,7 @@
     <option value="{{ st }}" {% if status == st %}selected{% endif %}>{{ st }}</option>
     {% endfor %}
   </select>
-  <span class="sub">共 {{ insights | length }} 条</span>
+  <span class="sub">共 {{ total }} 条（第 {{ page }}/{{ pages }} 页）</span>
 </div>
 
 {% if insights %}
@@ -66,4 +66,13 @@ async function triggerAction(id) {
   alert(d.ok ? '动作已派发 ✓' : '派发失败: ' + d.detail);
 }
 </script>
+
+<div class="toolbar">
+  {% if page > 1 %}
+  <a href="/console/insights?page={{ page - 1 }}&severity={{ severity }}&status={{ status }}">← 上一页</a>
+  {% endif %}
+  {% if page < pages %}
+  <a href="/console/insights?page={{ page + 1 }}&severity={{ severity }}&status={{ status }}">下一页 →</a>
+  {% endif %}
+</div>
 {% endblock %}

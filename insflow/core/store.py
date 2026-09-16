@@ -185,18 +185,15 @@ MIGRATIONS = [
     CREATE INDEX IF NOT EXISTS idx_journey_identity ON journey_events(workspace_id, identity);
     CREATE INDEX IF NOT EXISTS idx_journey_stage ON journey_events(workspace_id, stage);
     """,
-    # V3: metrics 幂等去重（R1-4）——同 monitor 同小时窗口同指标只保留一条
-    """
-    ALTER TABLE metrics ADD COLUMN monitor_id TEXT NOT NULL DEFAULT '';
-    """,
-    """
-    ALTER TABLE metrics ADD COLUMN window_key TEXT NOT NULL DEFAULT '';
-    """,
-    """
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_metrics_dedupe
-        ON metrics(workspace_id, monitor_id, entity_type, entity_id, metric, window_key)
-        WHERE window_key != '';
-    """,
+]
+
+# V3: metrics 幂等去重（R1-4）—— ALTER 语句需要幂等执行（检查列是否存在）
+V3_METRICS_DEDUPE_SQL = [
+    "ALTER TABLE metrics ADD COLUMN monitor_id TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE metrics ADD COLUMN window_key TEXT NOT NULL DEFAULT ''",
+    """CREATE UNIQUE INDEX IF NOT EXISTS idx_metrics_dedupe
+       ON metrics(workspace_id, monitor_id, entity_type, entity_id, metric, window_key)
+       WHERE window_key != ''""",
 ]
 
 
@@ -243,6 +240,14 @@ class Store:
             raise RuntimeError("Database not connected")
         for migration in MIGRATIONS:
             await self._db.executescript(migration)
+        # V3 幂等迁移：metrics 去重列/索引（按列存在性跳过 ALTER）
+        cols = {row[1] for row in await (await self._execute("PRAGMA table_info(metrics)")).fetchall()}
+        for statement in V3_METRICS_DEDUPE_SQL:
+            if statement.startswith("ALTER TABLE"):
+                col_name = statement.split("ADD COLUMN")[1].strip().split(" ")[0]
+                if col_name in cols:
+                    continue
+            await self._execute(statement)
         await self._db.commit()
 
     async def _execute(self, query: str, params: tuple = ()) -> aiosqlite.Cursor:
@@ -342,14 +347,30 @@ class Store:
             return self._parse_insight_row(row)
         return None
 
+    async def count_insights(self, workspace_id: str,
+                             status: str | None = None,
+                             severity: str | None = None) -> int:
+        """洞察总数（分页用）"""
+        query = "SELECT COUNT(*) as cnt FROM insights WHERE workspace_id = ?"
+        params = [workspace_id]
+        if status:
+            query += " AND status = ?"
+            params.append(status)
+        if severity:
+            query += " AND severity = ?"
+            params.append(severity)
+        row = await self._fetchone(query, tuple(params))
+        return row["cnt"] if row else 0
+
     async def list_insights(
         self,
         workspace_id: str,
         status: str | None = None,
         severity: str | None = None,
-        limit: int = 50
+        limit: int = 50,
+        offset: int = 0,
     ) -> list[Insight]:
-        """列出洞察"""
+        """列出洞察（offset 分页）"""
         query = "SELECT * FROM insights WHERE workspace_id = ?"
         params = [workspace_id]
         if status:
@@ -358,8 +379,8 @@ class Store:
         if severity:
             query += " AND severity = ?"
             params.append(severity)
-        query += " ORDER BY created_at DESC LIMIT ?"
-        params.append(limit)
+        query += " ORDER BY created_at DESC LIMIT ? OFFSET ?"
+        params.extend([limit, offset])
         rows = await self._fetchall(query, tuple(params))
         return [self._parse_insight_row(row) for row in rows]
 
