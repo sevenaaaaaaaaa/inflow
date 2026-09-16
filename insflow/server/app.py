@@ -220,9 +220,45 @@ async def run_diagnosis(data: DiagnosisRequest):
 
 # ========== 成熟度 API ==========
 
+class MaturityAssessRequest(BaseModel):
+    answers: dict[str, int]
+    monthly_sessions: float = 0
+    conversion_rate: float = 0.0
+    user_confirmed_stage: Optional[str] = None
+    months_since_launch: Optional[int] = None
+
+
+@app.post("/api/v1/maturity/assess")
+async def assess_maturity(workspace_id: str, data: MaturityAssessRequest):
+    """执行成熟度评估（DM-1 问卷评分 + DM-4 阶段判定 + 报告落盘）"""
+    from ..engine.maturity import MaturityEngine
+
+    store = await get_store()
+    ws = await store.get_workspace(workspace_id)
+    if not ws:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+
+    engine = MaturityEngine(workspace_id)
+    result = await engine.assess(
+        data.answers,
+        monthly_sessions=data.monthly_sessions,
+        conversion_rate=data.conversion_rate,
+        user_confirmed_stage=data.user_confirmed_stage,
+        months_since_launch=data.months_since_launch,
+    )
+    return result
+
+
+@app.get("/api/v1/maturity/questionnaire")
+async def get_questionnaire():
+    """获取成熟度评估问卷定义"""
+    from ..engine.maturity import QUESTIONNAIRE
+    return {"dimensions": QUESTIONNAIRE}
+
+
 @app.get("/api/v1/maturity")
 async def get_maturity(workspace_id: str = Query(...)):
-    """获取成熟度评分"""
+    """获取成熟度评分与阶段"""
     store = await get_store()
     ws = await store.get_workspace(workspace_id)
     if not ws:

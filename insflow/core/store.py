@@ -235,6 +235,19 @@ class Store:
             result.append(Workspace(**row))
         return result
 
+    async def update_workspace(self, ws: Workspace) -> Workspace:
+        """更新工作区（成熟度引擎写回 stage/maturity_level 等）"""
+        ws.updated_at = datetime.now(timezone.utc)
+        await self._execute(
+            """UPDATE workspaces
+               SET name = ?, stage = ?, maturity_level = ?, settings_json = ?, updated_at = ?
+               WHERE id = ?""",
+            (ws.name, ws.stage.value, ws.maturity_level.value,
+             json.dumps(ws.settings_json, ensure_ascii=False), ws.updated_at.isoformat(), ws.id)
+        )
+        await self._db.commit()
+        return ws
+
     # ========== Insight ==========
 
     async def create_insight(self, insight: Insight) -> Insight:
