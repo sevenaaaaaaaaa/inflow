@@ -11,7 +11,7 @@ refresh_token 缺失时不可轮换（Google 首次授权 access_type=offline �
 """
 
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import httpx
 
@@ -75,7 +75,7 @@ class TokenManager:
         if expires_at:
             try:
                 exp = datetime.fromisoformat(expires_at)
-                if (exp - datetime.now(timezone.utc)).total_seconds() < buffer_seconds:
+                if (exp - datetime.now(UTC)).total_seconds() < buffer_seconds:
                     return self._refresh(provider, tokens)
             except (ValueError, TypeError):
                 pass  # expires_at 非法 → 走 401 降级
@@ -126,7 +126,7 @@ class TokenManager:
                 f"{provider} 轮换被拒（{data.get('error')}）：refresh_token 失效，需重新授权"
             )
 
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         expires_in = int(data.get("expires_in", 3600))
         new_tokens = {
             **tokens,

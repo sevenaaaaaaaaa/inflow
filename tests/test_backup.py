@@ -59,7 +59,6 @@ class TestBackup:
         assert mgr.prune(keep_days=30) == 0  # 刚备份的不会删
 
     def test_prune_removes_old(self, env, tmp_path):
-        from datetime import datetime, timezone
         mgr = BackupManager(data_dir=env["data"], backup_dir=tmp_path / "data-backup")
         # 造两个目录：一个新（合法）一个旧（超期）
         old_dir = tmp_path / "data-backup" / "20250101-0000"

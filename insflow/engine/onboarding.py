@@ -11,10 +11,10 @@ GSC / GA4 OAuth2 授权码流程 + CrUX API Key 直配：
 - INSFLOW_BASE_URL（OAuth redirect base，如 https://if.example.com）
 """
 
-import base64
 import secrets
 import time
-from urllib.parse import parse_qs, urlencode, urlparse
+from datetime import UTC
+from urllib.parse import urlencode
 
 import httpx
 
@@ -111,13 +111,13 @@ class OnboardingService:
         # 凭据入保险库（只存，不回显；带过期时间供自动轮换）
         vault = get_vault()
         vault_key = f"{provider}_oauth_tokens"
-        from datetime import datetime, timedelta, timezone
+        from datetime import datetime, timedelta
         expires_in = int(token_data.get("expires_in", 3600))
         vault.set(vault_key, encode_json({
             "access_token": token_data["access_token"],
             "refresh_token": token_data.get("refresh_token", ""),
             "expires_in": expires_in,
-            "expires_at": (datetime.now(timezone.utc)
+            "expires_at": (datetime.now(UTC)
                            + timedelta(seconds=expires_in)).isoformat(),
             "workspace_id": self.workspace_id,
         }))

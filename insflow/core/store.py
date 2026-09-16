@@ -185,6 +185,18 @@ MIGRATIONS = [
     CREATE INDEX IF NOT EXISTS idx_journey_identity ON journey_events(workspace_id, identity);
     CREATE INDEX IF NOT EXISTS idx_journey_stage ON journey_events(workspace_id, stage);
     """,
+    # V3: metrics 幂等去重（R1-4）——同 monitor 同小时窗口同指标只保留一条
+    """
+    ALTER TABLE metrics ADD COLUMN monitor_id TEXT NOT NULL DEFAULT '';
+    """,
+    """
+    ALTER TABLE metrics ADD COLUMN window_key TEXT NOT NULL DEFAULT '';
+    """,
+    """
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_metrics_dedupe
+        ON metrics(workspace_id, monitor_id, entity_type, entity_id, metric, window_key)
+        WHERE window_key != '';
+    """,
 ]
 
 

@@ -11,9 +11,10 @@
 import os
 import sys
 from dataclasses import dataclass
+from datetime import UTC
 from pathlib import Path
 
-from ..core.files import DATA_DIR, EventBus
+from ..core.files import DATA_DIR
 from ..core.security import get_vault
 
 OK, WARN, FAIL = "ok", "warn", "fail"
@@ -40,7 +41,6 @@ class Doctor:
     # ========== 1. 环境 ==========
 
     def check_environment(self) -> list[CheckResult]:
-        import sys
         results = []
 
         v = sys.version_info
@@ -101,9 +101,9 @@ class Doctor:
                     results.append(CheckResult(
                         f"{provider.upper()} 授权", WARN, "旧格式 token（无过期时间，依赖 401 自动轮换）"))
                     continue
-                from datetime import datetime, timezone
+                from datetime import datetime
                 remaining = (datetime.fromisoformat(expires_at)
-                             - datetime.now(timezone.utc)).total_seconds()
+                             - datetime.now(UTC)).total_seconds()
                 if remaining > 86400 * 7:
                     days = int(remaining // 86400)
                     results.append(CheckResult(f"{provider.upper()} 授权", OK, f"有效（{days} 天）"))

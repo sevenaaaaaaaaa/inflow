@@ -1,10 +1,9 @@
 """测试 OAuth token 自动轮换（R1-1）"""
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
-import insflow.core.files as files_mod
 from insflow.engine.token_manager import TokenManager, TokenRefreshError
 
 
@@ -12,7 +11,7 @@ from insflow.engine.token_manager import TokenManager, TokenRefreshError
 async def tm(monkeypatch, tmp_path):
     import insflow.core.files as fm
     from insflow.core.entities import Workspace
-    from insflow.core.store import Store, get_store, reset_store
+    from insflow.core.store import Store, reset_store
 
     monkeypatch.setattr(fm, "DATA_DIR", tmp_path)
     monkeypatch.setenv("INSFLOW_MASTER_KEY", "test-master-key")
@@ -33,7 +32,7 @@ def fresh_tokens(**overrides):
     t = {
         "access_token": "old-at",
         "refresh_token": "rt-1",
-        "expires_at": (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat(),
+        "expires_at": (datetime.now(UTC) + timedelta(hours=1)).isoformat(),
     }
     t.update(overrides)
     return t
@@ -52,10 +51,9 @@ class TestEnsureFresh:
     async def test_refresh_on_expiry_window(self, tm, monkeypatch):
         """临期（<10min）→ 自动轮换 + 保险库回写 + expires_at 更新"""
         capture = {}
-        soon = datetime.now(timezone.utc) + timedelta(seconds=300)
+        soon = datetime.now(UTC) + timedelta(seconds=300)
         tm.save_tokens("gsc", fresh_tokens(access_token="old", expires_at=soon.isoformat()))
 
-        import httpx
         import insflow.engine.token_manager as mod
 
         captured = {}
@@ -73,7 +71,7 @@ class TestEnsureFresh:
         assert captured["data"]["refresh_token"] == "rt-1"
         saved = tm.load_tokens("gsc")
         assert saved["access_token"] == "new-at"
-        assert datetime.fromisoformat(saved["expires_at"]) > datetime.now(timezone.utc) + timedelta(minutes=50)
+        assert datetime.fromisoformat(saved["expires_at"]) > datetime.now(UTC) + timedelta(minutes=50)
 
     async def test_old_record_without_expiry_trusted(self, tm):
         """旧格式（无 expires_at，v1.0 遗留）：信任至 401 降级"""

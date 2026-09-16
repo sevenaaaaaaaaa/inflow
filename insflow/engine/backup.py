@@ -9,7 +9,7 @@ data/ 是客户资产（SQLite 库 + 报告 + 快照 + 事件流）。备份三�
 
 import shutil
 import sqlite3
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from ..core.files import DATA_DIR, EventBus, atomic_write_json
@@ -33,7 +33,7 @@ class BackupManager:
         Returns:
             {"ok", "backup_dir", "db_size_bytes", "files", "duration_ms"}
         """
-        started = datetime.now(timezone.utc)
+        started = datetime.now(UTC)
         stamp = started.strftime("%Y%m%d-%H%M")
         target = self.backup_dir / stamp
         target.mkdir(parents=True, exist_ok=True)
@@ -61,7 +61,7 @@ class BackupManager:
             "files": {name: size for name, size in files},
         })
 
-        duration = (datetime.now(timezone.utc) - started).total_seconds()
+        duration = (datetime.now(UTC) - started).total_seconds()
         EventBus("default").emit("backup.completed", {
             "backup_dir": str(target), "duration_s": round(duration, 2),
         })
@@ -86,7 +86,7 @@ class BackupManager:
 
     def prune(self, keep_days: int = 30) -> int:
         """清理超过保留期的备份目录（返回删除数）"""
-        cutoff = datetime.now(timezone.utc) - timedelta(days=keep_days)
+        cutoff = datetime.now(UTC) - timedelta(days=keep_days)
         removed = 0
         if not self.backup_dir.exists():
             return removed
@@ -94,7 +94,7 @@ class BackupManager:
             if not d.is_dir():
                 continue
             try:
-                dt = datetime.strptime(d.name, "%Y%m%d-%H%M").replace(tzinfo=timezone.utc)
+                dt = datetime.strptime(d.name, "%Y%m%d-%H%M").replace(tzinfo=UTC)
             except ValueError:
                 continue  # 非备份目录
             if dt < cutoff:
@@ -120,7 +120,7 @@ class BackupManager:
             return {"ok": False, "detail": "恢复将覆盖当前 data/，请 confirm=True 重试"}
 
         # 先把当前 data 移走（可回退）
-        now = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M")
+        now = datetime.now(UTC).strftime("%Y%m%d-%H%M")
         pre_restore = self.backup_dir / f"pre-restore-{now}"
         pre_restore.mkdir(parents=True, exist_ok=True)
         if self.data_dir.exists():

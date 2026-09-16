@@ -11,6 +11,7 @@ from pathlib import Path
 
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
 try:
     from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC as _PBKDF2
 except ImportError:  # 兼容不同 cryptography 版本命名

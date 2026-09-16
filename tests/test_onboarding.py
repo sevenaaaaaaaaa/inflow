@@ -1,6 +1,5 @@
 """测试第一方接入向导（OAuth 流程 + 凭据保险库 + 健康检查）"""
 
-import base64
 from urllib.parse import parse_qs, urlparse
 
 import pytest
@@ -74,7 +73,6 @@ class TestOAuthCallback:
 
     async def test_state_replay_rejected(self, env, monkeypatch):
         """state 只能用一次（防重放）"""
-        from insflow.engine.onboarding import GOOGLE_TOKEN_URL
 
         svc = env["service"]
         state = OAuthState.create("test-ws", "gsc")
@@ -104,7 +102,6 @@ class TestOAuthCallback:
 
     async def test_tokens_saved_to_vault(self, env, monkeypatch):
         from insflow.core.security import get_vault
-        from insflow.engine.onboarding import GOOGLE_TOKEN_URL
 
         svc = env["service"]
         state = OAuthState.create("test-ws", "gsc")

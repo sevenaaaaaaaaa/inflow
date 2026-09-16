@@ -7,7 +7,7 @@
 """
 
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from ..collectors.base import CollectContext
 from ..core.entities import Insight, InsightAction, Metric
@@ -49,21 +49,32 @@ def _require(target: dict, field: str, hint: str = "") -> str:
     return value
 
 
-async def _save_metrics(workspace_id: str, rows: list[dict]) -> int:
-    """指标时序入库"""
+async def _save_metrics(workspace_id: str, rows: list[dict],
+                        monitor_id: str = "") -> int:
+    """指标时序入库（幂等：同 monitor 同小时窗口同指标 INSERT OR IGNORE）
+
+    返回实际新增数（重复返回 0）——调度器重跑/手动+定时双触发不会产生重复快照。
+    旧数据 window_key='' 不受唯一索引约束（部分索引 WHERE window_key != ''）。
+    """
     store = await get_store()
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(UTC)
+    window_key = now.strftime("%Y-%m-%d-%H")
+    inserted = 0
     for r in rows:
-        await store._execute(
-            """INSERT INTO metrics (id, workspace_id, entity_type, entity_id, metric, value, dim_json, ts)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-            (r.get("id") or datetime.now(timezone.utc).strftime("%f"),
+        cur = await store._execute(
+            """INSERT OR IGNORE INTO metrics
+               (id, workspace_id, entity_type, entity_id, metric, value, dim_json, ts, monitor_id, window_key)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (r.get("id") or datetime.now(UTC).strftime("%Y%m%d%H%M%S%f"),
              workspace_id, r.get("entity_type", "site"), r.get("entity_id", "main"),
              r["metric"], float(r["value"]),
-             json.dumps(r.get("dim", {}), ensure_ascii=False), r.get("ts", now)),
+             json.dumps(r.get("dim", {}), ensure_ascii=False), r.get("ts", now.isoformat()),
+             monitor_id, r.get("window_key", now.strftime("%Y-%m-%d-%H"))),
         )
+        if cur.rowcount > 0:
+            inserted += 1
     await store._db.commit()
-    return len(rows)
+    return inserted
 
 
 async def _save_insights(workspace_id: str, drafts: list[dict]) -> int:
@@ -127,14 +138,14 @@ class CollectorRouter:
             },
         ))
 
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         ctx_metrics = []
         for item in result.items:
             dim = {"key": item["key"], "ctr": item["ctr"], "position": item["position"]}
             ctx_metrics.append(_Metric_stub(workspace_id=self.workspace_id,
                                             entity_id=item["key"], dim=dim,
                                             value=item["impressions"], ts=now))
-            await _save_metrics(self.workspace_id, [{
+            await _save_metrics(self.workspace_id, monitor_id=monitor_id, rows=[{
                 "entity_type": "keyword", "entity_id": item["key"],
                 "metric": "gsc_impressions", "value": item["impressions"],
                 "dim": dim, "ts": now.isoformat(),
@@ -169,8 +180,8 @@ class CollectorRouter:
             items = resp.json().get("articles", [])
 
         mentions = len(items)
-        now = datetime.now(timezone.utc)
-        await _save_metrics(self.workspace_id, [{
+        now = datetime.now(UTC)
+        await _save_metrics(self.workspace_id, monitor_id=monitor_id, rows=[{
             "entity_type": "topic", "entity_id": query,
             "metric": "brand_mention", "value": mentions,
             "dim": {"query": query, "domains": sorted({i.get("domain", "") for i in items})[:10]},
@@ -227,14 +238,14 @@ class CollectorRouter:
                 counts[step_name] = counts.get(step_name, 0) + item["metrics"].get("eventCount", 0)
 
         # journey_step 指标入库 + 组装 JourneyGap 模型输入
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         ctx_metrics = []
         for name, count in counts.items():
             ctx_metrics.append(_Metric_stub(workspace_id=self.workspace_id,
                                             entity_id="main", metric="journey_step",
                                             value=count, dim={"step_name": name, "step": count},
                                             ts=now))
-            await _save_metrics(self.workspace_id, [{
+            await _save_metrics(self.workspace_id, monitor_id=monitor_id, rows=[{
                 "entity_type": "site", "entity_id": "main",
                 "metric": "journey_step", "value": count,
                 "dim": {"step_name": name, "step": count},
@@ -257,6 +268,5 @@ class CollectorRouter:
 def _Metric_stub(workspace_id: str, entity_id: str, value: float, ts,
                  dim: dict | None = None, metric: str = "gsc_impressions"):
     """Metric 构造（避免循环 import 的轻量封装）"""
-    from ..core.entities import Metric
     return Metric(workspace_id=workspace_id, entity_type="site", entity_id=entity_id,
                   metric=metric, value=float(value), dim_json=dim, ts=ts)

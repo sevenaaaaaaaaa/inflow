@@ -3,11 +3,10 @@
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Query, Request
-
-from .. import __version__
 from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel
 
+from .. import __version__
 from ..core.entities import (
     Insight,
     InsightSeverity,

@@ -1,7 +1,6 @@
 """测试监控 collector 路由（keyword / brand_mention / journey）"""
 
 import json
-from datetime import datetime, timezone
 
 import pytest
 

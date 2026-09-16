@@ -56,7 +56,7 @@ async def bootstrap_scheduled_jobs() -> dict:
     scheduler.register_handler("report.weekly", _weekly_report)
     registered["jobs"].append("report.weekly@mon-09:30")
 
-    # 4. 每小时：配额审计（超量告警）
+    # 4. 每小时：配额审计
     async def _quota_audit():
         from ..core.security import get_quota_ledger
         ledger = get_quota_ledger()
@@ -70,6 +70,21 @@ async def bootstrap_scheduled_jobs() -> dict:
     scheduler.add_job("quota.audit", "0 * * * *", "quota.audit", {})
     scheduler.register_handler("quota.audit", _quota_audit)
     registered["jobs"].append("quota.audit@hourly")
+
+    # 5. 每日 09:15：数据备份（R1-2，data/ 是客户资产）
+    async def _daily_backup():
+        from ..engine.backup import BackupManager
+        mgr = BackupManager()
+        result = mgr.run()
+        mgr.prune(keep_days=30)
+        EventBus("default").emit("backup.completed", {
+            "backup_dir": result.get("backup_dir"),
+            "duration_s": result.get("duration_s"),
+        })
+
+    scheduler.add_job("backup.daily", "15 9 * * *", "backup.daily", {})
+    scheduler.register_handler("backup.daily", _daily_backup)
+    registered["jobs"].append("backup.daily@daily-09:15")
 
     scheduler.start()
     logger.info(f"Bootstrap 完成: {registered}")
