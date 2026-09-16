@@ -341,3 +341,17 @@ async def get_store() -> Store:
         await _store.connect()
         await _store.migrate()
     return _store
+
+
+async def close_store() -> None:
+    """关闭全局存储实例（CLI 一次性命令结束时调用，避免 aiosqlite 线程阻塞退出）"""
+    global _store
+    if _store is not None:
+        await _store.close()
+        _store = None
+
+
+def reset_store(store: Optional[Store]) -> None:
+    """替换全局 store（测试隔离用）"""
+    global _store
+    _store = store

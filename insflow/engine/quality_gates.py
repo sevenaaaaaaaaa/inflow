@@ -128,9 +128,14 @@ class QualityGates:
                 ))
 
         # 检查 5: action 必须有描述
+        def action_desc(a) -> str:
+            if isinstance(a, dict):
+                return a.get("description", "")
+            return getattr(a, "description", "")
+
         actions_without_desc = [
             a for a in insight.actions_json
-            if not a.get("description", "")
+            if not action_desc(a)
         ]
         if actions_without_desc:
             checks.append(GateCheck(

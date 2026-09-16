@@ -1,0 +1,21 @@
+{
+  "id": "crux",
+  "type": "source",
+  "name": "CrUX API（真实用户 CWV）",
+  "version": "1.0.0",
+  "entry": "entry.py",
+  "permissions": ["network", "credentials:crux"],
+  "config": {
+    "api_key": {
+      "desc": "CrUX API key（Google Cloud 项目）",
+      "required": true,
+      "secret": true
+    }
+  },
+  "provides": {
+    "metrics": ["crux_lcp", "crux_inp", "crux_cls", "crux_ttfb"],
+    "engines": ["crux"],
+    "latency": "standard",
+    "cost_hint": "Free（150 QPM/project，不可提额；28 天窗口）"
+  }
+}

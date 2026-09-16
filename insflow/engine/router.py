@@ -96,10 +96,24 @@ class ModelRouter:
 # 全局实例
 _model_router: Optional[ModelRouter] = None
 
+_BUILTIN_MODELS_LOADED = False
+
+
+def _load_builtin_models(router: ModelRouter) -> None:
+    """加载内置模型"""
+    from .models.aarrr import AARRRModel
+    from .models.competitor_momentum import CompetitorMomentumModel
+
+    router.register(AARRRModel())
+    router.register(CompetitorMomentumModel())
+
 
 def get_model_router() -> ModelRouter:
     """获取全局模型路由"""
-    global _model_router
+    global _model_router, _BUILTIN_MODELS_LOADED
     if _model_router is None:
         _model_router = ModelRouter()
+    if not _BUILTIN_MODELS_LOADED:
+        _load_builtin_models(_model_router)
+        _BUILTIN_MODELS_LOADED = True
     return _model_router

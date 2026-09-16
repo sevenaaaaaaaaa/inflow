@@ -206,14 +206,16 @@ async def dismiss_insight(insight_id: str):
 
 @app.post("/api/v1/diagnosis/run")
 async def run_diagnosis(data: DiagnosisRequest):
-    """触发诊断"""
-    # TODO: 实现完整诊断流程
-    return {
-        "status": "queued",
-        "workspace_id": data.workspace_id,
-        "domain": data.domain,
-        "message": "Diagnosis task queued (not yet implemented)",
-    }
+    """触发诊断（同步执行，产出洞察 + 报告落盘）"""
+    from ..engine.diagnosis import DiagnosisEngine
+
+    ws = await get_store().get_workspace(data.workspace_id)
+    if not ws:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+
+    engine = DiagnosisEngine(data.workspace_id)
+    result = await engine.run()
+    return result
 
 
 # ========== 成熟度 API ==========

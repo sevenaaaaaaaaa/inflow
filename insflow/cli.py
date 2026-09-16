@@ -12,8 +12,15 @@ console = Console()
 
 
 def run_async(coro):
-    """运行异步函数"""
-    return asyncio.get_event_loop().run_until_complete(coro)
+    """运行异步函数（结束后关闭全局 store，避免 aiosqlite 线程阻塞退出）"""
+    from .core.store import close_store
+    try:
+        return asyncio.get_event_loop().run_until_complete(coro)
+    finally:
+        try:
+            asyncio.get_event_loop().run_until_complete(close_store())
+        except Exception:
+            pass
 
 
 @click.group()

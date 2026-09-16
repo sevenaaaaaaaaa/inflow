@@ -1,0 +1,26 @@
+{
+  "id": "ga4",
+  "type": "source",
+  "name": "GA4 Data API",
+  "version": "1.0.0",
+  "entry": "entry.py",
+  "permissions": ["network", "credentials:ga4"],
+  "config": {
+    "access_token": {
+      "desc": "OAuth2 access token（由接入向导颁发）",
+      "required": true,
+      "secret": true
+    },
+    "property_id": {
+      "desc": "GA4 数据属性 ID（如 123456789）",
+      "required": true,
+      "secret": false
+    }
+  },
+  "provides": {
+    "metrics": ["ga4_sessions", "ga4_conversions", "ga4_users", "ga4_retention"],
+    "engines": ["ga4"],
+    "latency": "standard",
+    "cost_hint": "Free（200k tokens/property/天，40k/时；returnPropertyQuota 可查余额）"
+  }
+}

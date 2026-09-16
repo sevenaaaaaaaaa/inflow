@@ -1,0 +1,26 @@
+{
+  "id": "gsc",
+  "type": "source",
+  "name": "Google Search Console API",
+  "version": "1.0.0",
+  "entry": "entry.py",
+  "permissions": ["network", "credentials:gsc"],
+  "config": {
+    "access_token": {
+      "desc": "OAuth2 access token（由接入向导颁发）",
+      "required": true,
+      "secret": true
+    },
+    "site_url": {
+      "desc": "站点 URL（sc-domain:example.com 或 https://example.com/）",
+      "required": true,
+      "secret": false
+    }
+  },
+  "provides": {
+    "metrics": ["gsc_clicks", "gsc_impressions", "gsc_ctr", "gsc_position"],
+    "engines": ["google"],
+    "latency": "standard",
+    "cost_hint": "Free（配额 1200 QPM/site，数据滞后约数天）"
+  }
+}
