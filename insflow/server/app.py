@@ -2,7 +2,7 @@
 
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
@@ -196,6 +196,33 @@ async def dismiss_insight(insight_id: str):
     store = await get_store()
     await store.update_insight_status(insight_id, "dismissed")
     return {"status": "ok"}
+
+
+# ========== 入站事件（HMAC 验签）==========
+
+@app.post("/api/v1/ingest")
+async def ingest(request: Request):
+    """入站事件接收（MFlow 发布回流 / OpenFlow 钩子，HMAC 验签）
+
+    - MFlow: content.published → 关联洞察动作 → 验证状态机
+    - OpenFlow: cdp_event/lead/contact → 事件流记录
+    """
+    from ..actions.ingest import IngestReceiver, extract_signature
+
+    raw_body = await request.body()
+    signature = extract_signature(request.headers)
+    receiver = IngestReceiver()
+    return await receiver.handle(raw_body, request.headers, signature)
+
+
+@app.get("/api/v1/feedback/stats")
+async def feedback_stats(workspace_id: str = Query(...)):
+    """模型效果统计（北极星指标）"""
+    store = await get_store()
+    ws = await store.get_workspace(workspace_id)
+    if not ws:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+    return await store.get_feedback_stats(workspace_id)
 
 
 # ========== 动作 API ==========
