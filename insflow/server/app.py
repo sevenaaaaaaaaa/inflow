@@ -181,8 +181,11 @@ async def index():
 
 @app.get("/health")
 async def health():
-    """健康检查"""
-    return {"status": "ok", "version": __version__}
+    """健康检查（no-store：版本号实时可见，不被 CDN 缓存误导）"""
+    return JSONResponse(
+        content={"status": "ok", "version": __version__},
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 # ========== 工作区 API ==========
