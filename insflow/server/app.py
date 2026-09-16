@@ -202,6 +202,55 @@ async def dismiss_insight(insight_id: str):
     return {"status": "ok"}
 
 
+# ========== 动作 API ==========
+
+class ActionDispatchRequest(BaseModel):
+    workspace_id: str
+    insight_id: str
+    action_type: str
+    target_ref: Optional[str] = None
+    params_json: dict = {}
+    description: str = ""
+    title: str = ""
+    summary: str = ""
+    severity: str = "medium"
+    confidence: float = 0.5
+
+
+@app.post("/api/v1/actions")
+async def dispatch_action(data: ActionDispatchRequest):
+    """派发推荐动作（AC-3：Action Router → 目标系统）"""
+    from ..actions.router import ActionContext, get_action_router
+
+    store = await get_store()
+    ws = await store.get_workspace(data.workspace_id)
+    if not ws:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+
+    router = get_action_router()
+    result = await router.dispatch(
+        {
+            "action_type": data.action_type,
+            "target_ref": data.target_ref,
+            "params_json": data.params_json,
+            "description": data.description,
+            "title": data.title,
+            "summary": data.summary,
+            "severity": data.severity,
+            "confidence": data.confidence,
+        },
+        ActionContext(workspace_id=data.workspace_id, insight_id=data.insight_id),
+    )
+    return result
+
+
+@app.get("/api/v1/actions/types")
+async def list_action_types():
+    """列出已注册的动作适配器类型"""
+    from ..actions.router import get_action_router
+    return {"action_types": get_action_router().list_types()}
+
+
 # ========== 诊断 API ==========
 
 @app.post("/api/v1/diagnosis/run")
