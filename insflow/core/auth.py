@@ -18,7 +18,7 @@ API Key 体系（多 Key，对齐 OpenFlow ApiKeyAuth）：
 import hashlib
 import hmac
 import secrets as pysecrets
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from enum import Enum
 
 from .files import EventBus
@@ -95,7 +95,7 @@ def mask_key(key: str) -> str:
 
 
 def utcnow() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 def verify_hmac_signature(raw_body: bytes, signature: str, secret: str) -> bool:

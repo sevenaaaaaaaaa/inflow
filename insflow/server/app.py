@@ -38,7 +38,8 @@ app = FastAPI(
 # ========== API Key 认证（可选启用，M4）==========
 
 import os as _os
-from ..core.auth import ACTION_MIN_ROLE, AuthManager, can
+
+from ..core.auth import AuthManager
 
 _auth_managers: dict[str, AuthManager] = {}
 
@@ -434,6 +435,17 @@ async def seo_snapshot(workspace_id: str, data: SeoSnapshotRequest):
 class FirstPartyAnalysisRequest(BaseModel):
     members: list[dict] = []
     orders: list[dict] = []
+
+
+@app.post("/api/v1/reports/deep-dive")
+async def build_deep_report(workspace_id: str = Query(...)):
+    """深度报告生成器（多 Agent 协作，顾问场景交付物）"""
+    from ..engine.deep_report import DeepReportBuilder
+    store = await get_store()
+    if not await store.get_workspace(workspace_id):
+        raise HTTPException(status_code=404, detail="Workspace not found")
+    builder = DeepReportBuilder(workspace_id)
+    return await builder.build()
 
 
 @app.post("/api/v1/reports/weekly")

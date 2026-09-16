@@ -1,18 +1,17 @@
 """测试自定义规则模型 DSL（IM-3）+ 模型效果追踪（IM-5）"""
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
 from insflow.core.entities import Action, Feedback, Insight, Metric, Workspace
-from insflow.core.store import Store, get_store, reset_store
+from insflow.core.store import Store, reset_store
 from insflow.engine.dsl_models import (
     DSLValidationError,
     RuleModel,
     validate_dsl,
 )
 from insflow.engine.router import ModelContext
-
 
 VALID_SPEC = {
     "id": "cac-overrun",
@@ -71,7 +70,7 @@ class TestDSLValidation:
 class TestRuleModel:
     async def test_trigger_on_latest(self):
         model = RuleModel(VALID_SPEC)
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         ctx = ModelContext(workspace_id="ws", metrics=[
             Metric(workspace_id="ws", entity_type="site", entity_id="m",
                    metric="cac", value=650, ts=now),
@@ -86,13 +85,13 @@ class TestRuleModel:
         model = RuleModel(VALID_SPEC)
         ctx = ModelContext(workspace_id="ws", metrics=[
             Metric(workspace_id="ws", entity_type="site", entity_id="m",
-                   metric="cac", value=200, ts=datetime.now(timezone.utc)),
+                   metric="cac", value=200, ts=datetime.now(UTC)),
         ])
         assert await model.evaluate(ctx) == []
 
     async def test_any_window(self):
         model = RuleModel({**VALID_SPEC, "window": "any"})
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         ctx = ModelContext(workspace_id="ws", metrics=[
             Metric(workspace_id="ws", entity_type="site", entity_id="m",
                    metric="cac", value=100, ts=now - timedelta(hours=2)),
@@ -107,7 +106,7 @@ class TestRuleModel:
         spec = {**VALID_SPEC, "window": "trend_down_pct", "metric": "traffic",
                 "trend_pct": 0.3, "condition": {"op": "<", "value": 10**9}}
         model = RuleModel(spec)
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         ctx = ModelContext(workspace_id="ws", metrics=[
             Metric(workspace_id="ws", entity_type="site", entity_id="m",
                    metric="traffic", value=1000, ts=now - timedelta(hours=1)),

@@ -1,15 +1,12 @@
 """测试 RBAC + API Key 认证（PL-6）"""
 
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta
 
 import pytest
 
 import insflow.core.files as files_mod
 from insflow.core.auth import (
-    ACTION_MIN_ROLE,
-    APIKey,
     AuthManager,
-    Role,
     can,
     mask_key,
     role_at_least,
@@ -48,7 +45,6 @@ class TestRBAC:
 
 class TestAPIKey:
     def test_create_and_authenticate(self, tmp_path):
-        from insflow.core.auth import AuthManager
         mgr = AuthManager("test-ws")
         key = mgr.create_key("ci", scopes=["read"])
 
@@ -57,13 +53,11 @@ class TestAPIKey:
         assert found.key_id == key.key_id
 
     def test_invalid_key_rejected(self):
-        from insflow.core.auth import AuthManager
         mgr = AuthManager("test-ws")
         mgr.create_key("a", ["read"])
         assert mgr.authenticate("ifk_wrong") is None
 
     def test_scope_enforcement(self):
-        from insflow.core.auth import AuthManager
         mgr = AuthManager("test-ws")
         read_key = mgr.create_key("ro", scopes=["read"])
         write_key = mgr.create_key("rw", scopes=["read", "write"])
@@ -76,14 +70,12 @@ class TestAPIKey:
         assert ok
 
     def test_expired_key_rejected(self):
-        from insflow.core.auth import APIKey, AuthManager
         mgr = AuthManager("test-ws")
         key = mgr.create_key("expired", ["read"], ttl_days=1)
         key.expires_at = utcnow() - timedelta(days=1)
         assert mgr.authenticate(key.key) is None
 
     def test_revoked_rejected(self):
-        from insflow.core.auth import AuthManager
         mgr = AuthManager("test-ws")
         key = mgr.create_key("to-revoke", ["read"])
         mgr.revoke(key.key_id)
@@ -99,7 +91,6 @@ class TestAPIKey:
 class TestHMAC:
     def test_verify(self):
         raw = b"body"
-        from insflow.core.auth import hash_secret
         sig = __import__("hashlib").sha256  # noqa
         import hashlib
         import hmac as h

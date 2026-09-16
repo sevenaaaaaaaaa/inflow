@@ -1,13 +1,11 @@
 """测试插件市场机制（scan/install/uninstall/审计）"""
 
 import json
-from pathlib import Path
 
 import pytest
 
 import insflow.engine.marketplace as mp
 from insflow.engine.marketplace import Marketplace, check_plugin
-
 
 GOOD_PLUGIN = {
     "id": "demo-source",

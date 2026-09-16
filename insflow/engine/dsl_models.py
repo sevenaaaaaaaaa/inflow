@@ -19,11 +19,9 @@
 无代码：运营配置 JSON 即可产出模型，evaluate 时按条件匹配指标生成洞察。
 """
 
-import json
 import operator as pyop
-from typing import Any
 
-from .router import InsightModel, ModelContext, get_model_router
+from .router import InsightModel, ModelContext
 
 # DSL 支持的比较运算符
 OPS = {
