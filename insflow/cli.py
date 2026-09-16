@@ -2,6 +2,8 @@
 
 import asyncio
 import sys
+
+from . import __version__
 from pathlib import Path
 
 import click
@@ -25,7 +27,7 @@ def run_async(coro):
 
 
 @click.group()
-@click.version_option(version="0.1.0", prog_name="insflow")
+@click.version_option(version=__version__, prog_name="insflow")
 def main():
     """Insight Flow - 增长情报与策略操作系统"""
     pass
