@@ -1,21 +1,28 @@
 # Insight Flow 私有化部署 · Docker Compose
-# 用法：
+# 推荐用法：./deploy/docker/install.sh（一键：生成密钥 → 构建启动 → 健康检查 → 引导初始化）
+# 手动用法：
 #   1. cp .env.example .env 并设置 INSFLOW_MASTER_KEY（必填，fail-closed）
-#   2. docker compose up -d
-#   3. 访问 http://<host>:8400 （建议前置反代加 TLS）
+#   2. docker compose -f deploy/docker/docker-compose.yml --env-file .env up -d --build
 services:
   insflow:
-    build: ./docker
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile
+    image: insflow:1.0.0
     container_name: insflow
     restart: unless-stopped
     ports:
-      - "127.0.0.1:8400:8400"   # 只绑本机回环，暴露交给反代
-    env_file: .env
+      - "127.0.0.1:${INSFLOW_PORT:-8400}:8400"   # 只绑本机回环，暴露交给反代
+    env_file: ../../.env
     environment:
       - INSFLOW_PORT=8400
     volumes:
       - insflow-data:/app/data
-    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8400/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
     logging:
       driver: json-file
       options: {max-size: "10m", max-file: "3"}

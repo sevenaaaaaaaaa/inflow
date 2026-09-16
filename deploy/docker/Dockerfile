@@ -13,9 +13,10 @@ COPY pyproject.toml README.md ./
 COPY insflow ./insflow
 RUN pip install --no-cache-dir .
 
-# 插件与 Skill（随镜像分发内置插件）
+# 内置资产（随镜像分发）
 COPY plugins ./plugins
 COPY skills ./skills
+COPY templates ./templates
 
 # 运行时数据卷挂载点
 VOLUME ["/app/data"]

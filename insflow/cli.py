@@ -509,6 +509,61 @@ def setup(name: str, workspace: str, pack: str, base_url: str):
     run_async(_setup())
 
 
+@main.group()
+def template():
+    """行业模板包"""
+    pass
+
+
+@template.command("list")
+def template_list():
+    """列出可用的行业模板包"""
+    from .engine.template_pack import TemplateRegistry
+    items = TemplateRegistry().list()
+    table = Table(title="行业模板包")
+    table.add_column("ID", style="cyan")
+    table.add_column("名称", style="green")
+    table.add_column("监控项", style="magenta")
+    table.add_column("DSL 规则", style="yellow")
+    for it in items:
+        table.add_row(it["id"], it["name"], str(it["monitors"]), str(it["dsl_rules"]))
+    console.print(table)
+
+
+@template.command("apply")
+@click.argument("template_id")
+@click.option("--workspace", "-w", required=True, help="工作区ID")
+def template_apply(template_id: str, workspace: str):
+    """应用行业模板包到工作区（幂等）"""
+    from .engine.template_pack import TemplateRegistry
+
+    async def _apply():
+        pack = TemplateRegistry().get(template_id)
+        if not pack:
+            console.print(f"[red]模板不存在: {template_id}[/]")
+            sys.exit(1)
+        result = await pack.apply(workspace)
+        console.print(f"[green]✓ {pack.name}[/]：监控 +{len(result['monitors_created'])}"
+                      f"（跳过 {len(result['monitors_skipped'])}），"
+                      f"DSL +{len(result['dsl_rules_registered'])}")
+
+    run_async(_apply())
+
+
+@main.command()
+@click.option("--workspace", "-w", required=True, help="工作区ID")
+@click.option("--month", default=None, help="账期（YYYY-MM，默认当月）")
+def invoice(workspace: str, month: str):
+    """生成月度对账单"""
+    from .engine.invoice import InvoiceBuilder
+
+    async def _build():
+        result = await InvoiceBuilder(workspace).build(month=month)
+        console.print(f"[green]对账单已生成 → {result['invoice_path']}[/]")
+
+    run_async(_build())
+
+
 @main.command()
 def init():
     """初始化 Insight Flow 数据目录"""
