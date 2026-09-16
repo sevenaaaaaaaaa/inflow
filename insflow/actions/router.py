@@ -202,10 +202,13 @@ def get_action_router() -> ActionRouter:
     """获取全局动作路由（含内置适配器）"""
     global _router
     if _router is None:
+        from .mflow_adapter import MFlowCreateContentAdapter, MFlowRegisterTopicAdapter
         from .notify import FeishuNotifyAdapter, SlackNotifyAdapter
         _router = ActionRouter()
         _router.register(OpenFlowWebhookAdapter())
         _router.register(GenericWebhookAdapter())
         _router.register(FeishuNotifyAdapter())
         _router.register(SlackNotifyAdapter())
+        _router.register(MFlowCreateContentAdapter())
+        _router.register(MFlowRegisterTopicAdapter())
     return _router
