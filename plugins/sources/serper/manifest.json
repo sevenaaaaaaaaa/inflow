@@ -1,0 +1,21 @@
+{
+  "id": "serper",
+  "type": "source",
+  "name": "Serper.dev Google SERP API",
+  "version": "1.0.0",
+  "entry": "entry.py",
+  "permissions": ["network", "credentials:serper"],
+  "config": {
+    "api_key": {
+      "desc": "Serper.dev API key",
+      "required": true,
+      "secret": true
+    }
+  },
+  "provides": {
+    "metrics": ["serp_organic", "serp_features", "serp_local", "serp_news"],
+    "engines": ["google"],
+    "latency": "priority",
+    "cost_hint": "0.001 USD/query (standard)"
+  }
+}
