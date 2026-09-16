@@ -251,6 +251,71 @@ async def mcp_call_tool(data: McpToolCall):
         return {"raw": output}
 
 
+# ========== 竞品 / 旅程 / 第一方 API（M3）==========
+
+class CompetitorProfileRequest(BaseModel):
+    domain: str
+    name: str = ""
+    positioning: str = ""
+    pricing: list = []
+    product_lines: list = []
+    social: dict = {}
+    monitors: list = []
+
+
+@app.post("/api/v1/competitors")
+async def upsert_competitor(workspace_id: str, data: CompetitorProfileRequest):
+    """创建/更新竞品档案（CI-1）"""
+    from ..engine.competitor import CompetitorModule
+    store = await get_store()
+    if not await store.get_workspace(workspace_id):
+        raise HTTPException(status_code=404, detail="Workspace not found")
+    module = CompetitorModule(workspace_id)
+    return await module.upsert_profile(
+        data.domain, name=data.name, positioning=data.positioning,
+        pricing=data.pricing, product_lines=data.product_lines,
+        social=data.social, monitors=data.monitors,
+    )
+
+
+@app.get("/api/v1/competitors")
+async def list_competitors(workspace_id: str = Query(...)):
+    """列出竞品档案"""
+    from ..engine.competitor import CompetitorModule
+    return {"competitors": await CompetitorModule(workspace_id).list_profiles()}
+
+
+class SeoSnapshotRequest(BaseModel):
+    domain: str
+    ranks: list[dict]
+
+
+@app.post("/api/v1/competitors/seo-snapshot")
+async def seo_snapshot(workspace_id: str, data: SeoSnapshotRequest):
+    """记录关键词排名快照 → 关键词缺口分析（CI-3）"""
+    from ..engine.competitor import CompetitorModule
+    module = CompetitorModule(workspace_id)
+    return await module.record_seo_snapshot(data.domain, data.ranks)
+
+
+class FirstPartyAnalysisRequest(BaseModel):
+    members: list[dict] = []
+    orders: list[dict] = []
+
+
+@app.post("/api/v1/first-party/analyze")
+async def first_party_analyze(workspace_id: str, data: FirstPartyAnalysisRequest):
+    """第一方情报：旅程重建（CJ-3）+ RFM 分层（CJ-5）
+
+    members/orders 留空时走 OpenFlow MCP 客户端实时拉取。
+    """
+    from ..engine.first_party import FirstPartyIntelligence
+    fi = FirstPartyIntelligence(workspace_id)
+    return await fi.run_first_party_analysis(
+        members=data.members or None, orders=data.orders or None,
+    )
+
+
 # ========== 入站事件（HMAC 验签）==========
 
 @app.post("/api/v1/ingest")
