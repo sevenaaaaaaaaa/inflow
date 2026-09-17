@@ -476,6 +476,62 @@ def demo_clear(workspace: str):
     run_async(_clear())
 
 
+@main.group()
+def db():
+    """数据库（SQLite / MySQL 双驱动）"""
+    pass
+
+
+@db.command("status")
+def db_status():
+    """当前驱动与容量（运维观察）"""
+    from .core.db import resolve_driver
+
+    async def _status():
+        from .core.store import get_store
+        store = await get_store()
+        h = await store.health()
+        console.print(f"驱动: [bold]{resolve_driver()}[/]")
+        console.print(f"大小: {h['db_size_bytes'] / 1048576:.1f} MB"
+                      + (f" | WAL {h['wal_size_bytes'] / 1048576:.1f} MB"
+                         if h.get("wal_size_bytes") else ""))
+        console.print(f"查询: {h['queries']} 次 · 慢查询 {h['slow_queries']} · p95 {h['p95_ms']}ms")
+        rows = {k: v for k, v in h["row_counts"].items() if v}
+        if rows:
+            table = Table(title="行数")
+            table.add_column("表", style="cyan")
+            table.add_column("行数", style="green")
+            for k, v in rows.items():
+                table.add_row(k, f"{v:,}")
+            console.print(table)
+
+    run_async(_status())
+
+
+@db.command("migrate")
+def db_migrate():
+    """按当前驱动建表/迁移（MySQL 需先建库建用户）"""
+    from .core.db import mysql_config_from_env, resolve_driver
+
+    async def _migrate():
+        from .core.store import Store
+        driver = resolve_driver()
+        if driver == "mysql":
+            cfg = mysql_config_from_env()
+            console.print(f"[bold]MySQL[/] {cfg['user']}@{cfg['host']}:{cfg['port']}/{cfg['dbname']}")
+        else:
+            console.print("[bold]SQLite[/]（内嵌）")
+        store = Store(driver=driver)
+        await store.connect()
+        await store.migrate()
+        h = await store.health()
+        console.print(f"[green]✓ 迁移完成[/] 驱动={h['driver']} "
+                      f"表 {sum(1 for v in h['row_counts'].values() if v is not None)} 张")
+        await store.close()
+
+    run_async(_migrate())
+
+
 @main.command()
 @click.option("--workspace", "-w", default="default", help="工作区ID")
 def doctor(workspace: str):

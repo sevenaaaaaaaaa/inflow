@@ -1,6 +1,7 @@
 """Insight Flow SQLite 存储层"""
 
 import json
+import os
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -25,7 +26,6 @@ def default_db_path() -> Path:
     说明（对齐 OpenFlow ADR-2）：SQLite 起步，预留 DATABASE_URL 切换点；
     当触发器命中（见 docs/11）时，改为通过 Store 的查询层实现替换为 MySQL/Postgres。
     """
-    import os
     explicit = os.environ.get("INSFLOW_DB_PATH", "")
     if explicit:
         return Path(explicit)
@@ -284,61 +284,46 @@ class Store:
     SLOW_QUERY_MS = 200.0          # 慢查询阈值（超过则记录，供运维舱观察）
     _DURATION_SAMPLES = 500        # 保留最近 N 次耗时用于 p95
 
-    def __init__(self, db_path: Path | None = None):
+    def __init__(self, db_path: Path | None = None, driver: str | None = None):
         self.db_path = db_path or default_db_path()
-        self._db: aiosqlite.Connection | None = None
+        self.driver = (driver or os.environ.get("INSFLOW_DB_DRIVER", "sqlite")).lower()
+        self._db = None          # 后端实例（SQLiteBackend / MySQLBackend，接口统一）
+        self._backend = None
         self._query_count = 0
         self._slow_queries = 0
         self._query_durations: list[float] = []
 
     async def connect(self):
-        """连接数据库（性能基线 pragma，对齐 OpenFlow：WAL + busy_timeout）"""
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        self._db = await aiosqlite.connect(str(self.db_path))
-        self._db.row_factory = aiosqlite.Row
-        # 家族基线（OpenFlow Database.php 同款）：WAL 并发读写 + busy_timeout 防锁
-        await self._db.execute("PRAGMA journal_mode=WAL")
-        await self._db.execute("PRAGMA busy_timeout=5000")
-        await self._db.execute("PRAGMA foreign_keys=ON")
-        # 分析型读多写少：NORMAL 同步（WAL 下安全且快）+ 内存临时表 + 20MB 页缓存
-        await self._db.execute("PRAGMA synchronous=NORMAL")
-        await self._db.execute("PRAGMA temp_store=MEMORY")
-        await self._db.execute("PRAGMA cache_size=-20000")
-        await self._db.execute("PRAGMA mmap_size=268435456")  # 256MB 内存映射
+        """连接数据库（SQLite / MySQL 双驱动，对齐 OpenFlow EventStore）"""
+        from .db import create_backend
+        self._backend = create_backend(driver=self.driver, db_path=self.db_path)
+        await self._backend.connect()
+        self._db = self._backend          # 统一接口别名（execute/commit/executescript/close）
+        self.driver = self._backend.driver
 
     async def wal_checkpoint(self, mode: str = "TRUNCATE") -> None:
-        """WAL 检查点（维护任务：控制 -wal 文件膨胀）"""
-        if not self._db:
-            return
-        await self._db.execute(f"PRAGMA wal_checkpoint({mode})")
-        await self._db.commit()
+        """WAL 检查点（仅 SQLite；MySQL 无 WAL）"""
+        if self._backend:
+            await self._backend.wal_checkpoint(mode)
 
     async def health(self) -> dict:
         """数据库健康与增长指标（对齐 OpenFlow：看"摊了多少读/耗时"，不只看表大小）
 
         返回：文件大小 / WAL 大小 / 各表行数 / 慢查询统计 / 查询计数
         """
-        import os
-        from pathlib import Path
-        db = Path(self.db_path)
-        size = db.stat().st_size if db.exists() else 0
-        wal = db.with_suffix(db.suffix + "-wal")
-        wal_size = wal.stat().st_size if wal.exists() else 0
+        size, wal_size = await self._backend.size_bytes()
 
         tables = ["insights", "metrics", "actions", "feedback", "events",
                   "raw_records", "journey_events", "subscriptions", "monitors",
                   "competitors", "users", "sessions"]
         row_counts = {}
         for t in tables:
-            try:
-                row = await self._fetchone(f"SELECT COUNT(*) AS n FROM {t}")
-                row_counts[t] = row["n"] if row else 0
-            except Exception:
-                row_counts[t] = None
+            row_counts[t] = await self._backend.count(t)
 
         counts = sorted(self._query_durations)
         p95 = counts[int(len(counts) * 0.95)] if counts else 0.0
         return {
+            "driver": self.driver,
             "db_size_bytes": size,
             "wal_size_bytes": wal_size,
             "row_counts": row_counts,
@@ -359,6 +344,16 @@ class Store:
         """执行迁移"""
         if not self._db:
             raise RuntimeError("Database not connected")
+        if self.driver == "mysql":
+            from .db.schema_mysql import MYSQL_MIGRATIONS
+            for migration in MYSQL_MIGRATIONS:
+                try:
+                    await self._backend.executescript(migration)
+                except Exception as e:  # 已存在等幂等错误容忍（MySQL 无 IF NOT EXISTS 索引）
+                    if "Duplicate" not in str(e) and "already exists" not in str(e):
+                        raise
+            await self._db.commit()
+            return
         for migration in MIGRATIONS:
             await self._db.executescript(migration)
         # V3 幂等迁移：metrics 去重列/索引（按列存在性跳过 ALTER）
@@ -727,6 +722,7 @@ class Store:
         from datetime import timedelta
         since = (datetime.now(UTC) - timedelta(days=days)).isoformat()
         fmt = self._bucket_fmt(days)
+        bucket_expr = self._backend.dialect.bucket("ts", fmt) if self._backend else f"strftime('{fmt}', ts)"
         fn = {"sum": "SUM", "avg": "AVG", "max": "MAX"}.get(agg, "SUM")
         where = "workspace_id = ? AND metric = ? AND ts >= ?"
         params: list = [workspace_id, metric, since]
@@ -734,7 +730,7 @@ class Store:
             where += " AND entity_id = ?"
             params.append(entity_id)
         rows = await self._fetchall(
-            f"""SELECT strftime('{fmt}', ts) AS bucket, {fn}(value) AS v, COUNT(*) AS n
+            f"""SELECT {bucket_expr} AS bucket, {fn}(value) AS v, COUNT(*) AS n
                 FROM metrics WHERE {where}
                 GROUP BY bucket ORDER BY bucket LIMIT ?""",
             tuple([*params, limit or self.MAX_SERIES_POINTS]),
