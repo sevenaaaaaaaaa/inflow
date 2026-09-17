@@ -133,8 +133,8 @@ MIGRATIONS = [
         workspace_id TEXT NOT NULL REFERENCES workspaces(id),
         action_id TEXT NOT NULL REFERENCES actions(id),
         metric TEXT NOT NULL,
-        before REAL NOT NULL,
-        after REAL NOT NULL,
+        `before` REAL NOT NULL,
+        `after` REAL NOT NULL,
         delta REAL NOT NULL,
         verdict TEXT NOT NULL,
         evaluated_at TEXT NOT NULL
@@ -628,7 +628,7 @@ class Store:
         if fb.evaluated_at is None:
             fb.evaluated_at = datetime.now(UTC)
         await self._execute(
-            """INSERT INTO feedback (id, workspace_id, action_id, metric, before, after, delta, verdict, evaluated_at)
+            """INSERT INTO feedback (id, workspace_id, action_id, metric, `before`, `after`, delta, verdict, evaluated_at)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (fb.id, fb.workspace_id, fb.action_id, fb.metric, fb.before, fb.after,
              fb.delta, fb.verdict.value, fb.evaluated_at.isoformat())
