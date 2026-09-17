@@ -1,6 +1,6 @@
 """Insight Flow 插件注册表"""
 
-import importlib
+import importlib.util
 import json
 from pathlib import Path
 

@@ -1,0 +1,30 @@
+{
+  "id": "union-ads",
+  "type": "source",
+  "name": "联盟/广告投放监测（Union & Ads）",
+  "version": "1.0.0",
+  "entry": "entry.py",
+  "permissions": ["network", "credentials:union_ads"],
+  "config": {
+    "endpoint": {
+      "desc": "投放数据接口（返回 campaign 级 spend/clicks/conversions/revenue 的 JSON）",
+      "required": true
+    },
+    "api_key": {
+      "desc": "接口鉴权 Key（Bearer）",
+      "required": false,
+      "secret": true
+    },
+    "payload": {
+      "desc": "无接口时直接提供的 JSON 数组（手工导入/离线私有化）",
+      "required": false
+    }
+  },
+  "provides": {
+    "metrics": ["ad_spend", "ad_clicks", "ad_conversions", "affiliate_revenue",
+                "affiliate_orders"],
+    "engines": ["union-ads"],
+    "latency": "standard",
+    "cost_hint": "自建/联盟接口，无第三方费用；按调用次数计入配额"
+  }
+}
