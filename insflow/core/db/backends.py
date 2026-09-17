@@ -133,6 +133,8 @@ class MySQLBackend:
         self.dialect = get_dialect("mysql")
         self._lib = None
         self._pool = None           # queue.Queue of connections
+        self._conn = None           # 复用连接（池大小 1）
+        self._lock = None           # asyncio.Lock（单连接串行化）
         self.row_factory = None
 
     @property
@@ -167,45 +169,48 @@ class MySQLBackend:
 
         import asyncio
         import queue
-        size = max(1, int(c.get("pool_size", 5)))
+        self._lock = asyncio.Lock()
+        size = 1   # 单连接：事务语义与 SQLite 一致，且避免逐语句 fsync
         self._pool = queue.Queue(maxsize=size)
         # 先建一条以验证连通性（fail-closed：连不上直接报错，不静默回落）
         try:
             conn = await asyncio.to_thread(self._new_conn)
         except Exception as e:
             raise RuntimeError(f"MySQL 连接失败（{self.dsn}）：{e}") from e
+        self._conn = conn
         self._pool.put(conn)
-        for _ in range(size - 1):
-            self._pool.put(None)   # 懒建；取到 None 时创建
         await self.execute("SET SESSION time_zone='+00:00'")
 
     async def _run(self, fn):
-        """在池中取连接执行（线程内）"""
+        """在池中取连接执行（线程内）。
+
+        **不**逐语句提交——性能教训：每条语句 commit 会让每次写都 fsync，
+        MySQL 上批量灌数据会卡死（实测灌 demo 超过 5 分钟）。
+        改为与 SQLite 后端语义一致：由调用方显式 `commit()` 批量提交；
+        池大小默认 1（单连接 + 锁），保证事务可见性一致、避免跨连接脏读。
+        """
         import asyncio
         import queue
-        try:
-            conn = self._pool.get_nowait()
-        except queue.Empty:
-            conn = await asyncio.to_thread(self._pool.get)
-        if conn is None:
-            conn = await asyncio.to_thread(self._new_conn)
-        try:
-            cur = conn.cursor()
-            out = fn(cur)
-            conn.commit()
-            return out, cur
-        finally:
-            self._pool.put(conn)
+        async with self._lock:
+            try:
+                conn = self._pool.get_nowait()
+            except queue.Empty:
+                conn = await asyncio.to_thread(self._pool.get)
+            if conn is None:
+                conn = await asyncio.to_thread(self._new_conn)
+            try:
+                return fn(conn.cursor())
+            finally:
+                self._pool.put(conn)
 
     async def execute(self, sql: str, params: tuple = ()) -> Cursor:
-        import asyncio
         adapted = self.dialect.adapt(sql)
 
         def _do(cur):
             cur.execute(adapted, params or None)
             return cur
 
-        cur, _ = await self._run(_do)
+        cur = await self._run(_do)
         return Cursor(cur, "mysql")
 
     async def executescript(self, script: str) -> None:
@@ -214,7 +219,11 @@ class MySQLBackend:
             await self.execute(stmt)
 
     async def commit(self) -> None:
-        return None    # _run 每次已提交
+        """批量提交（与 SQLite 后端一致）"""
+        import asyncio
+        async with self._lock:
+            if self._conn is not None:
+                await asyncio.to_thread(self._conn.commit)
 
     async def close(self) -> None:
         if self._pool:
