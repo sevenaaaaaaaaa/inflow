@@ -101,6 +101,121 @@ function exSet(k, v){
   {% endif %}
 </div>
 
+<h2>维度自由组合（拖拽）</h2>
+<div class="card" data-cap="read">
+  <p class="sub">把「维度」拖到行/列槽位，把「指标」拖到值槽——立即出透视表/热力图（无需开发加接口）。</p>
+  <div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:10px">
+    <div>
+      <div class="sub" style="margin-bottom:4px">维度（可拖）</div>
+      <div id="dz-dims" style="display:flex;gap:6px;flex-wrap:wrap">
+        {% for d in dim_keys %}
+        <span class="if-chip" draggable="true" data-dim="{{ d }}"
+              ondragstart="exDragDim(event,'{{ d }}')" style="cursor:grab">{{ d }}</span>
+        {% else %}
+        <span class="sub">暂无可透视维度（采集维度含 province/channel/device 时出现）</span>
+        {% endfor %}
+      </div>
+      <div class="sub" style="margin:8px 0 4px">指标（可拖）</div>
+      <div id="dz-metrics" style="display:flex;gap:6px;flex-wrap:wrap">
+        {% for m in catalog[:12] %}
+        <span class="if-chip" draggable="true" data-metric="{{ m.metric }}"
+              ondragstart="exDragMetric(event,'{{ m.metric }}')" style="cursor:grab">{{ m.metric }}</span>
+        {% endfor %}
+      </div>
+    </div>
+    <div style="flex:1;min-width:320px">
+      <div style="display:flex;gap:10px;flex-wrap:wrap">
+        <div class="ex-drop" id="drop-rows" data-slot="rows"
+             ondragover="event.preventDefault()" ondrop="exDrop(event,'rows')"
+             style="flex:1;min-width:140px;border:1px dashed var(--border-strong);border-radius:10px;padding:8px;min-height:56px">
+          <div class="sub">行维度</div><div id="slot-rows" style="display:flex;gap:6px;flex-wrap:wrap"></div>
+        </div>
+        <div class="ex-drop" id="drop-cols" data-slot="cols"
+             ondragover="event.preventDefault()" ondrop="exDrop(event,'cols')"
+             style="flex:1;min-width:140px;border:1px dashed var(--border-strong);border-radius:10px;padding:8px;min-height:56px">
+          <div class="sub">列维度</div><div id="slot-cols" style="display:flex;gap:6px;flex-wrap:wrap"></div>
+        </div>
+        <div class="ex-drop" id="drop-val" data-slot="val"
+             ondragover="event.preventDefault()" ondrop="exDrop(event,'val')"
+             style="flex:1;min-width:140px;border:1px dashed var(--border-strong);border-radius:10px;padding:8px;min-height:56px">
+          <div class="sub">值（指标）</div><div id="slot-val" style="display:flex;gap:6px;flex-wrap:wrap"></div>
+        </div>
+      </div>
+      <div class="toolbar" style="margin-top:8px">
+        <button onclick="exRunCube()">生成透视</button>
+        <button class="dp-btn" onclick="exClearCube()">清空</button>
+        <span id="ex-cube-status" class="sub"></span>
+      </div>
+    </div>
+  </div>
+  <div id="ex-cube-out"></div>
+</div>
+
+<script>
+var EXCUBE = {rows: [], cols: '', metric: ''};
+function exDragDim(ev, d){ ev.dataTransfer.setData('text/dim', d); }
+function exDragMetric(ev, m){ ev.dataTransfer.setData('text/metric', m); }
+function exDrop(ev, slot){
+  ev.preventDefault();
+  var dim = ev.dataTransfer.getData('text/dim');
+  var metric = ev.dataTransfer.getData('text/metric');
+  if (slot === 'val'){
+    if(!metric) return;
+    EXCUBE.metric = metric;
+    document.getElementById('slot-val').innerHTML = exTag(metric, 'val');
+  } else if (dim){
+    if (slot === 'rows'){
+      if (EXCUBE.rows.indexOf(dim) < 0) EXCUBE.rows.push(dim);
+      EXCUBE.rows = EXCUBE.rows.slice(0, 2);
+      document.getElementById('slot-rows').innerHTML = EXCUBE.rows.map(function(d){return exTag(d,'rows');}).join('');
+    } else {
+      EXCUBE.cols = dim;
+      document.getElementById('slot-cols').innerHTML = exTag(dim, 'cols');
+    }
+  }
+}
+function exTag(name, slot){
+  return '<span class="badge" style="background:var(--accent);color:var(--on-accent)">' + name +
+         ' <a href="#" onclick="exRemoveSlot(\'' + slot + '\',\'' + name + '\');return false" ' +
+         'style="color:inherit;text-decoration:none">×</a></span>';
+}
+function exRemoveSlot(slot, name){
+  if(slot === 'rows') EXCUBE.rows = EXCUBE.rows.filter(function(d){ return d !== name; });
+  if(slot === 'cols') EXCUBE.cols = '';
+  if(slot === 'val') EXCUBE.metric = '';
+  document.getElementById('slot-' + (slot === 'val' ? 'val' : slot)).innerHTML =
+    slot === 'rows' ? EXCUBE.rows.map(function(d){return exTag(d,'rows');}).join('')
+                    : (slot === 'cols' ? (EXCUBE.cols ? exTag(EXCUBE.cols,'cols') : '')
+                                       : (EXCUBE.metric ? exTag(EXCUBE.metric,'val') : ''));
+}
+function exClearCube(){
+  EXCUBE = {rows: [], cols: '', metric: ''};
+  ['rows','cols','val'].forEach(function(s){ document.getElementById('slot-' + s).innerHTML = ''; });
+  document.getElementById('ex-cube-out').innerHTML = '';
+}
+async function exRunCube(){
+  var st = document.getElementById('ex-cube-status');
+  if(!EXCUBE.metric){ st.textContent = '请把某个指标拖到「值」槽'; return; }
+  st.textContent = '计算中…';
+  var r = await fetch('/api/v1/explore/cube', {method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({workspace_id:'{{ workspace_id }}', metric: EXCUBE.metric,
+                          rows: EXCUBE.rows, cols: EXCUBE.cols, days: {{ days }},
+                          agg: '{{ agg }}'})});
+  var j = await r.json();
+  if(!r.ok){ st.textContent = j.detail || '失败'; return; }
+  st.textContent = j.row_labels.length + ' 行 × ' + j.col_labels.length + ' 列';
+  var html = '<table class="dp-table"><thead><tr><th>' +
+    ([j.dim_rows.join(' / ') || '分组']).concat(j.col_labels).join('</th><th>') +
+    '</th></tr></thead><tbody>';
+  j.row_labels.forEach(function(rl, i){
+    html += '<tr><td>' + rl + '</td>' + j.matrix[i].map(function(v){
+      return '<td>' + (Math.round(v * 100) / 100).toLocaleString() + '</td>'; }).join('') + '</tr>';
+  });
+  document.getElementById('ex-cube-out').innerHTML = html + '</tbody></table>';
+}
+</script>
+
 <h2>只读 SQL 沙箱</h2>
 <div class="card">
   <p class="sub">白名单表：metrics / metric_daily / insights / actions / competitors / journey_events；

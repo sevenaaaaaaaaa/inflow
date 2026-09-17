@@ -40,6 +40,14 @@ a{color:var(--accent);text-decoration:none}
     <input name="password" type="password" required placeholder="至少 8 位">
     <button type="submit">登录</button>
   </form>
+  {% if sso_enabled %}
+  <p style="margin-top:14px;font-size:12.5px;color:var(--muted)">
+    或使用企业账号登录
+  </p>
+  <div class="toolbar">
+    <a class="dp-btn" href="/console/sso/login?next=/console">SSO 单点登录（OIDC）</a>
+  </div>
+  {% endif %}
   <div class="foot">还没有账号？<a href="/console/register">立即注册</a>{% if not saas %} · <span style="opacity:.7">（SaaS 模式未开启，可匿名使用）</span>{% endif %}</div>
 </div>
 </body>

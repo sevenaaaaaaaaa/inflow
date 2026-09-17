@@ -306,13 +306,33 @@ NAV_AREA = {
 }
 
 
-def _role_ctx(request: Request, settings: dict | None) -> tuple[str, list[str], set]:
+# 各页面实时流订阅的指标（SSE metrics 频道）
+LIVE_METRICS = {
+    "traffic": ["ga4_sessions", "gsc_clicks", "ga4_conversions"],
+    "sentiment": ["topic_negative_ratio"],
+    "overview": ["ga4_sessions", "topic_negative_ratio"],
+    "action-loop": ["ga4_conversions"],
+    "journey": ["ga4_retention", "ga4_conversions"],
+    "explore": ["ga4_sessions"],
+}
+
+
+def _role_ctx(request: Request, settings: dict | None
+              ) -> tuple[str, list[str], set]:
     """角色 + 行级白名单 + 能力集（模板据此隐藏入口；查询据此收敛数据）"""
     user = getattr(request.state, "user", None)
     role = str((user or {}).get("role") or "owner")
     from ..engine.permissions import MATRIX, entity_allow
     caps = MATRIX.get(role, MATRIX["viewer"])
     return role, entity_allow(settings, role), set(caps)
+
+
+def _policy_ctx(request: Request, settings: dict | None):
+    """表达式级 RLS：角色策略 → (WHERE 片段, 参数)"""
+    from ..engine.rls import build_policy
+    user = getattr(request.state, "user", None) or {}
+    role = str(user.get("role") or "owner")
+    return build_policy(settings, role, user)
 
 
 def _ctx(request: Request, nav: str, workspace_id: str, **extra) -> dict:
@@ -324,6 +344,7 @@ def _ctx(request: Request, nav: str, workspace_id: str, **extra) -> dict:
         "workspace_id": workspace_id,
         # base.html 会被子模板 import，那里没有 request，故在此预计算
         "cf_active": list(cross_filters(request).items()),
+        "live_metrics": LIVE_METRICS.get(nav, []),
         **extra,
     }
 
@@ -467,11 +488,18 @@ async def cockpit_page(request: Request, name: str, workspace_id: str = Query(""
     # 变量模板并入联动筛选（同为维度等值过滤）
     cf = {**template_vars(request), **cross_filters(request)}
     ws_row = await (await get_store()).get_workspace(workspace_id)
-    role, allow, caps = _role_ctx(request, (ws_row.settings_json if ws_row else {}) or {})
+    _settings = (ws_row.settings_json if ws_row else {}) or {}
+    role, allow, caps = _role_ctx(request, _settings)
+    policy = _policy_ctx(request, _settings)
     if allow and entity and entity not in allow:
         return templates.TemplateResponse(request, "403.html", _ctx(
             request, nav, workspace_id, title="无权限"), status_code=403)
-    kw = {"entity_allow": allow} if (allow and name in ("traffic", "sentiment")) else {}
+    kw: dict = {}
+    if name in ("traffic", "sentiment"):
+        if allow:
+            kw["entity_allow"] = allow
+        if policy and policy[0]:
+            kw["policy"] = policy
     if days <= 0:
         data = await fn(workspace_id, dim_filters=cf, **kw) if name == "traffic" \
             else await fn(workspace_id, **kw) if kw else await fn(workspace_id)
@@ -498,13 +526,80 @@ async def sentiment_page(request: Request, workspace_id: str = Query(""),
         workspace_id = await _default_workspace()
     from .cockpit import COCKPITS
     ws_row = await (await get_store()).get_workspace(workspace_id)
-    role, allow, caps = _role_ctx(request, (ws_row.settings_json if ws_row else {}) or {})
+    _settings = (ws_row.settings_json if ws_row else {}) or {}
+    role, allow, caps = _role_ctx(request, _settings)
+    policy = _policy_ctx(request, _settings)
     data = await COCKPITS["sentiment"](workspace_id, days, channel=channel,
-                                       entity=entity, entity_allow=allow)
+                                       entity=entity, entity_allow=allow,
+                                       policy=policy)
     return templates.TemplateResponse(request, "sentiment.html", _ctx(
         request, "sentiment", workspace_id, data=data, title="舆情驾驶舱", days=days,
         entity=entity, channel=channel,
     ))
+
+
+@router.get("/sso/login", include_in_schema=False)
+async def sso_login(request: Request, next: str = Query("/console")):
+    """SSO 登录入口（OIDC 授权码流程；未配置则明确拒绝）"""
+    from ..engine import sso
+    if not sso.enabled():
+        return HTMLResponse(
+            '<div style="font:14px/1.7 system-ui;padding:24px">'
+            '未启用 SSO：请配置 INSFLOW_OIDC_ISSUER / INSFLOW_OIDC_CLIENT_ID '
+            '（可选 CLIENT_SECRET / SCOPES / DEFAULT_ROLE）</div>', status_code=400)
+    state = sso.new_state()
+    base = os.environ.get("INSFLOW_BASE_PATH", "")
+    redirect_uri = f"{sso_public_base(request)}{base}/console/sso/callback"
+    try:
+        url = await sso.authorize_url(redirect_uri, state)
+    except sso.SsoError as e:
+        return HTMLResponse(f'<div style="padding:24px">SSO 配置错误：{e}</div>',
+                            status_code=400)
+    resp = RedirectResponse(url, status_code=303)
+    resp.set_cookie(sso.state_cookie_name(), state, httponly=True, samesite="lax",
+                    max_age=300, secure=request.url.scheme == "https")
+    resp.set_cookie("if_oidc_next", next[:200], httponly=True, samesite="lax",
+                    max_age=300, secure=request.url.scheme == "https")
+    return resp
+
+
+def sso_public_base(request: Request) -> str:
+    """回调地址的公网前缀（反代场景由 X-Forwarded-* 决定）"""
+    proto = request.headers.get("x-forwarded-proto") or request.url.scheme
+    host = request.headers.get("x-forwarded-host") or request.headers.get("host") \
+        or request.url.netloc
+    return f"{proto}://{host}"
+
+
+@router.get("/sso/callback", include_in_schema=False)
+async def sso_callback(request: Request, code: str = Query(""), state: str = Query(""),
+                       error: str = Query("")):
+    """SSO 回调：校验 state → 换 token → userinfo → 建会话"""
+    from ..core.accounts import COOKIE_NAME
+    from ..engine import sso
+    if error:
+        return HTMLResponse(f'<div style="padding:24px">IdP 返回错误：{error}</div>',
+                            status_code=400)
+    expect = request.cookies.get(sso.state_cookie_name(), "")
+    if not code or not state or not expect or state != expect:
+        return HTMLResponse('<div style="padding:24px">state 校验失败（请重新登录）</div>',
+                            status_code=400)
+    base = os.environ.get("INSFLOW_BASE_PATH", "")
+    redirect_uri = f"{sso_public_base(request)}{base}/console/sso/callback"
+    try:
+        tokens = await sso.exchange_code(code, redirect_uri)
+        userinfo = await sso.fetch_userinfo(tokens["access_token"])
+        user = await sso.upsert_user(await _default_workspace(), userinfo)
+        session = await sso.start_session(user["user_id"])
+    except Exception as e:                      # 任何失败都不放行
+        return HTMLResponse(f'<div style="padding:24px">SSO 登录失败：{e}</div>',
+                            status_code=401)
+    nxt = request.cookies.get("if_oidc_next") or f"{base}/console"
+    resp = RedirectResponse(nxt, status_code=303)
+    resp.set_cookie(COOKIE_NAME, session, httponly=True, samesite="lax",
+                    max_age=14 * 24 * 3600, secure=request.url.scheme == "https")
+    resp.delete_cookie(sso.state_cookie_name())
+    return resp
 
 
 @router.get("/manifest.webmanifest")
@@ -660,9 +755,15 @@ async def explore_page(request: Request, workspace_id: str = Query(""),
                 entity_options = item["entities"]
                 break
         df = dict(vars_) or None
+        ws_pol = await store.get_workspace(workspace_id)
+        _pol_settings = (ws_pol.settings_json if ws_pol else {}) or {}
+        policy = _policy_ctx(request, _pol_settings)
+        allow = _role_ctx(request, _pol_settings)[1]
         series = await store.metric_series(workspace_id, metric, days=days, agg=agg,
                                            entity_id=entity or None, limit=200,
-                                           dim_filters=df)
+                                           dim_filters=df if df else None,
+                                           entity_allow=allow or None,
+                                           policy=policy)
         rows = [{"bucket": p["bucket"], "value": p["value"], "n": p["n"]} for p in series]
         chart = {"metric": metric, "entity": entity, "agg": agg, "days": days,
                  "labels": [p["bucket"] for p in series],
@@ -692,6 +793,7 @@ async def explore_page(request: Request, workspace_id: str = Query(""),
         days=days, agg=agg, entity_options=entity_options, chart_type=chart_type,
         dim=dim, dim2=dim2, dim_values=dim_values, vars_=vars_,
         box_groups=box_groups, scatter_points=scatter_points,
+        dim_keys=await store.dim_keys(workspace_id, metric),
         defs=await store.list_metric_defs(workspace_id),
     ))
 
@@ -753,9 +855,10 @@ async def console_root():
 
 @router.get("/login", response_class=HTMLResponse)
 async def login_page(request: Request, error: str = Query(""), next: str = Query("/console")):
+    from ..engine import sso
     return templates.TemplateResponse(request, "login.html", {
         "request": request, "version": __version__, "error": error, "next": next,
-        "saas": _SAAS_MODE(),
+        "saas": _SAAS_MODE(), "sso_enabled": sso.enabled(),
     })
 
 

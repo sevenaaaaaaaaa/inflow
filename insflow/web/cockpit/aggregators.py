@@ -23,6 +23,16 @@ def _load_json(raw):
         return {}
 
 
+def _auth_sig(policy: tuple[str, list] | None = None,
+              entity_allow: list[str] | None = None) -> str:
+    """权限签名：纳入缓存键，避免不同权限共享同一份缓存（防越权命中）"""
+    import hashlib
+    if not policy and not entity_allow:
+        return "-"
+    raw = f"{policy or ('', [])}|{sorted(entity_allow or [])}"
+    return hashlib.sha1(raw.encode()).hexdigest()[:10]
+
+
 def _key(cockpit: str, workspace_id: str, days: float) -> str:
     return f"cockpit:{cockpit}:{workspace_id}:{days}"
 
@@ -78,7 +88,8 @@ async def overview(workspace_id: str, days: float = 7) -> dict:
 
 async def sentiment(workspace_id: str, days: float = 7,
                     channel: str = "", entity: str = "",
-                    entity_allow: list[str] | None = None) -> dict:
+                    entity_allow: list[str] | None = None,
+                    policy: tuple[str, list] | None = None) -> dict:
     async def build():
         store = await get_store()
         neg_series = await store.metric_series(workspace_id, "topic_negative_ratio",
@@ -128,7 +139,9 @@ async def sentiment(workspace_id: str, days: float = 7,
             "alerts": alerts[:10],
             "words": sorted(word_freq.items(), key=lambda kv: -kv[1])[:25],
         }
-    return await cache.get_or_compute(_key(f"sentiment:{channel}:{entity}", workspace_id, days), build, TTL)
+    return await cache.get_or_compute(
+        _key(f"sentiment:{channel}:{entity}:{_auth_sig(policy, entity_allow)}",
+             workspace_id, days), build, TTL)
 
 
 # ================= C3 流量 =================
@@ -136,22 +149,26 @@ async def sentiment(workspace_id: str, days: float = 7,
 async def traffic(workspace_id: str, days: float = 14,
                   channel: str = "", entity: str = "",
                   dim_filters: dict | None = None,
-                  entity_allow: list[str] | None = None) -> dict:
+                  entity_allow: list[str] | None = None,
+                  policy: tuple[str, list] | None = None) -> dict:
     async def build():
         store = await get_store()
         extra = {"channel": channel} if channel else {}
         df: dict = {**(dim_filters or {}), **extra}
         clicks = await store.metric_series(workspace_id, "gsc_clicks", days=days,
-                                           dim_filters=df, entity_allow=entity_allow)
+                                           dim_filters=df, entity_allow=entity_allow,
+                                           policy=policy)
         sessions = await store.metric_series(workspace_id, "ga4_sessions", days=days,
-                                             dim_filters=df, entity_allow=entity_allow)
+                                             dim_filters=df, entity_allow=entity_allow,
+                                             policy=policy)
         conversions = await store.metric_series(workspace_id, "ga4_conversions",
                                                 days=days, dim_filters=df,
-                                                entity_allow=entity_allow)
+                                                entity_allow=entity_allow,
+                                                policy=policy)
         totals = await store.metric_totals(
             workspace_id, ["gsc_clicks", "gsc_impressions",
                            "ga4_sessions", "ga4_conversions"], days=days,
-            dim_filters=df)
+            dim_filters=df, entity_allow=entity_allow, policy=policy)
         # CTR 是比率，取均值（不能求和）
         ctr = await store.metric_total(workspace_id, "gsc_ctr", days=days, agg="avg",
                                        dim_filters=df)
@@ -208,7 +225,8 @@ async def traffic(workspace_id: str, days: float = 14,
             "cf": df,
         }
     return await cache.get_or_compute(
-        _key(f"traffic:{channel}:{sorted((dim_filters or {}).items())}", workspace_id, days),
+        _key(f"traffic:{channel}:{sorted((dim_filters or {}).items())}"
+             f":{_auth_sig(policy, entity_allow)}", workspace_id, days),
         build, TTL)
 
 

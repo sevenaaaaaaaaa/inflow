@@ -118,7 +118,7 @@ class TestAnomalyBand:
                            [f"d{i}" for i in range(8)], anomaly=True)
         assert 'class="anom"' in svg
         assert '"anomaly"' in html.unescape(svg)
-        assert "含异常标记" in svg
+        assert "异常标记" in svg
 
     def test_band_off_by_default(self):
         svg = c.line_chart([{"name": "x", "values": [1, 2, 3]}], ["a", "b", "c"])

@@ -150,13 +150,65 @@ def anomaly_points(values: Sequence[float], *, k: float = 2.5,
     return upper, lower, bad
 
 
+def anomaly_points_robust(values: Sequence[float], *, k: float = 3.5,
+                          window: int = 14) -> tuple[list[float], list[float], list[int]]:
+    """稳健异常检测：滚动中位数 + MAD（1.4826 缩放），比均值±σ 抗离群
+
+    MAD ≈ 0（平稳段）时退化为「与中位数偏离超过 25% 即异常」。
+    """
+    vals = [float(v) for v in values]
+    n = len(vals)
+    if n < 4:
+        return [], [], []
+    win = max(4, min(window, n))
+    upper, lower, bad = [], [], []
+    for i in range(n):
+        seg = vals[max(0, i - win):i]          # 留一：不含当前点
+        if len(seg) < 3:
+            seg = vals[:i] + vals[i + 1:]
+        if not seg:
+            continue
+        srt = sorted(seg)
+        med = srt[len(srt) // 2] if len(srt) % 2 else (srt[len(srt) // 2 - 1] +
+                                                       srt[len(srt) // 2]) / 2
+        devs = sorted(abs(x - med) for x in seg)
+        mad = devs[len(devs) // 2]
+        scale = 1.4826 * mad
+        upper.append(max(0.0, med + k * scale))
+        lower.append(max(0.0, med - k * scale))
+        if scale > 0:
+            if abs(vals[i] - med) > k * scale:
+                bad.append(i)
+        elif abs(vals[i] - med) > max(1e-9, abs(med) * 0.25):
+            bad.append(i)
+    return upper, lower, bad
+
+
+def anomaly_points_seasonal(values: Sequence[float], *, k: float = 3.5,
+                            season: int = 7) -> tuple[list[float], list[float], list[int]]:
+    """季节残差异常：先按季节位置（如星期几）去季节，再对残差做稳健检测"""
+    vals = [float(v) for v in values]
+    n = len(vals)
+    if n < 2 * season:
+        return anomaly_points_robust(vals, k=k)
+    buckets: list[list[float]] = [[] for _ in range(season)]
+    for i, v in enumerate(vals):
+        buckets[i % season].append(v)
+    idx = [sorted(b)[len(b) // 2] if b else 0.0 for b in buckets]
+    resid = [vals[i] - idx[i % season] for i in range(n)]
+    up, low, bad = anomaly_points_robust(resid, k=k, window=max(7, season * 2))
+    # 残差带 → 还原到原量纲（用于画带）
+    return ([u + idx[i % season] for i, u in enumerate(up)],
+            [max(0.0, l + idx[i % season]) for i, l in enumerate(low)], bad)
+
+
 def line_chart(series: list[dict], labels: Sequence[str], *, width: int = 720,
                height: int = 220, y_label: str = "", as_area: bool = False,
                compare: dict | None = None, annotations: Sequence[dict] | None = None,
                forecast_periods: int = 0, canvas_threshold: int = 400,
                chart_id: str = "", anomaly: bool = False, anomaly_k: float = 2.5,
-               seasonal: bool = False, season: int | None = None,
-               anim: bool = True) -> str:
+               anomaly_method: str = "sigma", seasonal: bool = False,
+               season: int | None = None, anim: bool = True) -> str:
     """多序列趋势图
 
     compare: {"name": "上期", "series": [{"name","values","color"?}]} —— 虚线对比（同环比）
@@ -184,13 +236,21 @@ def line_chart(series: list[dict], labels: Sequence[str], *, width: int = 720,
             if preds:
                 forecast[s["name"]] = {"preds": preds, "band": band}
 
-    # 异常带（滚动均值 ± kσ）
+    # 异常带：sigma（均值±kσ）/ mad（中位±k·MAD，抗离群）/ seasonal（去季节残差）
     anomaly_band = {}
     if anomaly:
         for s in series:
-            up, low, bad = anomaly_points(list(s["values"]), k=anomaly_k)
+            vals = list(s["values"])
+            if anomaly_method == "mad":
+                up, low, bad = anomaly_points_robust(vals, k=anomaly_k or 3.5)
+            elif anomaly_method == "seasonal":
+                up, low, bad = anomaly_points_seasonal(
+                    vals, k=anomaly_k or 3.5, season=season or 7)
+            else:
+                up, low, bad = anomaly_points(vals, k=anomaly_k)
             if up:
-                anomaly_band[s["name"]] = {"upper": up, "lower": low, "points": bad}
+                anomaly_band[s["name"]] = {"upper": up, "lower": low, "points": bad,
+                                           "method": anomaly_method}
     y_candidates = [max(s["values"]) if s["values"] else 0 for s in series]
     for f in forecast.values():
         y_candidates.append(max(f["preds"]))
@@ -211,7 +271,8 @@ def line_chart(series: list[dict], labels: Sequence[str], *, width: int = 720,
         "compare": None, "forecast": {k: {"preds": v["preds"], "band": v["band"]}
                                       for k, v in forecast.items()},
         "annotations": [],
-        "anomaly": anomaly_band, "anim": bool(anim),
+        "anomaly": anomaly_band, "anomaly_method": anomaly_method,
+        "anim": bool(anim),
         "kind": "line",
     }
     if compare:
@@ -355,7 +416,7 @@ def line_chart(series: list[dict], labels: Sequence[str], *, width: int = 720,
             f"{len(labels)} 个时间点"
             + (f"；含{len(annotations)}个标注" if annotations else "")
             + (f"；含{forecast_periods}期预测" if forecast_periods else "")
-            + ("；含异常标记" if anomaly_band else ""))
+            + (f"；异常标记（{anomaly_method}）" if anomaly_band else ""))
     cls = "chart if-anim" if anim else "chart"
     return svg(width, height, "".join(body), cls=cls).replace(
         "<svg ", f'<svg data-chart=\'{esc(meta_json)}\' role="img" aria-label="{esc(aria)}" ', 1)

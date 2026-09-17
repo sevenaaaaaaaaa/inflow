@@ -98,7 +98,8 @@ async def saas_guard(request, call_next):
         return await call_next(request)
     path = request.url.path
     if path.startswith("/console") and not path.startswith(
-            ("/console/login", "/console/register", "/console/logout")):
+            ("/console/login", "/console/register", "/console/logout",
+             "/console/sso/")):
         from urllib.parse import quote
         from fastapi.responses import RedirectResponse
         from ..core.accounts import COOKIE_NAME, AccountManager
@@ -564,6 +565,136 @@ async def explore_pivot(request: Request, workspace_id: str = Query(...),
     _guard(request, "read")
     store = await get_store()
     return await store.pivot(workspace_id, metric, dim, dim2, days=days)
+
+
+# ========== 实时流（SSE）与在线协同（presence） ==========
+
+@app.get("/api/v1/stream")
+async def stream(request: Request, workspace_id: str = Query(...),
+                 metrics: str = Query(""), days: float = Query(7),
+                 interval: float = Query(5), max_ticks: int = Query(600),
+                 path: str = Query("")):
+    """SSE 实时流：metrics（指标快照）/ heartbeat / alert / done
+
+    - 客户端断开即结束（避免连接泄漏与测试/资源占用）
+    - 反代注意：需关闭响应缓冲（Nginx `proxy_buffering off`）；已带 X-Accel-Buffering: no
+    """
+    from fastapi.responses import StreamingResponse
+    from ..engine.realtime import StreamHub, parse_metrics, sse_event
+    names = parse_metrics(metrics) or ["ga4_sessions"]
+
+    async def _gen():
+        hub = StreamHub(workspace_id, metrics=names, days=days,
+                        interval=max(2.0, min(60.0, interval)),
+                        max_ticks=max(1, min(2000, max_ticks)))
+        async for event, data in hub.events():
+            if await request.is_disconnected():
+                return
+            yield sse_event(event, data)
+    return StreamingResponse(_gen(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-store",
+                                      "X-Accel-Buffering": "no",
+                                      "Connection": "keep-alive"})
+
+
+@app.post("/api/v1/presence")
+async def presence_update(request: Request, payload: dict):
+    """上报在线状态/光标（前端节流调用，约 10s 一次）"""
+    from ..engine.realtime import presence
+    ws = str(payload.get("workspace_id") or "")
+    conn_id = str(payload.get("conn_id") or "")
+    if not ws or not conn_id:
+        raise HTTPException(status_code=400, detail="需要 workspace_id 与 conn_id")
+    user = getattr(request.state, "user", None) or {}
+    presence.touch(ws, conn_id[:64], user=str(user.get("email") or
+                                            payload.get("user") or "本地用户"),
+                   path=str(payload.get("path") or "")[:200],
+                   cursor=payload.get("cursor") if isinstance(payload.get("cursor"), dict)
+                   else None)
+    return {"ok": True, "online": len(presence.snapshot(ws))}
+
+
+@app.get("/api/v1/presence")
+async def presence_list(workspace_id: str = Query(...)):
+    """当前在线成员与光标（谁在和我看同一个看板）"""
+    from ..engine.realtime import presence
+    return {"online": presence.snapshot(workspace_id)}
+
+
+@app.post("/api/v1/presence/leave")
+async def presence_leave(payload: dict):
+    from ..engine.realtime import presence
+    presence.leave(str(payload.get("workspace_id") or ""),
+                   str(payload.get("conn_id") or ""))
+    return {"ok": True}
+
+
+@app.post("/api/v1/rls/policies")
+async def set_rls_policies(request: Request, payload: dict):
+    """设置表达式级 RLS 策略（owner/admin）：{"viewer": ["channel = 'search'"]}
+
+    写入前逐条试编译，语法错误直接 400（避免把坏策略存进去导致全员被拒）。
+    """
+    _guard(request, "workspace.write" if _role_of(request) in ("owner", "admin")
+           else "alert.write")
+    from ..engine.rls import PolicyError, compile_policy
+    from ..engine.permissions import ROLES
+    ws = str(payload.get("workspace_id") or "")
+    policies = payload.get("policies") or {}
+    if not ws or not isinstance(policies, dict):
+        raise HTTPException(status_code=400, detail="需要 workspace_id 与 policies")
+    clean: dict[str, list[str]] = {}
+    for role, exprs in policies.items():
+        if role not in ROLES:
+            raise HTTPException(status_code=400, detail=f"未知角色：{role}")
+        items = [exprs] if isinstance(exprs, str) else list(exprs or [])
+        compiled = []
+        for expr in items[:5]:
+            try:
+                compile_policy(str(expr), {"email": "probe@test", "role": role})
+            except PolicyError as e:
+                raise HTTPException(status_code=400,
+                                    detail=f"策略语法错误（{role}）：{e}")
+            compiled.append(str(expr))
+        clean[role] = compiled
+    store = await get_store()
+    ws_row = await store.get_workspace(ws)
+    if not ws_row:
+        raise HTTPException(status_code=404, detail="工作区不存在")
+    settings = dict(ws_row.settings_json or {})
+    settings["rls_policies"] = clean
+    ws_row.settings_json = settings
+    await store.update_workspace(ws_row)
+    return {"ok": True, "policies": clean}
+
+
+@app.get("/api/v1/rls/policies")
+async def get_rls_policies(workspace_id: str = Query(...)):
+    """当前 RLS 策略（含角色）"""
+    ws = await (await get_store()).get_workspace(workspace_id)
+    return {"policies": dict(((ws.settings_json or {}).get("rls_policies") or {}))
+            if ws else {}}
+
+
+@app.get("/api/v1/dims")
+async def list_dims(workspace_id: str = Query(...), metric: str = Query("")):
+    """可用维度清单（拖拽式探索的"字段面板"）"""
+    return {"dims": await (await get_store()).dim_keys(workspace_id, metric)}
+
+
+@app.post("/api/v1/explore/cube")
+async def explore_cube(request: Request, payload: dict):
+    """自由组合透视：rows(1-2 维) × cols(0-1 维)，拖拽式探索后端"""
+    _guard(request, "read")
+    store = await get_store()
+    ws = str(payload.get("workspace_id") or "")
+    metric = str(payload.get("metric") or "")
+    if not ws or not metric:
+        raise HTTPException(status_code=400, detail="需要 workspace_id 与 metric")
+    return await store.cube(ws, metric, list(payload.get("rows") or []),
+                            str(payload.get("cols") or ""),
+                            days=float(payload.get("days") or 30),
+                            agg=str(payload.get("agg") or "sum"))
 
 
 @app.post("/api/v1/explore/sql")

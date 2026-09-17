@@ -821,7 +821,8 @@ class Store:
                             entity_id: str | None = None,
                             limit: int | None = None,
                             dim_filters: dict | None = None,
-                            entity_allow: list[str] | None = None) -> list[dict]:
+                            entity_allow: list[str] | None = None,
+                            policy: tuple[str, list] | None = None) -> list[dict]:
         """按时间桶降采样的指标序列（驾驶舱趋势图）
 
         agg: sum | avg | max
@@ -837,8 +838,17 @@ class Store:
         if entity_id:
             where += " AND entity_id = ?"
             params.append(entity_id)
+        if entity_allow:
+            marks = ", ".join(["?"] * len(entity_allow[:50]))
+            where += f" AND entity_id IN ({marks})"
+            params.extend([str(v)[:80] for v in entity_allow[:50]])
+        if policy and policy[0]:
+            where += policy[0]
+            params.extend(policy[1])
         # 长窗口优先读日汇总表（预聚合）：明细滚雪球后显著更快；无汇总自动回退
-        if days >= 30 and not entity_id:
+        # 注意：汇总表不承载 RLS policy / 实体白名单，这两类场景必须走明细，
+        # 否则权限会被"快路径"绕过（安全 > 性能）。
+        if days >= 30 and not entity_id and not policy and not entity_allow:
             try:
                 from .rollup import daily_series
                 rolled = await daily_series(workspace_id, metric, days=days, agg=agg,
@@ -862,7 +872,8 @@ class Store:
     async def metric_total(self, workspace_id: str, metric: str, days: float = 7,
                            agg: str = "sum", entity_id: str | None = None,
                            dim_filters: dict | None = None,
-                           entity_allow: list[str] | None = None) -> float:
+                           entity_allow: list[str] | None = None,
+                           policy: tuple[str, list] | None = None) -> float:
         """单指标窗口内聚合值（KPI 卡）"""
         from datetime import timedelta
         since = (datetime.now(UTC) - timedelta(days=days)).isoformat()
@@ -876,6 +887,9 @@ class Store:
             marks = ", ".join(["?"] * len(entity_allow[:50]))
             where += f" AND entity_id IN ({marks})"
             params.extend([str(v)[:80] for v in entity_allow[:50]])
+        if policy and policy[0]:
+            where += policy[0]
+            params.extend(policy[1])
         dim_sql, dim_params = self._dim_where(dim_filters)
         where += dim_sql
         params.extend(dim_params)
@@ -885,19 +899,32 @@ class Store:
 
     async def metric_totals(self, workspace_id: str, metrics: list[str],
                             days: float = 7, agg: str = "sum",
-                            dim_filters: dict | None = None) -> dict:
-        """多指标聚合（一次查询，避免 N+1）"""
+                            dim_filters: dict | None = None,
+                            entity_allow: list[str] | None = None,
+                            policy: tuple[str, list] | None = None) -> dict:
+        """多指标聚合（一次查询，避免 N+1；同样受行级权限约束）"""
         if not metrics:
             return {}
         from datetime import timedelta
         since = (datetime.now(UTC) - timedelta(days=days)).isoformat()
         fn = {"sum": "SUM", "avg": "AVG", "max": "MAX"}.get(agg, "SUM")
         placeholders = ",".join("?" for _ in metrics)
+        where = f"workspace_id = ? AND metric IN ({placeholders}) AND ts >= ?"
+        params: list = [workspace_id, *metrics, since]
+        if entity_allow:
+            marks = ", ".join(["?"] * len(entity_allow[:50]))
+            where += f" AND entity_id IN ({marks})"
+            params.extend([str(v)[:80] for v in entity_allow[:50]])
+        if policy and policy[0]:
+            where += policy[0]
+            params.extend(policy[1])
+        dim_sql, dim_params = self._dim_where(dim_filters)
+        where += dim_sql
+        params.extend(dim_params)
         rows = await self._fetchall(
             f"""SELECT metric, {fn}(value) AS v, COUNT(*) AS n FROM metrics
-                WHERE workspace_id = ? AND metric IN ({placeholders}) AND ts >= ?
-                GROUP BY metric""",
-            tuple([workspace_id, *metrics, since]),
+                WHERE {where} GROUP BY metric""",
+            tuple(params),
         )
         return {r["metric"]: {"value": float(r["v"] or 0), "n": r["n"]} for r in rows}
 
@@ -1021,6 +1048,79 @@ class Store:
         matrix = [[cell.get((a, b), 0.0) for b in cols] for a in aset]
         return {"rows": aset, "cols": cols, "matrix": matrix, "metric": metric,
                 "dim": dim_key, "dim2": dim_key2}
+
+    async def cube(self, workspace_id: str, metric: str, rows: list[str],
+                   cols: str = "", *, days: float = 30, agg: str = "sum",
+                   limit: int = 40) -> dict:
+        """自由组合透视（拖拽式探索）：row_dims(1-2) × col_dim(0-1) → 矩阵
+
+        rows = [] 时退化为「时间 × 指标」单列。维度名走白名单（json_field）。
+        """
+        from datetime import timedelta
+        allowed = {"province", "country", "channel", "device", "step_name",
+                   "keyword", "query", "source", "campaign", "competitor"}
+        rows = [r for r in rows if r in allowed][:2]
+        col_dim = cols if cols in allowed else ""
+        fn = {"sum": "SUM", "avg": "AVG", "max": "MAX", "count": "COUNT"}.get(agg, "SUM")
+        if not rows and not col_dim:
+            series = await self.metric_series(workspace_id, metric, days=days,
+                                             dim_filters=None, limit=limit)
+            return {"rows": ["时间"], "cols": ["值"], "row_labels": [s["bucket"] for s in series],
+                    "col_labels": [metric],
+                    "matrix": [[s["value"]] for s in series],
+                    "dim_rows": [], "dim_col": "", "metric": metric, "agg": agg}
+        since = (datetime.now(UTC) - timedelta(days=days)).isoformat()
+        exprs = [(self._backend.dialect.json_field("dim_json", k) if self._backend
+                  else f"json_extract(dim_json, '$.{k}')") for k in rows]
+        col_expr = ((self._backend.dialect.json_field("dim_json", col_dim)
+                     if self._backend else f"json_extract(dim_json, '$.{col_dim}')")
+                    if col_dim else ("DATE(ts)" if self.driver == "mysql"
+                                     else "substr(ts, 1, 10)"))
+        select_dims = ", ".join(f"{e} AS d{i}" for i, e in enumerate(exprs))
+        prefix = f"{select_dims}, " if select_dims else ""
+        not_null = " AND ".join(f"{e} IS NOT NULL" for e in exprs)
+        sql_rows = await self._fetchall(
+            f"""SELECT {prefix}{col_expr} AS c, {fn}(value) AS v
+                FROM metrics WHERE workspace_id = ? AND metric = ? AND ts >= ?
+                {('AND ' + not_null) if not_null else ''}
+                GROUP BY {', '.join([f'd{i}' for i in range(len(exprs))] + ['c'])}
+                ORDER BY v DESC LIMIT 800""",
+            (workspace_id, metric, since))
+        row_labels: list = []
+        col_labels: list[str] = []
+        cell: dict = {}
+        for r in sql_rows:
+            key = tuple(str(r.get(f"d{i}"))[:40] for i in range(len(exprs)))
+            label = " / ".join(key) if key else "全部"
+            c = str(r["c"])[:40]
+            if label not in row_labels:
+                row_labels.append(label)
+            if c not in col_labels:
+                col_labels.append(c)
+            cell[(label, c)] = float(r["v"] or 0)
+        row_labels, col_labels = row_labels[:limit], col_labels[:limit]
+        matrix = [[cell.get((rl, c), 0.0) for c in col_labels] for rl in row_labels]
+        return {"rows": rows, "cols": [col_dim or "时间"],
+                "row_labels": row_labels, "col_labels": col_labels, "matrix": matrix,
+                "dim_rows": rows, "dim_col": col_dim, "metric": metric, "agg": agg}
+
+    async def dim_keys(self, workspace_id: str, metric: str = "",
+                       candidates: tuple[str, ...] = (
+                           "province", "country", "channel", "device", "campaign",
+                           "keyword", "query", "step_name", "source")) -> list[str]:
+        """实际有数据的维度键（一次查询/候选，供拖拽面板列出可用维度）"""
+        out: list[str] = []
+        for key in candidates[:12]:
+            expr = (self._backend.dialect.json_field("dim_json", key) if self._backend
+                    else f"json_extract(dim_json, '$.{key}')")
+            where = "workspace_id = ? AND metric = ?" if metric else "workspace_id = ?"
+            params = [workspace_id, metric] if metric else [workspace_id]
+            row = await self._fetchone(
+                f"""SELECT COUNT(*) AS n FROM metrics
+                    WHERE {where} AND {expr} IS NOT NULL""", tuple(params))
+            if row and int(row.get("n") or 0) > 0:
+                out.append(key)
+        return out
 
     # ---- 语义层：指标口径（定义/版本/责任人）----
 
