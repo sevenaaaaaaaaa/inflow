@@ -18,7 +18,17 @@ DEFAULT_DB_PATH = Path(__file__).parent.parent.parent / "data" / "insflow.db"
 
 
 def default_db_path() -> Path:
-    """运行时推导 db 路径（跟随 DATA_DIR，支持测试/私有化重定向）"""
+    """运行时推导 db 路径
+
+    优先级：INSFLOW_DB_PATH（显式指定，迁移/多盘部署的切换点）
+            > DATA_DIR/insflow.db（默认）
+    说明（对齐 OpenFlow ADR-2）：SQLite 起步，预留 DATABASE_URL 切换点；
+    当触发器命中（见 docs/11）时，改为通过 Store 的查询层实现替换为 MySQL/Postgres。
+    """
+    import os
+    explicit = os.environ.get("INSFLOW_DB_PATH", "")
+    if explicit:
+        return Path(explicit)
     from . import files as files_mod
     base = files_mod.DATA_DIR or DEFAULT_DB_PATH.parent
     return Path(base) / "insflow.db"
@@ -271,18 +281,73 @@ def to_json(value) -> str:
 class Store:
     """SQLite 存储层"""
 
+    SLOW_QUERY_MS = 200.0          # 慢查询阈值（超过则记录，供运维舱观察）
+    _DURATION_SAMPLES = 500        # 保留最近 N 次耗时用于 p95
+
     def __init__(self, db_path: Path | None = None):
         self.db_path = db_path or default_db_path()
         self._db: aiosqlite.Connection | None = None
+        self._query_count = 0
+        self._slow_queries = 0
+        self._query_durations: list[float] = []
 
     async def connect(self):
-        """连接数据库"""
+        """连接数据库（性能基线 pragma，对齐 OpenFlow：WAL + busy_timeout）"""
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._db = await aiosqlite.connect(str(self.db_path))
         self._db.row_factory = aiosqlite.Row
-        # 启用 WAL 模式
+        # 家族基线（OpenFlow Database.php 同款）：WAL 并发读写 + busy_timeout 防锁
         await self._db.execute("PRAGMA journal_mode=WAL")
+        await self._db.execute("PRAGMA busy_timeout=5000")
         await self._db.execute("PRAGMA foreign_keys=ON")
+        # 分析型读多写少：NORMAL 同步（WAL 下安全且快）+ 内存临时表 + 20MB 页缓存
+        await self._db.execute("PRAGMA synchronous=NORMAL")
+        await self._db.execute("PRAGMA temp_store=MEMORY")
+        await self._db.execute("PRAGMA cache_size=-20000")
+        await self._db.execute("PRAGMA mmap_size=268435456")  # 256MB 内存映射
+
+    async def wal_checkpoint(self, mode: str = "TRUNCATE") -> None:
+        """WAL 检查点（维护任务：控制 -wal 文件膨胀）"""
+        if not self._db:
+            return
+        await self._db.execute(f"PRAGMA wal_checkpoint({mode})")
+        await self._db.commit()
+
+    async def health(self) -> dict:
+        """数据库健康与增长指标（对齐 OpenFlow：看"摊了多少读/耗时"，不只看表大小）
+
+        返回：文件大小 / WAL 大小 / 各表行数 / 慢查询统计 / 查询计数
+        """
+        import os
+        from pathlib import Path
+        db = Path(self.db_path)
+        size = db.stat().st_size if db.exists() else 0
+        wal = db.with_suffix(db.suffix + "-wal")
+        wal_size = wal.stat().st_size if wal.exists() else 0
+
+        tables = ["insights", "metrics", "actions", "feedback", "events",
+                  "raw_records", "journey_events", "subscriptions", "monitors",
+                  "competitors", "users", "sessions"]
+        row_counts = {}
+        for t in tables:
+            try:
+                row = await self._fetchone(f"SELECT COUNT(*) AS n FROM {t}")
+                row_counts[t] = row["n"] if row else 0
+            except Exception:
+                row_counts[t] = None
+
+        counts = sorted(self._query_durations)
+        p95 = counts[int(len(counts) * 0.95)] if counts else 0.0
+        return {
+            "db_size_bytes": size,
+            "wal_size_bytes": wal_size,
+            "row_counts": row_counts,
+            "queries": self._query_count,
+            "slow_queries": self._slow_queries,
+            "slow_threshold_ms": int(self.SLOW_QUERY_MS),
+            "p95_ms": round(p95, 2),
+            "max_ms": round(max(counts), 2) if counts else 0.0,
+        }
 
     async def close(self):
         """关闭连接"""
@@ -306,22 +371,46 @@ class Store:
             await self._execute(statement)
         await self._db.commit()
 
+    def _record_query(self, elapsed_ms: float, query: str) -> None:
+        """查询计时（性能观测：慢查询 + p95）"""
+        self._query_count += 1
+        samples = self._query_durations
+        samples.append(elapsed_ms)
+        if len(samples) > self._DURATION_SAMPLES:
+            del samples[0]
+        if elapsed_ms >= self.SLOW_QUERY_MS:
+            self._slow_queries += 1
+            import logging
+            logging.getLogger("insflow.db").warning(
+                "slow query %.1fms: %s", elapsed_ms, " ".join(query.split())[:120])
+
     async def _execute(self, query: str, params: tuple = ()) -> aiosqlite.Cursor:
-        """执行查询"""
+        """执行查询（带计时）"""
         if not self._db:
             raise RuntimeError("Database not connected")
-        return await self._db.execute(query, params)
+        import time as _t
+        t0 = _t.perf_counter()
+        try:
+            return await self._db.execute(query, params)
+        finally:
+            self._record_query((_t.perf_counter() - t0) * 1000, query)
 
     async def _fetchone(self, query: str, params: tuple = ()) -> dict | None:
-        """获取单条记录"""
+        """获取单条记录（含取数耗时）"""
+        import time as _t
         cursor = await self._execute(query, params)
+        t0 = _t.perf_counter()
         row = await cursor.fetchone()
+        self._record_query((_t.perf_counter() - t0) * 1000, query)
         return dict(row) if row else None
 
     async def _fetchall(self, query: str, params: tuple = ()) -> list[dict]:
-        """获取多条记录"""
+        """获取多条记录（含取数耗时）"""
+        import time as _t
         cursor = await self._execute(query, params)
+        t0 = _t.perf_counter()
         rows = await cursor.fetchall()
+        self._record_query((_t.perf_counter() - t0) * 1000, query)
         return [dict(row) for row in rows]
 
     # ========== Workspace ==========

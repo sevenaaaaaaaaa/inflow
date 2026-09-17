@@ -27,18 +27,25 @@ class _Entry:
 class TTLCache:
     """进程内 TTL 缓存 + 单飞"""
 
-    def __init__(self, default_ttl: float = 60.0, max_entries: int = 512):
+    def __init__(self, default_ttl: float = 60.0, max_entries: int = 512,
+                 backend=None):
         self.default_ttl = default_ttl
         self.max_entries = max_entries
         self._data: dict[str, _Entry] = {}
         self._locks: dict[str, asyncio.Lock] = {}
         self._hits = 0
         self._misses = 0
+        self._backend = backend  # 可选文件后端（跨进程）
 
     # ========== 基础读写 ==========
 
     def get(self, key: str) -> Any | None:
         entry = self._data.get(key)
+        if entry is None and self._backend is not None:
+            value = self._backend.get(key)
+            if value is not None:
+                self._hits += 1
+                return value
         if entry is None:
             self._misses += 1
             return None
@@ -50,11 +57,17 @@ class TTLCache:
         return entry.value
 
     def set(self, key: str, value: Any, ttl: float | None = None) -> None:
+        effective_ttl = self.default_ttl if ttl is None else ttl
+        if self._backend is not None:
+            try:
+                self._backend.set(key, value, effective_ttl)
+            except Exception:
+                pass
         if len(self._data) >= self.max_entries:
             self._evict()
         now = time.time()
         self._data[key] = _Entry(value=value, created_at=now,
-                                 expires_at=now + (self.default_ttl if ttl is None else ttl))
+                                 expires_at=now + effective_ttl)
 
     def _evict(self) -> None:
         """优先清理过期项，其次最旧项"""
@@ -120,3 +133,59 @@ def cached(key_builder: Callable[..., str], ttl: float = 60.0):
         wrapper.__name__ = getattr(fn, "__name__", "wrapped")
         return wrapper
     return decorator
+
+class FileBackend:
+    """文件缓存后端（对齐 OpenFlow Cache 的 FileCache：零依赖、跨进程共享）
+
+    用途：多 worker 部署或重启后仍能命中；单进程无必要可不开（INSFLOW_CACHE=file）。
+    注意：只适合中小体量键值（驾驶舱聚合结果），不做大对象。
+    """
+
+    def __init__(self, path):
+        from pathlib import Path
+        self.dir = Path(path)
+        self.dir.mkdir(parents=True, exist_ok=True)
+
+    def _f(self, key: str):
+        import hashlib
+        return self.dir / (hashlib.sha256(key.encode()).hexdigest()[:32] + ".json")
+
+    def get(self, key: str):
+        import json
+        import time
+        f = self._f(key)
+        if not f.exists():
+            return None
+        try:
+            data = json.loads(f.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            return None
+        if data.get("expires_at", 0) < time.time():
+            f.unlink(missing_ok=True)
+            return None
+        return data.get("value")
+
+    def set(self, key: str, value, ttl: float) -> None:
+        import json
+        import os
+        import time
+        f = self._f(key)
+        payload = json.dumps({"value": value, "expires_at": time.time() + ttl},
+                             ensure_ascii=False, default=str)
+        tmp = f.with_suffix(".tmp")
+        tmp.write_text(payload, encoding="utf-8")
+        os.replace(tmp, f)
+
+    def clear(self) -> None:
+        for f in self.dir.glob("*.json"):
+            f.unlink(missing_ok=True)
+
+
+def get_cache():
+    """获取缓存单例（INSFLOW_CACHE=file 时启用文件后端）"""
+    import os
+    global cache
+    if os.environ.get("INSFLOW_CACHE", "").lower() == "file" and cache._backend is None:
+        from .files import DATA_DIR
+        cache._backend = FileBackend((DATA_DIR or ".").__str__() + "/cache")
+    return cache

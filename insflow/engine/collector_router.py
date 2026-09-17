@@ -349,7 +349,8 @@ class CollectorRouter:
         if drafts:
             await _save_insights(self.workspace_id, drafts)
 
-        EventBus(self.workspace_id).emit("source.collected", {
+        from ..core.governor import emit_throttled
+        emit_throttled(EventBus(self.workspace_id), "source.collected", {
             "source": "topic", "kind": "topic_monitor",
             "channels": {c: len(v) for c, v in results.items()},
             "sentiment": sent["ratios"],

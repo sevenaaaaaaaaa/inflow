@@ -32,6 +32,9 @@ class MonitorService:
         """创建监控任务并注册到调度器"""
         if kind not in self.KINDS:
             raise ValueError(f"未知监控类型: {kind}（支持: {self.KINDS}）")
+        # 频率治理（对齐 OpenFlow 心跳降频）：拒绝过于频繁的调度
+        from ..core.governor import validate_cron
+        validate_cron(kind, schedule_cron)
         store = await get_store()
         monitor = await store.create_monitor(self.workspace_id, kind, target, schedule_cron)
         self._register_job(monitor)

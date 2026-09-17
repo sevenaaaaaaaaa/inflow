@@ -323,7 +323,20 @@ async def ops(workspace_id: str, days: float = 7) -> dict:
                                  reverse=True)[:3]
         except Exception:
             pass
+        from ...core.cache import cache as _cache
+        try:
+            from ...server.app import perf_stats
+            perf = perf_stats()
+        except Exception:
+            perf = {}
+        try:
+            db_health = await (await get_store()).health()
+        except Exception:
+            db_health = {}
         return {
+            "perf": perf,
+            "cache": _cache.stats(),
+            "db": db_health,
             "kpis": {"ok": ok, "fail": fail,
                      "success_rate": (ok / (ok + fail)) if (ok + fail) else None,
                      "alerts": len(alerts)},

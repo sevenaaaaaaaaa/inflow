@@ -98,6 +98,47 @@ async def saas_guard(request, call_next):
     return await call_next(request)
 
 
+# ========== 请求耗时观测（后台性能，对齐 OpenFlow p95 指标）==========
+
+PERF_SAMPLES = 300
+_perf = {"count": 0, "slow": 0, "durations": [], "threshold_ms": 800.0,
+         "slow_paths": {}}
+
+
+@app.middleware("http")
+async def perf_middleware(request, call_next):
+    import time as _t
+    t0 = _t.perf_counter()
+    response = await call_next(request)
+    elapsed = (_t.perf_counter() - t0) * 1000
+    _perf["count"] += 1
+    ds = _perf["durations"]
+    ds.append(elapsed)
+    if len(ds) > PERF_SAMPLES:
+        del ds[0]
+    if elapsed >= _perf["threshold_ms"]:
+        _perf["slow"] += 1
+        path = request.url.path
+        _perf["slow_paths"][path] = _perf["slow_paths"].get(path, 0) + 1
+        import logging
+        logging.getLogger("insflow.web").warning("slow page %.0fms %s", elapsed, path)
+    response.headers["X-Response-Time"] = f"{elapsed:.0f}ms"
+    return response
+
+
+def perf_stats() -> dict:
+    ds = sorted(_perf["durations"])
+    return {
+        "requests": _perf["count"],
+        "slow_count": _perf["slow"],
+        "threshold_ms": int(_perf["threshold_ms"]),
+        "p50_ms": round(ds[len(ds) // 2], 1) if ds else 0.0,
+        "p95_ms": round(ds[int(len(ds) * 0.95)], 1) if ds else 0.0,
+        "max_ms": round(max(ds), 1) if ds else 0.0,
+        "slow_paths": sorted(_perf["slow_paths"].items(), key=lambda kv: -kv[1])[:5],
+    }
+
+
 # ========== 基路径重写（子路径反代，如 https://host/inflow）==========
 # 注意：本中间件必须最后注册（最外层），才能改写守卫返回的 Location 头。
 

@@ -13,6 +13,55 @@
   {{ viz.kpi_card('分级告警', data.kpis.alerts, color='var(--danger)' if data.kpis.alerts else 'var(--ok)') | safe }}
 </div>
 
+<h2>性能与容量（对齐 OpenFlow：看写放大/p95/增长，不只看表大小）</h2>
+<div class="cards">
+  {% if data.perf %}
+  {{ viz.kpi_card('页面 p95', (data.perf.p95_ms | round(1)) ~ ' ms',
+      color='var(--ok)' if data.perf.p95_ms < 500 else 'var(--warn)',
+      hint='慢页面阈值 ' ~ data.perf.threshold_ms ~ 'ms · 慢 ' ~ data.perf.slow_count ~ ' 次') | safe }}
+  {% endif %}
+  {% if data.cache %}
+  {{ viz.kpi_card('缓存命中率', '%.0f%%' | format((data.cache.hit_rate or 0) * 100),
+      color='var(--ok)', hint=data.cache.entries ~ ' 项 · 命中 ' ~ data.cache.hits ~ ' / 未命中 ' ~ data.cache.misses) | safe }}
+  {% endif %}
+  {% if data.db %}
+  {{ viz.kpi_card('DB 大小', '%.1f MB' | format((data.db.db_size_bytes or 0) / 1048576),
+      hint='WAL ' ~ '%.1f MB' | format((data.db.wal_size_bytes or 0) / 1048576)) | safe }}
+  {{ viz.kpi_card('查询 p95', (data.db.p95_ms | round(1)) ~ ' ms',
+      color='var(--ok)' if data.db.p95_ms < 100 else 'var(--warn)',
+      hint='慢查询 ' ~ data.db.slow_queries ~ ' / 总 ' ~ data.db.queries) | safe }}
+  {% endif %}
+</div>
+
+{% if data.db %}
+<h2>数据增长（触发器监控）</h2>
+<div class="card">
+  <table>
+    <tr><th>表</th><th>行数</th><th>关注阈值</th></tr>
+    {% set thresholds = {'metrics': 2000000, 'insights': 200000, 'events': 500000,
+                         'raw_records': 500000, 'journey_events': 500000} %}
+    {% for table, n in data.db.row_counts.items() %}
+    {% if n %}
+    {% set limit = thresholds.get(table) %}
+    <tr>
+      <td><code>{{ table }}</code></td>
+      <td><strong>{{ '{:,}'.format(n) }}</strong></td>
+      <td>
+        {% if limit %}
+        {% set pct = n / limit %}
+        <span class="badge {{ 'b-high' if pct >= 0.8 else ('b-medium' if pct >= 0.5 else 'b-ok') }}">
+          {{ '%.0f%%' | format(pct * 100) }} / {{ '{:,}'.format(limit) }}</span>
+        {% else %}<span class="sub">—</span>{% endif %}
+      </td>
+    </tr>
+    {% endif %}
+    {% endfor %}
+  </table>
+  <p class="sub" style="margin-top:8px">SQLite 基线：WAL + busy_timeout 5s + synchronous=NORMAL +
+   256MB mmap + 20MB 页缓存。命中阈值后按 docs/11 触发底座升级（DATABASE_URL 切换点）。</p>
+</div>
+{% endif %}
+
 <h2>配额与熔断</h2>
 <div class="card">
   {% if data.quota %}

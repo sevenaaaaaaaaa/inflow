@@ -162,3 +162,95 @@ class TestEventRotation:
     def test_rotate_noop_when_empty(self, tmp_path):
         bus = EventBus("ws", base_dir=tmp_path)
         assert bus.rotate(keep_days=30) == {"kept": 0, "dropped": 0}
+
+
+class TestFrequencyGovernor:
+    """频率治理（对齐 OpenFlow 心跳降频）"""
+
+    def test_parse_cron_minutes(self):
+        from insflow.core.governor import parse_cron_minutes
+        assert parse_cron_minutes("*/5 * * * *") == 5.0
+        assert parse_cron_minutes("0 */6 * * *") == 360.0
+        assert parse_cron_minutes("0 2 * * *") == 1440.0
+        assert parse_cron_minutes("30 9 * * 1") == 1440.0
+        assert parse_cron_minutes("bad") is None
+
+    def test_validate_cron_blocks_too_frequent(self):
+        from insflow.core.governor import CronTooFrequent, validate_cron
+        with pytest.raises(CronTooFrequent):
+            validate_cron("keyword", "*/30 * * * *")     # keyword 最小 360 分钟
+        with pytest.raises(CronTooFrequent):
+            validate_cron("site_change", "*/5 * * * *")  # 最小 30 分钟
+
+    def test_validate_cron_allows_reasonable(self):
+        from insflow.core.governor import validate_cron
+        validate_cron("keyword", "0 */6 * * *")
+        validate_cron("site_change", "0 */2 * * *")
+        validate_cron("topic", "0 * * * *")
+
+    async def test_monitor_create_rejects_high_frequency(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(files_mod, "DATA_DIR", tmp_path)
+        from insflow.core.entities import Workspace
+        from insflow.core.scheduler import Scheduler
+        from insflow.core.governor import CronTooFrequent as CTF
+        from insflow.engine.monitors import MonitorService
+        s = Store(db_path=tmp_path / "t.db")
+        await s.connect(); await s.migrate(); reset_store(s)
+        await s.create_workspace(Workspace(id="test-ws", name="T"))
+        svc = MonitorService("test-ws", scheduler=Scheduler("test-ws"))
+        with pytest.raises(CTF):
+            await svc.create("keyword", {"site": "x"}, "*/10 * * * *")
+        await s.close()
+
+    def test_event_dedupe_merges_repeats(self, tmp_path):
+        from insflow.core.governor import emit_throttled
+        bus = EventBus("ws", base_dir=tmp_path)
+        assert emit_throttled(bus, "monitor.run_finished", {"monitor_id": "m1"}) is True
+        assert emit_throttled(bus, "monitor.run_finished", {"monitor_id": "m1"}) is False
+        assert emit_throttled(bus, "monitor.run_finished", {"monitor_id": "m2"}) is True
+        # 关键事件不降频
+        assert emit_throttled(bus, "quota.exceeded", {"kind": "api_calls"}) is True
+        assert emit_throttled(bus, "quota.exceeded", {"kind": "api_calls"}) is True
+        assert len(bus.read(event_type="monitor.run_finished")) == 2
+
+
+class TestStoreHealth:
+    async def test_health_metrics(self, env):
+        store = env["store"]
+        h = await store.health()
+        assert h["db_size_bytes"] >= 0
+        assert "insights" in h["row_counts"]
+        assert h["queries"] >= 0
+        assert "p95_ms" in h and "slow_queries" in h
+
+    async def test_slow_query_counter(self, env):
+        store = env["store"]
+        before = (await store.health())["queries"]
+        await store._fetchone("SELECT COUNT(*) AS n FROM metrics")
+        assert (await store.health())["queries"] > before
+
+    async def test_wal_checkpoint(self, env):
+        await env["store"].wal_checkpoint()   # 不抛异常即可
+
+    async def test_db_path_override(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("INSFLOW_DB_PATH", str(tmp_path / "custom.db"))
+        from insflow.core.store import default_db_path
+        assert default_db_path() == tmp_path / "custom.db"
+
+
+class TestFileCacheBackend:
+    def test_file_backend_roundtrip(self, tmp_path):
+        from insflow.core.cache import FileBackend
+        b = FileBackend(tmp_path)
+        b.set("k", {"v": 1}, 60)
+        assert b.get("k") == {"v": 1}
+        b.clear()
+        assert b.get("k") is None
+
+    def test_file_backend_expiry(self, tmp_path):
+        import time
+        from insflow.core.cache import FileBackend
+        b = FileBackend(tmp_path)
+        b.set("k", "v", 0.01)
+        time.sleep(0.03)
+        assert b.get("k") is None
