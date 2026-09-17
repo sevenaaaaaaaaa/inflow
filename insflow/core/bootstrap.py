@@ -103,7 +103,9 @@ async def bootstrap_scheduled_jobs() -> dict:
         for ws in await store.list_workspaces():
             r = EventBus(ws.id).rotate(keep_days=30)
             kept_total += r["kept"]
-        logger.info(f"事件流轮转完成：保留 {kept_total} 行")
+        # WAL checkpoint：控制 -wal 膨胀（写多后 WAL 会显著大于主库）
+        await store.wal_checkpoint("TRUNCATE")
+        logger.info(f"事件流轮转 + WAL checkpoint 完成：保留 {kept_total} 行")
 
     scheduler.add_job("events.rotate", "10 9 * * *", "events.rotate", {})
     scheduler.register_handler("events.rotate", _event_rotate)
