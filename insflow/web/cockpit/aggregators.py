@@ -128,8 +128,10 @@ async def traffic(workspace_id: str, days: float = 14) -> dict:
         sessions = await store.metric_series(workspace_id, "ga4_sessions", days=days)
         conversions = await store.metric_series(workspace_id, "ga4_conversions", days=days)
         totals = await store.metric_totals(
-            workspace_id, ["gsc_clicks", "gsc_impressions", "gsc_ctr",
+            workspace_id, ["gsc_clicks", "gsc_impressions",
                            "ga4_sessions", "ga4_conversions"], days=days)
+        # CTR 是比率，取均值（不能求和）
+        ctr = await store.metric_total(workspace_id, "gsc_ctr", days=days, agg="avg")
         cwv = await store.latest_metrics(workspace_id, [
             "crux_lcp", "crux_inp", "crux_cls", "crux_ttfb"])
         insights = await store.list_insights(workspace_id, limit=300)
@@ -147,7 +149,7 @@ async def traffic(workspace_id: str, days: float = 14) -> dict:
             "kpis": {
                 "clicks": totals.get("gsc_clicks", {}).get("value", 0),
                 "impressions": totals.get("gsc_impressions", {}).get("value", 0),
-                "ctr": totals.get("gsc_ctr", {}).get("value", 0),
+                "ctr": ctr,
                 "sessions": totals.get("ga4_sessions", {}).get("value", 0),
                 "conversions": totals.get("ga4_conversions", {}).get("value", 0),
             },

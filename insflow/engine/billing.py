@@ -206,11 +206,37 @@ class BillingManager:
     # ========== 用量记录（运营动作统一走这里）==========
 
     def record_usage(self, kind: str, amount: int | float = 1) -> None:
-        """记录用量：api_calls / agent_asks / deep_reports / api_cost_usd ..."""
+        """记录用量（内存态；持久化用 record_usage_persisted）"""
         self._usage[kind] = self._usage.get(kind, 0) + amount
+
+    async def record_usage_persisted(self, kind: str, amount: int | float = 1) -> dict:
+        """记录用量并落库（settings_json.usage.<YYYY-MM>），跨进程/重启可见"""
+        month = datetime.now(timezone.utc).strftime("%Y-%m")
+        store = await get_store()
+        ws = await store.get_workspace(self.workspace_id)
+        if not ws:
+            raise QuotaExceededForPlan(f"Workspace 不存在: {self.workspace_id}")
+        settings = dict(ws.settings_json or {})
+        usage = dict(settings.get("usage") or {})
+        bucket = dict(usage.get(month) or {})
+        bucket[kind] = bucket.get(kind, 0) + amount
+        usage[month] = bucket
+        settings["usage"] = usage
+        ws.settings_json = settings
+        await store.update_workspace(ws)
+        self._usage[kind] = self._usage.get(kind, 0) + amount
+        return bucket
 
     def current_usage(self) -> dict:
         return dict(self._usage)
+
+    async def load_usage(self) -> dict:
+        """读取当月持久化用量"""
+        month = datetime.now(timezone.utc).strftime("%Y-%m")
+        store = await get_store()
+        ws = await store.get_workspace(self.workspace_id)
+        usage = ((ws.settings_json or {}).get("usage") or {}) if ws else {}
+        return dict(usage.get(month) or {})
 
     # ========== 配额检查（配额产品化核心）==========
 
@@ -256,10 +282,13 @@ class BillingManager:
         plan = await self.get_plan()
         limits = plan["limits"]
 
-        api_used = self._usage.get("api_calls", 0)
-        agent_used = self._usage.get("agent_asks", 0)
-        deep_used = self._usage.get("deep_reports", 0)
-        cost_used = self._usage.get("cost_usd", 0.0)
+        persisted = await self.load_usage()
+        def _used(kind, default=0):
+            return persisted.get(kind, self._usage.get(kind, default))
+        api_used = _used("api_calls")
+        agent_used = _used("agent_asks")
+        deep_used = _used("deep_reports")
+        cost_used = _used("cost_usd", 0.0)
 
         def _pct(used, limit):
             return round(used / limit, 3) if limit else 0.0

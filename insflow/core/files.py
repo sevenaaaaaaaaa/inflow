@@ -41,7 +41,8 @@ class EventBus:
         self.events_dir.mkdir(parents=True, exist_ok=True)
         self.events_file = self.events_dir / "events.jsonl"
 
-    def emit(self, event_type: str, payload: dict | None = None) -> dict:
+    def emit(self, event_type: str, payload: dict | None = None,
+             ts: str | None = None) -> dict:
         """写入一条事件（不可变追加）
 
         事件类型约定：
@@ -55,7 +56,7 @@ class EventBus:
         - report.ready
         """
         event = {
-            "ts": _now().isoformat(),
+            "ts": ts or _now().isoformat(),
             "type": event_type,
             "workspace": self.workspace_id,
             "payload": payload or {},

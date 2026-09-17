@@ -436,6 +436,46 @@ def backup(keep_days: int, restore_from: str, yes: bool):
         sys.exit(1)
 
 
+@main.group()
+def demo():
+    """演示数据（供查看驾驶舱效果）"""
+    pass
+
+
+@demo.command("seed")
+@click.option("--workspace", "-w", required=True, help="工作区ID")
+@click.option("--days", default=30, help="演示时间跨度（天）")
+def demo_seed(workspace: str, days: int):
+    """生成演示数据（覆盖 9 个驾驶舱）"""
+    from .engine.demo import DemoSeeder
+
+    async def _seed():
+        from .core.store import get_store
+        store = await get_store()
+        if not await store.get_workspace(workspace):
+            console.print(f"[red]Workspace 不存在: {workspace}[/]"); sys.exit(1)
+        result = await DemoSeeder(workspace, days).seed()
+        console.print(f"[green]✓ 演示数据已生成[/] 洞察 {result['insights']} 条 · "
+                      f"动作 {result['actions']} 个 · 竞品 {result['competitors']} 个 · "
+                      f"报告 {result['reports']} 份")
+
+    run_async(_seed())
+
+
+@demo.command("clear")
+@click.option("--workspace", "-w", required=True, help="工作区ID")
+def demo_clear(workspace: str):
+    """清理演示数据（仅删带 demo 标记的行）"""
+    from .engine.demo import DemoSeeder
+
+    async def _clear():
+        counts = await DemoSeeder(workspace).clear()
+        console.print("[green]✓ 已清理[/] " +
+                      " · ".join(f"{k} {v}" for k, v in counts.items() if v))
+
+    run_async(_clear())
+
+
 @main.command()
 @click.option("--workspace", "-w", default="default", help="工作区ID")
 def doctor(workspace: str):
