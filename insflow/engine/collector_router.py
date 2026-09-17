@@ -73,6 +73,15 @@ async def _save_metrics(workspace_id: str, rows: list[dict],
         # 幂等窗口键由**数据时间**推导（不是当前时钟）：否则历史回填/补采会被
         # 误判为同窗口而丢数据（SQLite 静默忽略，MySQL 唯一键直接报错）
         window_key = r.get("window_key") or _window_key_from_ts(row_ts, now)
+        # 代码层幂等（OpenFlow 教训 #3：空值不能依赖普通唯一索引，去重放代码层）
+        exists = await store._fetchone(
+            """SELECT 1 AS x FROM metrics
+               WHERE workspace_id = ? AND monitor_id = ? AND entity_type = ?
+                 AND entity_id = ? AND metric = ? AND window_key = ? LIMIT 1""",
+            (workspace_id, monitor_id, r.get("entity_type", "site"),
+             r.get("entity_id", "main"), r["metric"], window_key))
+        if exists:
+            continue
         cur = await store._execute(
             """INSERT OR IGNORE INTO metrics
                (id, workspace_id, entity_type, entity_id, metric, value, dim_json, ts, monitor_id, window_key)

@@ -53,11 +53,13 @@ class DemoSeeder:
     async def _ins_metric(self, store, metric: str, value: float, ts: str,
                           entity: str = "main", entity_type: str = "site",
                           dim: dict | None = None) -> None:
+        window_key = str(ts)[:13].replace("T", "-").replace(":", "")[:13] or "w"
         await store._execute(
             """INSERT INTO metrics (id, workspace_id, entity_type, entity_id, metric,
-               value, dim_json, ts) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+               value, dim_json, ts, monitor_id, window_key)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'demo', ?)""",
             (generate_id(), self.workspace_id, entity_type, entity, metric,
-             float(value), _json({"demo": True, **(dim or {})}), ts))
+             float(value), _json({"demo": True, **(dim or {})}), ts, window_key))
 
     async def _metrics(self) -> None:
         store = await get_store()

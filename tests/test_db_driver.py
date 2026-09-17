@@ -97,10 +97,12 @@ class TestMySQLSchema:
                     # 索引定义行不应引用 TEXT 列
                     assert " TEXT" not in line
 
-    def test_no_partial_index_syntax(self):
+    def test_no_partial_index_and_no_unique_on_maybe_empty(self):
+        """教训 #3：MySQL 无部分索引，且**不能**对可能为空的列建普通唯一键
+        （空值会互相冲突）→ 去重放代码层（collector_router._save_metrics 先查后插）"""
         ddl = " ".join(MYSQL_MIGRATIONS)
-        assert "WHERE window_key" not in ddl          # 无部分索引
-        assert "uk_metrics_dedupe" in ddl             # 改用完整唯一键
+        assert "WHERE window_key" not in ddl
+        assert "UNIQUE KEY" not in ddl or "metrics" not in ddl.split("UNIQUE KEY")[0][-200:]
 
     def test_engine_and_charset(self):
         for stmt in MYSQL_MIGRATIONS:

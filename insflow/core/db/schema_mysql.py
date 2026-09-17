@@ -74,7 +74,7 @@ MYSQL_MIGRATIONS = [
         INDEX idx_metrics_entity (entity_type, entity_id),
         INDEX idx_metrics_ws_metric_ts (workspace_id, metric, ts),
         INDEX idx_metrics_ws_entity_metric_ts (workspace_id, entity_id, metric, ts),
-        UNIQUE KEY uk_metrics_dedupe (workspace_id, monitor_id, entity_type, entity_id, metric, window_key)
+        INDEX idx_metrics_window (workspace_id, metric, window_key)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
     """,
     """
