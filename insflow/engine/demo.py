@@ -314,8 +314,8 @@ class DemoSeeder:
             n += 1
             if state == "verified":
                 await store._execute(
-                    """INSERT INTO feedback (id, workspace_id, action_id, metric, before,
-                       after, delta, verdict, evaluated_at)
+                    """INSERT INTO feedback (id, workspace_id, action_id, metric, `before`,
+                       `after`, delta, verdict, evaluated_at)
                        VALUES (?, ?, ?, 'gsc_clicks', ?, ?, ?, ?, ?)""",
                     (generate_id(), self.workspace_id, aid,
                      RNG.uniform(300, 900), RNG.uniform(900, 1500),
