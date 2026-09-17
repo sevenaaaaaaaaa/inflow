@@ -13,10 +13,12 @@ from typing import Any
 
 from .dialect import get_dialect
 
-try:  # 可选依赖：仅 MySQL 驱动需要
-    import aiomysql  # type: ignore
+try:  # 可选依赖：仅 MySQL 驱动需要（用同步 pymysql + 线程池，避免异步驱动版本冲突）
+    import pymysql  # type: ignore
+    from pymysql.cursors import DictCursor  # type: ignore
 except Exception:  # pragma: no cover
-    aiomysql = None
+    pymysql = None
+    DictCursor = None
 
 SQLITE_PRAGMAS = [
     "PRAGMA journal_mode=WAL",
@@ -35,23 +37,25 @@ MYSQL_SESSION_SETTINGS = [
 
 
 class Cursor:
-    """统一游标（fetchone/fetchall/rowcount）"""
+    """统一游标（fetchone/fetchall/rowcount）——同时兼容 aiosqlite 与 pymysql"""
 
     def __init__(self, cur, driver: str):
         self._cur = cur
         self._driver = driver
 
     async def fetchone(self):
-        row = await self._cur.fetchone() if self._driver == "mysql" else await self._cur.fetchone()
-        if row is None:
-            return None
-        if self._driver == "mysql":
-            return row  # aiomysql 返回 dict（DictCursor）
+        row = await self._maybe_await(self._cur.fetchone())
         return row
 
     async def fetchall(self):
-        rows = await self._cur.fetchall()
+        rows = await self._maybe_await(self._cur.fetchall())
         return list(rows)
+
+    async def _maybe_await(self, value):
+        import inspect
+        if inspect.isawaitable(value):
+            return await value
+        return value
 
     @property
     def rowcount(self) -> int:
@@ -114,15 +118,21 @@ class SQLiteBackend:
 
 
 class MySQLBackend:
-    """MySQL 后端（aiomysql）：生产/多租户推荐（与 OpenFlow 事件表同选型）"""
+    """MySQL 后端（pymysql + asyncio.to_thread）
+
+    生产/多租户推荐（与 OpenFlow 事件表同选型）。选同步驱动 + 线程池的原因：
+    1. 异步 MySQL 驱动（aiomysql）与 pymysql 版本耦合多、易踩兼容坑
+    2. 驾驶舱聚合是"少而重"的查询，线程池足够；避免额外异步依赖
+    3. 与 OpenFlow 的做法一致（PHP 侧也是同步 PDO）
+    """
 
     driver = "mysql"
 
     def __init__(self, config: dict):
         self.config = config
         self.dialect = get_dialect("mysql")
-        self._pool = None
-        self._conn = None
+        self._lib = None
+        self._pool = None           # queue.Queue of connections
         self.row_factory = None
 
     @property
@@ -130,50 +140,89 @@ class MySQLBackend:
         c = self.config
         return f"{c.get('user')}@{c.get('host')}:{c.get('port', 3306)}/{c.get('dbname')}"
 
+    def _new_conn(self):
+        c = self.config
+        return self._lib.connect(
+            host=c["host"], port=int(c.get("port", 3306)),
+            user=c["user"], password=c.get("password", ""),
+            database=c["dbname"], charset="utf8mb4",
+            cursorclass=DictCursor, autocommit=False,
+            connect_timeout=8, read_timeout=30,
+        )
+
     async def connect(self) -> None:
-        if aiomysql is None:
+        if pymysql is None:
             raise RuntimeError(
-                "MySQL 驱动未安装：pip install aiomysql（或 pip install -e '.[mysql]'）")
+                "MySQL 驱动未安装：pip install pymysql（或 pip install -e '.[mysql]'）")
+        self._lib = pymysql
         c = self.config
         if not (c.get("host") and c.get("dbname") and c.get("user")):
             raise RuntimeError("MySQL 配置不完整（MYSQL_HOST/MYSQL_DBNAME/MYSQL_USER）")
-        self._pool = await aiomysql.create_pool(
-            host=c["host"], port=int(c.get("port", 3306)),
-            user=c["user"], password=c.get("password", ""),
-            db=c["dbname"], charset="utf8mb4", autocommit=False,
-            minsize=1, maxsize=int(c.get("pool_size", 5)),
-        )
-        self._conn = await self._pool.acquire()
-        for setting in MYSQL_SESSION_SETTINGS:
-            async with self._conn.cursor() as cur:
-                await cur.execute(setting)
+
+        import asyncio
+        import queue
+        size = max(1, int(c.get("pool_size", 5)))
+        self._pool = queue.Queue(maxsize=size)
+        # 先建一条以验证连通性（fail-closed：连不上直接报错，不静默回落）
+        try:
+            conn = await asyncio.to_thread(self._new_conn)
+        except Exception as e:
+            raise RuntimeError(f"MySQL 连接失败（{self.dsn}）：{e}") from e
+        self._pool.put(conn)
+        for _ in range(size - 1):
+            self._pool.put(None)   # 懒建；取到 None 时创建
+        await self.execute("SET SESSION time_zone='+00:00'")
+
+    async def _run(self, fn):
+        """在池中取连接执行（线程内）"""
+        import asyncio
+        import queue
+        try:
+            conn = self._pool.get_nowait()
+        except queue.Empty:
+            conn = await asyncio.to_thread(self._pool.get)
+        if conn is None:
+            conn = await asyncio.to_thread(self._new_conn)
+        try:
+            cur = conn.cursor()
+            out = fn(cur)
+            conn.commit()
+            return out, cur
+        finally:
+            self._pool.put(conn)
 
     async def execute(self, sql: str, params: tuple = ()) -> Cursor:
-        cur = await self._conn.cursor(aiomysql.DictCursor)
-        await cur.execute(self.dialect.adapt(sql), params or None)
+        import asyncio
+        adapted = self.dialect.adapt(sql)
+
+        def _do(cur):
+            cur.execute(adapted, params or None)
+            return cur
+
+        cur, _ = await self._run(_do)
         return Cursor(cur, "mysql")
 
     async def executescript(self, script: str) -> None:
-        """按 ; 拆分执行（MySQL 驱动不支持多语句 exec 的通用写法）"""
         statements = [s.strip() for s in script.split(";") if s.strip()]
-        async with self._conn.cursor() as cur:
-            for stmt in statements:
-                await cur.execute(stmt)
+        for stmt in statements:
+            await self.execute(stmt)
 
     async def commit(self) -> None:
-        await self._conn.commit()
+        return None    # _run 每次已提交
 
     async def close(self) -> None:
         if self._pool:
-            if self._conn:
-                self._pool.release(self._conn)
-                self._conn = None
-            self._pool.close()
-            await self._pool.wait_closed()
+            while not self._pool.empty():
+                conn = self._pool.get()
+                if conn is not None:
+                    try:
+                        conn.close()
+                    except Exception:
+                        pass
             self._pool = None
 
     async def wal_checkpoint(self, mode: str = "TRUNCATE") -> None:
-        return None  # MySQL 无 WAL
+        return None    # MySQL 无 WAL
 
     async def count(self, table: str) -> int | None:
         try:
@@ -190,7 +239,7 @@ class MySQLBackend:
                    FROM information_schema.tables WHERE table_schema = %s""",
                 (self.config.get("dbname"),))
             row = await cur.fetchone()
-            return int(row["n"]) if row else 0, 0
+            return (int(row["n"]) if row else 0), 0
         except Exception:
             return 0, 0
 
