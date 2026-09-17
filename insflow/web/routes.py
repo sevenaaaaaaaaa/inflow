@@ -25,6 +25,9 @@ def _md_to_html_filter(md: str) -> str:
 
 templates.env.filters["md_to_html"] = _md_to_html_filter
 
+from ..viz import charts as _viz  # noqa: E402
+templates.env.globals["viz"] = _viz
+
 router = APIRouter(prefix="/console", include_in_schema=False)
 
 CAT_NAMES = {
@@ -53,6 +56,12 @@ NAV_AREA = {
     "plugins": "ecosystem",
     "usage": "settings",
     "subscriptions": "settings",
+    "ops": "settings",
+    "overview": "overview",
+    "traffic": "insight",
+    "action-loop": "loop",
+    "competitor": "growth",
+    "journey": "growth",
 }
 
 
@@ -167,56 +176,44 @@ async def plugins_page(request: Request, workspace_id: str = Query("")):
     ))
 
 
-@router.get("/sentiment", response_class=HTMLResponse)
-async def sentiment_page(request: Request, workspace_id: str = Query("")):
-    """舆情看板（G-3）：情绪分布 + 负面预警 + 主体热力"""
+COCKPIT_PAGES = {
+    "overview": ("overview.html", "overview", "情报总览"),
+    "traffic": ("traffic.html", "traffic", "流量驾驶舱"),
+    "action-loop": ("action_loop.html", "action-loop", "行动验证驾驶舱"),
+    "competitor": ("competitor.html", "competitor", "竞品驾驶舱"),
+    "journey": ("journey.html", "journey", "客户旅程驾驶舱"),
+    "ops": ("ops.html", "ops", "运维监控驾驶舱"),
+    "billing": ("billing.html", "billing", "商业化驾驶舱"),
+}
+
+
+@router.get("/cockpit/{name}", response_class=HTMLResponse)
+async def cockpit_page(request: Request, name: str, workspace_id: str = Query(""),
+                       days: float = Query(0)):
+    """驾驶舱统一入口（9 舱，TTL 缓存聚合）"""
+    if name not in COCKPIT_PAGES:
+        return RedirectResponse("/console")
     if not workspace_id:
         workspace_id = await _default_workspace()
-    store = await get_store()
+    from .cockpit import COCKPITS
+    fn = COCKPITS[name]
+    data = await (fn(workspace_id) if days <= 0 else fn(workspace_id, days))
+    template, nav, title = COCKPIT_PAGES[name]
+    return templates.TemplateResponse(request, template, _ctx(
+        request, nav, workspace_id, data=data, title=title, days=days or 14,
+    ))
 
-    # 1. 各监测主体的最新情绪指标
-    rows = await store.latest_metrics(workspace_id, [
-        "topic_negative_ratio", "topic_sentiment_score",
-        "topic_mentions_news", "topic_mentions_search", "topic_mentions_reddit",
-    ])
-    topics: dict[str, dict] = {}
-    for r in rows:
-        t = topics.setdefault(r["entity_id"], {
-            "query": r["entity_id"], "negative_ratio": 0.0, "score": 0.0,
-            "counts": {}, "mentions": {}, "ts": r["ts"],
-        })
-        if r["metric"] == "topic_negative_ratio":
-            t["negative_ratio"] = float(r["value"])
-            t["counts"] = (r["dim_json"] or {}).get("counts", {})
-        elif r["metric"] == "topic_sentiment_score":
-            t["score"] = float(r["value"])
-        elif r["metric"].startswith("topic_mentions_"):
-            t["mentions"][r["metric"].replace("topic_mentions_", "")] = int(r["value"])
 
-    topic_list = sorted(topics.values(), key=lambda x: -x["negative_ratio"])
-
-    # 2. 负面/舆情洞察（近 30 条）
-    all_insights = await store.list_insights(workspace_id, limit=200)
-    sentiment_insights = [
-        i for i in all_insights
-        if i.type in ("topic_negative_alert", "topic_digest", "mention_spike") or
-        "sentiment" in i.type or "negative" in i.type
-    ][:30]
-    negative_alerts = [i for i in sentiment_insights if i.type == "topic_negative_alert"]
-
-    # 3. 汇总
-    total_negative = sum(t["counts"].get("negative", 0) for t in topic_list)
-    total_mentions = sum(sum(t["mentions"].values()) for t in topic_list)
-    avg_negative = (sum(t["negative_ratio"] for t in topic_list) / len(topic_list)
-                    if topic_list else 0.0)
-
+@router.get("/sentiment", response_class=HTMLResponse)
+async def sentiment_page(request: Request, workspace_id: str = Query(""),
+                         days: float = Query(14)):
+    """舆情驾驶舱（G-3）：情绪分布 + 负面预警 + 主体热力"""
+    if not workspace_id:
+        workspace_id = await _default_workspace()
+    from .cockpit import COCKPITS
+    data = await COCKPITS["sentiment"](workspace_id, days)
     return templates.TemplateResponse(request, "sentiment.html", _ctx(
-        request, "sentiment", workspace_id,
-        topics=topic_list, insights=sentiment_insights,
-        negative_alerts=negative_alerts,
-        stats={"topics": len(topic_list), "negative_total": total_negative,
-               "mentions_total": total_mentions, "avg_negative": avg_negative,
-               "alerts": len(negative_alerts)},
+        request, "sentiment", workspace_id, data=data, title="舆情驾驶舱", days=days,
     ))
 
 

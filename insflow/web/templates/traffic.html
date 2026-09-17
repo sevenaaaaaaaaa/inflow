@@ -1,0 +1,71 @@
+{% extends "base.html" %}
+{% block title %} · {{ title }}{% endblock %}
+{% block content %}
+<h1>{{ title }}</h1>
+<p class="sub">流量为什么波动：来源 · 关键词 · 技术健康（近 {{ days }} 天）</p>
+
+<div class="cards">
+  {{ viz.kpi_card('GSC 点击', data.kpis.clicks | round | int, color='var(--accent)') | safe }}
+  {{ viz.kpi_card('GSC 曝光', data.kpis.impressions | round | int, color='var(--accent)') | safe }}
+  {{ viz.kpi_card('平均点击率', '%.1f%%' | format((data.kpis.ctr or 0) * 100), color='var(--ok)') | safe }}
+  {{ viz.kpi_card('GA4 会话', data.kpis.sessions | round | int, color='var(--accent)') | safe }}
+  {{ viz.kpi_card('转化', data.kpis.conversions | round | int, color='var(--ok)') | safe }}
+</div>
+
+<h2>流量趋势（点击 / 会话）</h2>
+<div class="card">
+  {{ viz.line_chart([
+      {'name': 'GSC 点击', 'values': data.trend.clicks},
+      {'name': 'GA4 会话', 'values': data.trend.sessions},
+  ], data.trend.labels, y_label='数量') | safe }}
+</div>
+
+<h2>技术健康（CrUX 真实用户 CWV）</h2>
+<div class="card">
+  {% if data.cwv %}
+  <table>
+    <tr><th>指标</th><th>p75</th><th>阈值（good）</th><th>判定</th></tr>
+    {% set thresholds = {'crux_lcp': 2.5, 'crux_inp': 200, 'crux_cls': 0.1, 'crux_ttfb': 0.8} %}
+    {% for metric, value in data.cwv.items() %}
+    {% set limit = thresholds.get(metric, 0) %}
+    {% set good = value <= limit if limit else False %}
+    <tr>
+      <td><code>{{ metric.replace('crux_', '').upper() }}</code></td>
+      <td><strong>{{ '%.2f' | format(value) }}</strong></td>
+      <td>≤ {{ limit }}</td>
+      <td><span class="badge {{ 'b-ok' if good else 'b-high' }}">{{ '达标' if good else '待优化' }}</span></td>
+    </tr>
+    {% endfor %}
+  </table>
+  <p class="sub" style="margin-top:10px">LCP ≤2.5s · INP ≤200ms · CLS ≤0.1 · TTFB ≤0.8s（CrUX p75，28 天滚动窗口）</p>
+  {% else %}
+  <div class="empty">未接入 CrUX（去「接入向导」配置 API Key）</div>
+  {% endif %}
+</div>
+
+<h2>关键词机会（曝光 × 排名；右上更优）</h2>
+<div class="card">
+  {% if data.scatter %}
+  {{ viz.scatter(data.scatter, x_label='GSC 曝光量', y_label='平均排名（越小越前）') | safe }}
+  {% else %}
+  <div class="empty">暂无关键词机会数据 —— 创建 keyword 监控后生成</div>
+  {% endif %}
+</div>
+
+<h2>流量异常与机会</h2>
+{% if data.anomalies %}
+<table>
+  <tr><th>严重度</th><th>类型</th><th>标题</th><th>时间</th></tr>
+  {% for i in data.anomalies %}
+  <tr>
+    <td><span class="badge b-{{ i.severity.value }}">{{ i.severity.value }}</span></td>
+    <td><code>{{ i.type }}</code></td>
+    <td>{{ i.title }}</td>
+    <td>{{ i.created_at.strftime('%m-%d %H:%M') }}</td>
+  </tr>
+  {% endfor %}
+</table>
+{% else %}
+<div class="empty">暂无流量异常</div>
+{% endif %}
+{% endblock %}

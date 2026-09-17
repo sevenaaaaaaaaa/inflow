@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{% block title %} · {{ title }}{% endblock %}
+{% block content %}
+<h1>{{ title }}</h1>
+<p class="sub">一屏看全局：结论 · 证据 · 下一步动作（近 {{ days }} 天，聚合缓存 90s）</p>
+
+<div class="cards">
+  {{ viz.kpi_card('待处理洞察', data.kpis.new, color='var(--accent)') | safe }}
+  {{ viz.kpi_card('本周期新增', data.kpis.recent, color='var(--accent)') | safe }}
+  {{ viz.kpi_card('负面预警', data.kpis.alerts, color='var(--danger)') | safe }}
+  {{ viz.kpi_card('已验证闭环', data.kpis.verified, color='var(--ok)') | safe }}
+  {{ viz.kpi_card('采集成功/失败', data.kpis.collect_ok ~ ' / ' ~ data.kpis.collect_fail,
+                  color='var(--ok)' if data.kpis.collect_fail == 0 else 'var(--warn)') | safe }}
+</div>
+
+<h2>风险雷达（各监测主体负向占比）</h2>
+<div class="card">{{ viz.bar_chart(data.risk, threshold=0.35, threshold_label='预警线 35%') | safe }}</div>
+
+<h2>闭环进度（洞察状态分布）</h2>
+<div class="card">
+  {% set st = data.loop %}
+  {{ viz.percent_bar([
+      ('待处理', st.get('new', 0), 'var(--warn)'),
+      ('已确认', st.get('acknowledged', 0), 'var(--accent)'),
+      ('已执行', st.get('actioned', 0), 'var(--ok)'),
+      ('已验证', st.get('verified', 0), 'var(--ok)'),
+      ('已忽略', st.get('dismissed', 0), 'var(--muted)'),
+  ]) | safe }}
+</div>
+
+<h2>今日情报流</h2>
+<div class="card">{{ viz.timeline(data.timeline) | safe }}</div>
+
+<h2>监测覆盖</h2>
+{% if data.monitors %}
+<table>
+  <tr><th>类型</th><th>目标</th><th>Cron</th><th>状态</th><th>最近运行</th></tr>
+  {% for m in data.monitors %}
+  <tr>
+    <td>{{ m.kind }}</td>
+    <td><code>{{ m.target_json.get('url') or m.target_json.get('query') or m.target_json.get('site') or '—' }}</code></td>
+    <td>{{ m.schedule_cron }}</td>
+    <td><span class="badge {{ 'b-ok' if m.state == 'ok' else ('b-high' if m.state == 'error' else 'b-gray') }}">{{ m.state }}</span></td>
+    <td>{{ (m.last_run_at or '')[:16].replace('T', ' ') or '从未' }}</td>
+  </tr>
+  {% endfor %}
+</table>
+{% else %}
+<div class="empty">暂无监控任务 —— 去「数据监测 → 监控任务」创建，或「接入向导」接入第一方数据</div>
+{% endif %}
+{% endblock %}

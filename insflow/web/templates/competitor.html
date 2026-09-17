@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% block title %} · {{ title }}{% endblock %}
+{% block content %}
+<h1>{{ title }}</h1>
+<p class="sub">对手在做什么、我差在哪（近 {{ days }} 天）</p>
+
+<div class="cards">
+  {{ viz.kpi_card('竞品档案', data.kpis.competitors, color='var(--accent)') | safe }}
+  {{ viz.kpi_card('本周期异动', data.kpis.signals, color='var(--warn)') | safe }}
+  {{ viz.kpi_card('关键词缺口', data.kpis.gaps, color='var(--danger)') | safe }}
+</div>
+
+<h2>关键词缺口（搜索量排序）</h2>
+<div class="card">
+  {% if data.gaps %}
+  {{ viz.bar_chart(data.gaps, color='var(--accent)') | safe }}
+  {% else %}
+  <div class="empty">暂无缺口数据 —— 创建 keyword 监控并记录一次排名快照</div>
+  {% endif %}
+</div>
+
+<h2>竞品档案</h2>
+{% if data.profiles %}
+<table>
+  <tr><th>名称</th><th>域名</th><th>定位</th><th>监测项</th></tr>
+  {% for p in data.profiles %}
+  <tr>
+    <td><strong>{{ p.name }}</strong></td>
+    <td><code>{{ p.domain }}</code></td>
+    <td>{{ p.positioning or '—' }}</td>
+    <td>{% for m in p.monitors_json %}<span class="badge b-gray">{{ m }}</span> {% endfor %}</td>
+  </tr>
+  {% endfor %}
+</table>
+{% else %}
+<div class="empty">暂无竞品档案 —— 去「竞品」创建，或应用行业模板包（含 3 竞品定价监控）</div>
+{% endif %}
+
+<h2>竞品异动时间线</h2>
+<div class="card">{{ viz.timeline(data.timeline) | safe }}</div>
+{% endblock %}

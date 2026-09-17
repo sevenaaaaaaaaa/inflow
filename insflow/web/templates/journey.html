@@ -1,0 +1,64 @@
+{% extends "base.html" %}
+{% block title %} · {{ title }}{% endblock %}
+{% block content %}
+<h1>{{ title }}</h1>
+<p class="sub">用户在哪一步流失、谁值得深耕（近 {{ days }} 天）</p>
+
+<div class="cards">
+  {{ viz.kpi_card('漏斗步数', data.kpis.steps, color='var(--accent)') | safe }}
+  {{ viz.kpi_card('旅程断点', data.kpis.gaps, color='var(--danger)') | safe }}
+  {{ viz.kpi_card('流失预警分层', data.kpis.at_risk, color='var(--warn)') | safe }}
+</div>
+
+<h2>转化漏斗（相邻步转化率）</h2>
+<div class="card">
+  {% if data.funnel %}
+  {{ viz.funnel(data.funnel) | safe }}
+  {% else %}
+  <div class="empty">暂无漏斗数据 —— 创建 journey 监控（配置 GA4 漏斗事件）后生成</div>
+  {% endif %}
+</div>
+
+<h2>留存趋势（GA4）</h2>
+<div class="card">
+  {% if data.retention %}
+  {{ viz.line_chart([{'name': '留存率', 'values': data.retention | map(attribute='value') | list}],
+                    data.retention | map(attribute='bucket') | list, as_area=True) | safe }}
+  {% else %}
+  <div class="empty">暂无留存数据（需 GA4 授权）</div>
+  {% endif %}
+</div>
+
+<h2>旅程断点与内容缺口</h2>
+{% if data.gaps %}
+<table>
+  <tr><th>严重度</th><th>类型</th><th>标题</th><th>时间</th></tr>
+  {% for i in data.gaps %}
+  <tr>
+    <td><span class="badge b-{{ i.severity.value }}">{{ i.severity.value }}</span></td>
+    <td><code>{{ i.type }}</code></td>
+    <td>{{ i.title }}</td>
+    <td>{{ i.created_at.strftime('%m-%d %H:%M') }}</td>
+  </tr>
+  {% endfor %}
+</table>
+{% else %}
+<div class="empty">暂无旅程断点 ✅</div>
+{% endif %}
+
+<h2>RFM 流失预警</h2>
+{% if data.at_risk %}
+<table>
+  <tr><th>严重度</th><th>标题</th><th>摘要</th></tr>
+  {% for i in data.at_risk %}
+  <tr>
+    <td><span class="badge b-{{ i.severity.value }}">{{ i.severity.value }}</span></td>
+    <td>{{ i.title }}</td>
+    <td><small class="sub">{{ i.summary[:90] }}</small></td>
+  </tr>
+  {% endfor %}
+</table>
+{% else %}
+<div class="empty">暂无流失预警 —— 在「接入向导」配置 OpenFlow MCP 后可用真实会员/订单数据分层</div>
+{% endif %}
+{% endblock %}

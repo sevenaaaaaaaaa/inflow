@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+{% block title %} · {{ title }}{% endblock %}
+{% block content %}
+<h1>{{ title }}</h1>
+<p class="sub">北极星：每条建议最终有没有用（近 {{ days }} 天）</p>
+
+<div class="cards">
+  {{ viz.kpi_card('动作总数', data.kpis.total, color='var(--accent)') | safe }}
+  {{ viz.kpi_card('执行中', data.kpis.dispatched, color='var(--accent)') | safe }}
+  {{ viz.kpi_card('待验证', data.kpis.verifying, color='var(--warn)') | safe }}
+  {{ viz.kpi_card('已验证', data.kpis.verified, color='var(--ok)') | safe }}
+  {{ viz.kpi_card('重试耗尽', data.kpis.dead, color='var(--danger)') | safe }}
+</div>
+
+<h2>验证结论构成</h2>
+<div class="card">
+  {% set v = data.verdicts %}
+  {% set eff = v.get('effective', 0) %}{% set neu = v.get('neutral', 0) %}{% set harm = v.get('harmful', 0) %}
+  {{ viz.percent_bar([
+      ('有效', eff, 'var(--ok)'),
+      ('中性', neu, 'var(--muted)'),
+      ('有害', harm, 'var(--danger)'),
+  ]) | safe }}
+</div>
+
+<h2>模型命中率（按模型聚合洞察命中率）</h2>
+<div class="card">
+  {% if data.effectiveness %}
+  {{ viz.bar_chart(
+      data.effectiveness | map(attribute='model_id') | zip(data.effectiveness | map(attribute='hit_rate')) | list,
+      value_fmt=viz.fmt_pct, colors=['var(--ok)', 'var(--accent)', 'var(--warn)']
+  ) | safe }}
+  {% else %}
+  <div class="empty">暂无验证数据 —— 动作完成并过 14 天窗口后自动产出</div>
+  {% endif %}
+</div>
+
+<h2>待验证动作（窗口到期未评估）</h2>
+{% if data.due %}
+<table>
+  <tr><th>动作</th><th>洞察</th><th>状态</th><th>验证窗口</th></tr>
+  {% for a in data.due %}
+  <tr>
+    <td><code>{{ a.action_type }}</code></td>
+    <td><code>{{ a.insight_id }}</code></td>
+    <td><span class="badge b-gray">{{ a.state.value }}</span></td>
+    <td>{{ (a.verify_window_until or '')[:16].replace('T', ' ') }}</td>
+  </tr>
+  {% endfor %}
+</table>
+{% else %}
+<div class="empty">暂无到期待验证动作 ✅</div>
+{% endif %}
+
+<h2>动作时间线</h2>
+<div class="card">{{ viz.timeline(data.timeline) | safe }}</div>
+{% endblock %}

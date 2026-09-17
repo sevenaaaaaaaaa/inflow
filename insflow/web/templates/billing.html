@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+{% block title %} · {{ title }}{% endblock %}
+{% block content %}
+<h1>{{ title }}</h1>
+<p class="sub">用量与成本是否健康（当月）</p>
+
+<div class="cards">
+  {{ viz.kpi_card('当前套餐', data.plan.plan_name, color='var(--accent)') | safe }}
+  {% if data.trial.active %}
+  {{ viz.kpi_card('试用剩余', data.trial.days_left ~ ' 天', color='var(--ok)') | safe }}
+  {% endif %}
+  {% for label, pct in data.gauges %}
+  {{ viz.kpi_card(label, '%.0f%%' | format(pct * 100),
+                  color='var(--danger)' if pct >= 0.9 else ('var(--warn)' if pct >= 0.8 else 'var(--accent)')) | safe }}
+  {% endfor %}
+</div>
+
+<h2>配额消耗</h2>
+<div class="card">
+  <div style="display:flex;gap:26px;flex-wrap:wrap">
+    {% for label, pct in data.gauges %}
+    <div style="text-align:center">{{ viz.gauge(pct, label) | safe }}</div>
+    {% endfor %}
+  </div>
+  <p class="sub" style="margin-top:10px">≥80% 预警（quota.warning），≥100% 拒绝（quota.exceeded 出站告警）</p>
+</div>
+
+<h2>用量明细</h2>
+<table>
+  <tr><th>项</th><th>已用</th><th>限额</th></tr>
+  {% for kind, u in data.usage.items() %}
+  {% if u.used is defined %}
+  <tr>
+    <td>{{ kind }}</td>
+    <td><strong>{{ u.used if u.used is not none else '—' }}</strong></td>
+    <td>{{ u.limit if u.limit is not none else '不限' }}</td>
+  </tr>
+  {% endif %}
+  {% endfor %}
+</table>
+
+<h2>套餐包含</h2>
+<div class="card">
+  <p class="sub">数据源：{% for s in data.plan.sources_allowed %}<code>{{ s }}</code> {% endfor %}</p>
+  <p class="sub">功能：{% for f in data.plan.features %}<span class="badge b-gray">{{ f }}</span> {% endfor %}</p>
+  <div class="toolbar" style="margin-top:10px">
+    <a class="btn secondary" href="/console/usage?workspace_id={{ workspace_id }}">套餐与计费 →</a>
+  </div>
+</div>
+{% endblock %}

@@ -1,0 +1,65 @@
+{% extends "base.html" %}
+{% block title %} · {{ title }}{% endblock %}
+{% block content %}
+<h1>{{ title }}</h1>
+<p class="sub">系统还健康吗：采集 · 配额 · 告警 · 备份 · 授权（近 {{ days }} 天）</p>
+
+<div class="cards">
+  {% set rate = data.kpis.success_rate %}
+  {{ viz.kpi_card('采集成功率', ('%.0f%%' | format(rate * 100)) if rate is not none else '无采集',
+                  color='var(--ok)' if (rate is not none and rate >= 0.9) else 'var(--warn)') | safe }}
+  {{ viz.kpi_card('成功采集', data.kpis.ok, color='var(--ok)') | safe }}
+  {{ viz.kpi_card('采集失败', data.kpis.fail, color='var(--danger)' if data.kpis.fail else 'var(--muted)') | safe }}
+  {{ viz.kpi_card('分级告警', data.kpis.alerts, color='var(--danger)' if data.kpis.alerts else 'var(--ok)') | safe }}
+</div>
+
+<h2>配额与熔断</h2>
+<div class="card">
+  {% if data.quota %}
+  <table>
+    <tr><th>数据源</th><th>状态</th><th>调用数</th><th>费用</th></tr>
+    {% for q in data.quota %}
+    <tr>
+      <td><code>{{ q.source_id if q.source_id is defined else q.source }}</code></td>
+      <td><span class="badge {{ 'b-high' if q.state == 'open' else 'b-ok' }}">{{ q.state }}</span></td>
+      <td>{{ q.call_count }}</td>
+      <td>${{ '%.2f' | format(q.total_cost or 0) }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% else %}
+  <div class="empty">本期无数据源调用</div>
+  {% endif %}
+</div>
+
+<h2>授权健康（OAuth）</h2>
+<div class="card">
+  <table>
+    <tr><th>提供方</th><th>状态</th><th>剩余天数</th></tr>
+    {% for t in data.tokens %}
+    <tr>
+      <td><code>{{ t.provider }}</code></td>
+      <td>
+        {% set st = t.state %}
+        <span class="badge {{ 'b-ok' if st == 'ok' else ('b-high' if st in ('expired',) else 'b-medium') }}">
+          {{ {'ok': '有效', 'expiring_soon': '即将到期', 'expired': '已过期',
+              'missing': '未授权', 'legacy': '旧格式'}.get(st, st) }}</span>
+      </td>
+      <td>{{ t.remaining_days if t.remaining_days is not none else '—' }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+</div>
+
+<h2>最近备份</h2>
+<div class="card">
+  {% if data.backups %}
+  <p class="sub">最近备份：{% for b in data.backups %}<code>{{ b }}</code> {% endfor %}</p>
+  {% else %}
+  <div class="empty">从未备份 —— 运行 <code>insflow backup</code>（已挂每日 09:15 自动备份）</div>
+  {% endif %}
+</div>
+
+<h2>分级告警流</h2>
+<div class="card">{{ viz.timeline(data.alerts) | safe }}</div>
+{% endblock %}
