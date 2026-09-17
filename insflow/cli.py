@@ -11,6 +11,14 @@ from rich.table import Table
 
 from . import __version__
 
+# 加载仓库 .env（CLI 也遵循同一份配置：驱动/MySQL/SMTP 等）
+try:
+    from pathlib import Path as _P
+    from dotenv import load_dotenv as _ld
+    _ld(_P(__file__).parent.parent / ".env")
+except Exception:
+    pass
+
 console = Console()
 
 
