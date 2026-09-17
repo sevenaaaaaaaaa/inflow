@@ -49,6 +49,14 @@ def _require(target: dict, field: str, hint: str = "") -> str:
     return value
 
 
+def _window_key_from_ts(ts: str, fallback) -> str:
+    """数据时间 → 幂等窗口键（按小时）；解析失败回落到当前小时"""
+    try:
+        return datetime.fromisoformat(str(ts).replace("Z", "+00:00")).strftime("%Y-%m-%d-%H")
+    except (ValueError, TypeError):
+        return fallback.strftime("%Y-%m-%d-%H")
+
+
 async def _save_metrics(workspace_id: str, rows: list[dict],
                         monitor_id: str = "") -> int:
     """指标时序入库（幂等：同 monitor 同小时窗口同指标 INSERT OR IGNORE）
@@ -61,6 +69,10 @@ async def _save_metrics(workspace_id: str, rows: list[dict],
     window_key = now.strftime("%Y-%m-%d-%H")
     inserted = 0
     for r in rows:
+        row_ts = r.get("ts", now.isoformat())
+        # 幂等窗口键由**数据时间**推导（不是当前时钟）：否则历史回填/补采会被
+        # 误判为同窗口而丢数据（SQLite 静默忽略，MySQL 唯一键直接报错）
+        window_key = r.get("window_key") or _window_key_from_ts(row_ts, now)
         cur = await store._execute(
             """INSERT OR IGNORE INTO metrics
                (id, workspace_id, entity_type, entity_id, metric, value, dim_json, ts, monitor_id, window_key)
@@ -68,8 +80,8 @@ async def _save_metrics(workspace_id: str, rows: list[dict],
             (r.get("id") or datetime.now(UTC).strftime("%Y%m%d%H%M%S%f"),
              workspace_id, r.get("entity_type", "site"), r.get("entity_id", "main"),
              r["metric"], float(r["value"]),
-             json.dumps(r.get("dim", {}), ensure_ascii=False), r.get("ts", now.isoformat()),
-             monitor_id, r.get("window_key", now.strftime("%Y-%m-%d-%H"))),
+             json.dumps(r.get("dim", {}), ensure_ascii=False), row_ts,
+             monitor_id, window_key),
         )
         if cur.rowcount > 0:
             inserted += 1
