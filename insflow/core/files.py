@@ -92,6 +92,39 @@ class EventBus:
         return events[-limit:]
 
 
+    # ========== 轮转（性能守则：事件流不得无限增长）==========
+
+    def rotate(self, keep_days: int = 30) -> dict:
+        """按时间裁剪事件流，保留最近 N 天
+
+        教训（OpenFlow）：生产曾积累 63 万行无意义事件（heartbeat/scroll）导致查询慢、
+        存储膨胀。事件流是审计与编排的底座，必须设置保留期。
+        """
+        from datetime import datetime, timedelta, timezone
+        if not self.events_file.exists():
+            return {"kept": 0, "dropped": 0}
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=keep_days)).isoformat()
+        kept, dropped = [], 0
+        with open(self.events_file, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    event = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if event.get("ts", "") >= cutoff:
+                    kept.append(line)
+                else:
+                    dropped += 1
+        if dropped:
+            tmp = self.events_file.with_suffix(".jsonl.tmp")
+            tmp.write_text("\n".join(kept) + ("\n" if kept else ""), encoding="utf-8")
+            tmp.replace(self.events_file)
+        return {"kept": len(kept), "dropped": dropped}
+
+
 class ReportStore:
     """报告文件存储"""
 

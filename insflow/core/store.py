@@ -232,6 +232,15 @@ MIGRATIONS = [
     """
     CREATE INDEX IF NOT EXISTS idx_subscriptions_ws ON subscriptions(workspace_id);
     """,
+    # V6: 指标分析索引（驾驶舱聚合：避免全表扫描）
+    """
+    CREATE INDEX IF NOT EXISTS idx_metrics_ws_metric_ts
+        ON metrics(workspace_id, metric, ts);
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_metrics_ws_entity_metric_ts
+        ON metrics(workspace_id, entity_id, metric, ts);
+    """,
 ]
 
 # V3: metrics 幂等去重（R1-4）—— ALTER 语句需要幂等执行（检查列是否存在）
@@ -602,6 +611,93 @@ class Store:
             })
         result.sort(key=lambda x: -x["hit_rate"])
         return result
+
+    # ========== 指标分析聚合（驾驶舱专用：降采样 + 限额）==========
+    # 性能守则：一律走 (workspace_id, metric, ts) 索引；长窗口按天/周降采样；
+    # 结果行数上限约束，避免把原始时序全量读进内存。
+
+    MAX_SERIES_POINTS = 120
+
+    @staticmethod
+    def _bucket_fmt(days: float) -> str:
+        if days <= 2:
+            return "%Y-%m-%d %H"
+        if days <= 90:
+            return "%Y-%m-%d"
+        return "%Y-W%W"
+
+    async def metric_series(self, workspace_id: str, metric: str,
+                            days: float = 7, agg: str = "sum",
+                            entity_id: str | None = None,
+                            limit: int | None = None) -> list[dict]:
+        """按时间桶降采样的指标序列（驾驶舱趋势图）
+
+        agg: sum | avg | max
+        行数上限 MAX_SERIES_POINTS（超出按更大桶自动降采样）
+        """
+        from datetime import timedelta
+        since = (datetime.now(UTC) - timedelta(days=days)).isoformat()
+        fmt = self._bucket_fmt(days)
+        fn = {"sum": "SUM", "avg": "AVG", "max": "MAX"}.get(agg, "SUM")
+        where = "workspace_id = ? AND metric = ? AND ts >= ?"
+        params: list = [workspace_id, metric, since]
+        if entity_id:
+            where += " AND entity_id = ?"
+            params.append(entity_id)
+        rows = await self._fetchall(
+            f"""SELECT strftime('{fmt}', ts) AS bucket, {fn}(value) AS v, COUNT(*) AS n
+                FROM metrics WHERE {where}
+                GROUP BY bucket ORDER BY bucket LIMIT ?""",
+            tuple([*params, limit or self.MAX_SERIES_POINTS]),
+        )
+        return [{"bucket": r["bucket"], "value": float(r["v"] or 0), "n": r["n"]}
+                for r in rows]
+
+    async def metric_total(self, workspace_id: str, metric: str, days: float = 7,
+                           agg: str = "sum", entity_id: str | None = None) -> float:
+        """单指标窗口内聚合值（KPI 卡）"""
+        from datetime import timedelta
+        since = (datetime.now(UTC) - timedelta(days=days)).isoformat()
+        fn = {"sum": "SUM", "avg": "AVG", "max": "MAX"}.get(agg, "SUM")
+        where = "workspace_id = ? AND metric = ? AND ts >= ?"
+        params: list = [workspace_id, metric, since]
+        if entity_id:
+            where += " AND entity_id = ?"
+            params.append(entity_id)
+        row = await self._fetchone(
+            f"SELECT {fn}(value) AS v FROM metrics WHERE {where}", tuple(params))
+        return float((row or {}).get("v") or 0)
+
+    async def metric_totals(self, workspace_id: str, metrics: list[str],
+                            days: float = 7, agg: str = "sum") -> dict:
+        """多指标聚合（一次查询，避免 N+1）"""
+        if not metrics:
+            return {}
+        from datetime import timedelta
+        since = (datetime.now(UTC) - timedelta(days=days)).isoformat()
+        fn = {"sum": "SUM", "avg": "AVG", "max": "MAX"}.get(agg, "SUM")
+        placeholders = ",".join("?" for _ in metrics)
+        rows = await self._fetchall(
+            f"""SELECT metric, {fn}(value) AS v, COUNT(*) AS n FROM metrics
+                WHERE workspace_id = ? AND metric IN ({placeholders}) AND ts >= ?
+                GROUP BY metric""",
+            tuple([workspace_id, *metrics, since]),
+        )
+        return {r["metric"]: {"value": float(r["v"] or 0), "n": r["n"]} for r in rows}
+
+    async def metric_breakdown(self, workspace_id: str, metric: str,
+                               days: float = 7, limit: int = 20) -> list[dict]:
+        """按主体（entity_id）聚合（横向条形图）"""
+        from datetime import timedelta
+        since = (datetime.now(UTC) - timedelta(days=days)).isoformat()
+        rows = await self._fetchall(
+            """SELECT entity_id, SUM(value) AS v, MAX(ts) AS last_ts, COUNT(*) AS n
+               FROM metrics WHERE workspace_id = ? AND metric = ? AND ts >= ?
+               GROUP BY entity_id ORDER BY v DESC LIMIT ?""",
+            (workspace_id, metric, since, limit),
+        )
+        return [{"entity_id": r["entity_id"], "value": float(r["v"] or 0),
+                 "last_ts": r["last_ts"], "n": r["n"]} for r in rows]
 
     # ========== Competitors（M3: 竞品档案）==========
 
