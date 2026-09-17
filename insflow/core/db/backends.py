@@ -138,18 +138,24 @@ class MySQLBackend:
     @property
     def dsn(self) -> str:
         c = self.config
-        return f"{c.get('user')}@{c.get('host')}:{c.get('port', 3306)}/{c.get('dbname')}"
+        target = c.get("socket") or f"{c.get('host')}:{c.get('port', 3306)}"
+        return f"{c.get('user')}@{target}/{c.get('dbname')}"
 
     def _new_conn(self):
         c = self.config
-        return self._lib.connect(
-            host=c["host"], port=int(c.get("port", 3306)),
-            user=c["user"], password=c.get("password", ""),
-            database=c["dbname"], charset="utf8mb4",
-            cursorclass=DictCursor, autocommit=False,
-            connect_timeout=8, read_timeout=30,
-        )
-
+        kwargs = {
+            "user": c["user"], "password": c.get("password", ""),
+            "database": c["dbname"], "charset": "utf8mb4",
+            "cursorclass": DictCursor, "autocommit": False,
+            "connect_timeout": 8, "read_timeout": 30,
+        }
+        # 宝塔等环境常只开 unix socket（不监听 TCP）——优先支持 socket
+        if c.get("socket"):
+            kwargs["unix_socket"] = c["socket"]
+        else:
+            kwargs["host"] = c["host"]
+            kwargs["port"] = int(c.get("port", 3306))
+        return self._lib.connect(**kwargs)
     async def connect(self) -> None:
         if pymysql is None:
             raise RuntimeError(
@@ -252,6 +258,7 @@ def mysql_config_from_env() -> dict:
         "dbname": os.environ.get("MYSQL_DBNAME", "insflow"),
         "user": os.environ.get("MYSQL_USER", "insflow"),
         "password": os.environ.get("MYSQL_PASS", ""),
+        "socket": os.environ.get("MYSQL_SOCKET", ""),
         "pool_size": int(os.environ.get("MYSQL_POOL_SIZE", "5")),
     }
 
