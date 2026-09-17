@@ -17,7 +17,7 @@
   <tr>
     <td><code>{{ f }}</code></td>
     <td>
-      <a href="/console/reports/view?category={{ cat }}&filename={{ f }}" target="_blank">查看</a>
+      <a href="/console/reports/view?category={{ cat }}&filename={{ f }}" target="_blank">查看</a> · <a href="/console/reports/visual?category={{ cat }}&filename={{ f }}&workspace_id={{ workspace_id }}" target="_blank"><strong>可视化</strong></a>
     </td>
   </tr>
   {% endfor %}
@@ -35,7 +35,7 @@
   <tr><th>文件</th><th>操作</th></tr>
   {% for f in deep_reports %}
   <tr><td><code>{{ f }}</code></td>
-      <td><a href="/console/reports/view?category=deep-dive&filename={{ f }}" target="_blank">查看</a></td></tr>
+      <td><a href="/console/reports/view?category=deep-dive&filename={{ f }}" target="_blank">查看</a> · <a href="/console/reports/visual?category=deep-dive&filename={{ f }}&workspace_id={{ workspace_id }}" target="_blank"><strong>可视化</strong></a></td></tr>
   {% endfor %}
 </table>
 {% endif %}

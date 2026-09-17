@@ -156,6 +156,7 @@ main button.secondary:hover{background:var(--hover)}
     {% endfor %}
   </nav>
   <div class="chrome-actions">
+    <button class="icon-btn" onclick="toggleAutoRefresh()" id="auto-btn" title="自动刷新（延迟 60s 起、每 120s 一次、最多 20 次、页面隐藏暂停）">⟳</button>
     <button class="icon-btn" onclick="toggleTheme()" title="切换明暗主题">◐</button>
     <button class="icon-btn" onclick="document.body.classList.toggle('sb-open')" title="侧栏">☰</button>
   </div>
@@ -192,6 +193,41 @@ function toast(text, type){
   box.appendChild(el);
   setTimeout(function(){ el.remove(); }, 3200);
 }
+
+/* 自动刷新（性能守则·学 OpenFlow 心跳教训）：
+   ① 延迟 60s 才启动（避免一进页面就打接口）
+   ② 间隔 120s（不频繁）
+   ③ 单次会话最多 20 次（防长挂页面无限刷）
+   ④ 页面隐藏/不可见时暂停（后台标签页零负载）
+   ⑤ 服务端结果有 90s TTL 缓存，刷新命中缓存几乎零成本 */
+var __af = { timer: null, count: 0, MAX: 20, DELAY: 60000, INTERVAL: 120000 };
+function toggleAutoRefresh(){
+  var on = localStorage.getItem('if_auto') === '1';
+  if (on) { localStorage.setItem('if_auto','0'); stopAutoRefresh(); toast('自动刷新已关闭'); }
+  else { localStorage.setItem('if_auto','1'); scheduleAutoRefresh(); toast('自动刷新已开启（60s 后首刷）'); }
+  paintAutoBtn();
+}
+function paintAutoBtn(){
+  var b = document.getElementById('auto-btn'); if(!b) return;
+  var on = localStorage.getItem('if_auto') === '1';
+  b.style.color = on ? 'var(--accent)' : '';
+}
+function scheduleAutoRefresh(){
+  stopAutoRefresh();
+  __af.timer = setTimeout(function(){
+    if (document.hidden) { scheduleAutoRefresh(); return; }   // 隐藏则顺延
+    if (__af.count >= __af.MAX) { toast('已达自动刷新上限（20 次），手动刷新可继续'); return; }
+    __af.count++;
+    location.reload();
+  }, __af.DELAY);
+}
+function stopAutoRefresh(){ if (__af.timer) { clearTimeout(__af.timer); __af.timer = null; } }
+document.addEventListener('visibilitychange', function(){
+  if (document.hidden) { stopAutoRefresh(); }
+  else if (localStorage.getItem('if_auto') === '1') { scheduleAutoRefresh(); }
+});
+if (localStorage.getItem('if_auto') === '1') { scheduleAutoRefresh(); }
+paintAutoBtn();
 </script>
 {% block script %}{% endblock %}
 </body>

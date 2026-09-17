@@ -150,6 +150,20 @@ async def reports_page(request: Request, workspace_id: str = Query("")):
     ))
 
 
+@router.get("/reports/visual", response_class=HTMLResponse)
+async def report_visual(request: Request, category: str, filename: str,
+                        workspace_id: str = Query("")):
+    """可视化报告（MD → 注入 SVG 图表的自包含 HTML，可打印 PDF）"""
+    if not workspace_id:
+        workspace_id = await _default_workspace()
+    from ..engine.report_render import ReportRenderer
+    try:
+        html = await ReportRenderer(workspace_id).render(category, filename)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    return HTMLResponse(html)
+
+
 @router.get("/reports/view", response_class=HTMLResponse)
 async def view_report(request: Request, category: str, filename: str,
                       workspace_id: str = Query("")):

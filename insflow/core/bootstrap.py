@@ -96,6 +96,19 @@ async def bootstrap_scheduled_jobs() -> dict:
     scheduler.register_handler("token.audit", _token_audit)
     registered["jobs"].append("token.audit@daily-09:20")
 
+    # 6.5 每日 09:10：事件流轮转（性能守则：事件流不得无限增长）
+    async def _event_rotate():
+        from ..core.files import EventBus
+        kept_total = 0
+        for ws in await store.list_workspaces():
+            r = EventBus(ws.id).rotate(keep_days=30)
+            kept_total += r["kept"]
+        logger.info(f"事件流轮转完成：保留 {kept_total} 行")
+
+    scheduler.add_job("events.rotate", "10 9 * * *", "events.rotate", {})
+    scheduler.register_handler("events.rotate", _event_rotate)
+    registered["jobs"].append("events.rotate@daily-09:10")
+
     # 7. 每日 09:25：订阅每日汇总推送（G-5 daily 模式）
     async def _subscription_daily():
         from ..engine.subscriptions import SubscriptionService
