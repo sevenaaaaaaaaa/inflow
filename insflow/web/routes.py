@@ -27,6 +27,8 @@ templates.env.filters["md_to_html"] = _md_to_html_filter
 
 from ..viz import charts as _viz  # noqa: E402
 templates.env.globals["viz"] = _viz
+# 模板常用过滤器（Jinja 无内置 zip）
+templates.env.filters["zip"] = lambda a, b: list(zip(a, b))
 
 router = APIRouter(prefix="/console", include_in_schema=False)
 
