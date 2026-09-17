@@ -1,0 +1,30 @@
+var _tip=null;
+function _tipEl(){ if(!_tip){_tip=document.createElement('div');_tip.id='if-tip';document.body.appendChild(_tip);} return _tip; }
+function _showTip(html,ev){ var t=_tipEl(); t.innerHTML=html; t.classList.add('on');
+  var pad=14,w=t.offsetWidth,h=t.offsetHeight;
+  t.style.left=Math.min(ev.clientX+pad, window.innerWidth-w-8)+'px';
+  t.style.top=Math.max(8, ev.clientY-h-pad)+'px'; }
+function _hideTip(){ if(_tip) _tip.classList.remove('on'); }
+document.addEventListener('mouseover', function(e){
+  var el=e.target.closest('[data-tip]'); if(!el) return; _showTip(el.getAttribute('data-tip'), e); });
+document.addEventListener('mousemove', function(e){
+  if(_tip && _tip.classList.contains('on')) _showTip(_tip.innerHTML, e); });
+document.addEventListener('mouseout', function(e){ if(e.target.closest('[data-tip]')) _hideTip(); });
+function ifToggleSeries(name, el){
+  var off = el.classList.toggle('off');
+  el.setAttribute('aria-pressed', off ? 'false' : 'true');
+  var host = el.closest('.dp-chart') || document;
+  host.querySelectorAll('[data-series]').forEach(function(n){
+    if(n.getAttribute('data-series') === name) n.style.display = off ? 'none' : ''; });
+}
+function ifLegendKey(ev, name, el){
+  if(ev.key === 'Enter' || ev.key === ' '){ ev.preventDefault(); ifToggleSeries(name, el); } }
+function dpView(uid, mode){
+  var box=document.getElementById(uid); if(!box) return;
+  box.querySelector('.dp-chart').hidden = (mode !== 'chart');
+  box.querySelector('.dp-tablewrap').hidden = (mode !== 'table');
+  box.querySelectorAll('.dp-btn').forEach(function(b){
+    if(b.tagName === 'BUTTON') b.classList.toggle('dp-on',
+      (mode==='chart' && b.textContent.trim()==='图') || (mode==='table' && b.textContent.trim()==='表'));
+  });
+}

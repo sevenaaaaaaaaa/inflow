@@ -34,6 +34,10 @@ class SQLiteDialect:
     def now_expr(self) -> str:
         return "datetime('now')"
 
+    def json_field(self, column: str, key: str) -> str:
+        """从 JSON 列取标量（SQLite json_extract）"""
+        return f"json_extract({column}, '$.{key}')"
+
 
 class MySQLDialect:
     name = "mysql"
@@ -69,6 +73,10 @@ class MySQLDialect:
 
     def now_expr(self) -> str:
         return "NOW()"
+
+    def json_field(self, column: str, key: str) -> str:
+        """从 JSON 列取标量（MySQL 5.7 JSON_UNQUOTE/JSON_EXTRACT）"""
+        return f"JSON_UNQUOTE(JSON_EXTRACT({column}, '$.{key}'))"
 
 
 def get_dialect(driver: str):

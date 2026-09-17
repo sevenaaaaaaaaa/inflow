@@ -214,4 +214,71 @@ MYSQL_MIGRATIONS = [
         INDEX idx_subscriptions_ws (workspace_id)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
     """,
+    # V4: 预聚合 + 语义层 + 协作 + 告警（MySQL 版）
+    """
+    CREATE TABLE IF NOT EXISTS metric_daily (
+        id VARCHAR(64) PRIMARY KEY,
+        workspace_id VARCHAR(64) NOT NULL,
+        metric VARCHAR(96) NOT NULL,
+        day VARCHAR(16) NOT NULL,
+        entity_type VARCHAR(32) NOT NULL DEFAULT 'site',
+        entity_id VARCHAR(191) NOT NULL DEFAULT 'main',
+        dim_key VARCHAR(191) NOT NULL DEFAULT '',
+        agg_sum DOUBLE NOT NULL DEFAULT 0,
+        agg_avg DOUBLE NOT NULL DEFAULT 0,
+        agg_max DOUBLE NOT NULL DEFAULT 0,
+        n INT NOT NULL DEFAULT 0,
+        updated_at VARCHAR(40) NOT NULL,
+        KEY idx_metric_daily_lookup (workspace_id, metric, day),
+        UNIQUE KEY uq_metric_daily (workspace_id, metric, day, entity_type, entity_id, dim_key)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS metric_defs (
+        id VARCHAR(64) PRIMARY KEY,
+        workspace_id VARCHAR(64) NOT NULL,
+        name VARCHAR(96) NOT NULL,
+        label VARCHAR(191) NOT NULL DEFAULT '',
+        expr TEXT,
+        unit VARCHAR(32) NOT NULL DEFAULT '',
+        owner VARCHAR(96) NOT NULL DEFAULT '',
+        version INT NOT NULL DEFAULT 1,
+        status VARCHAR(24) NOT NULL DEFAULT 'active',
+        notes TEXT,
+        created_at VARCHAR(40) NOT NULL,
+        updated_at VARCHAR(40) NOT NULL,
+        KEY idx_metric_defs_ws (workspace_id, name)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS comments (
+        id VARCHAR(64) PRIMARY KEY,
+        workspace_id VARCHAR(64) NOT NULL,
+        target_type VARCHAR(32) NOT NULL,
+        target_id VARCHAR(96) NOT NULL,
+        author VARCHAR(96) NOT NULL DEFAULT '',
+        body TEXT,
+        created_at VARCHAR(40) NOT NULL,
+        KEY idx_comments_target (workspace_id, target_type, target_id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS alert_rules (
+        id VARCHAR(64) PRIMARY KEY,
+        workspace_id VARCHAR(64) NOT NULL,
+        name VARCHAR(191) NOT NULL,
+        metric VARCHAR(96) NOT NULL,
+        op VARCHAR(8) NOT NULL DEFAULT 'gt',
+        threshold DOUBLE NOT NULL DEFAULT 0,
+        window_days DOUBLE NOT NULL DEFAULT 7,
+        dims_json TEXT,
+        routes_json TEXT,
+        escalation_json TEXT,
+        enabled INT NOT NULL DEFAULT 1,
+        last_fired_at VARCHAR(40) NOT NULL DEFAULT '',
+        created_at VARCHAR(40) NOT NULL,
+        updated_at VARCHAR(40) NOT NULL,
+        KEY idx_alert_rules_ws (workspace_id, enabled)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    """,
 ]

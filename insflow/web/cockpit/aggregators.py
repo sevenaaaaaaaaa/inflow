@@ -77,7 +77,8 @@ async def overview(workspace_id: str, days: float = 7) -> dict:
 # ================= C2 舆情 =================
 
 async def sentiment(workspace_id: str, days: float = 7,
-                    channel: str = "", entity: str = "") -> dict:
+                    channel: str = "", entity: str = "",
+                    entity_allow: list[str] | None = None) -> dict:
     async def build():
         store = await get_store()
         neg_series = await store.metric_series(workspace_id, "topic_negative_ratio",
@@ -133,22 +134,36 @@ async def sentiment(workspace_id: str, days: float = 7,
 # ================= C3 流量 =================
 
 async def traffic(workspace_id: str, days: float = 14,
-                  channel: str = "", entity: str = "") -> dict:
+                  channel: str = "", entity: str = "",
+                  dim_filters: dict | None = None,
+                  entity_allow: list[str] | None = None) -> dict:
     async def build():
         store = await get_store()
-        clicks = await store.metric_series(workspace_id, "gsc_clicks", days=days)
-        sessions = await store.metric_series(workspace_id, "ga4_sessions", days=days)
-        conversions = await store.metric_series(workspace_id, "ga4_conversions", days=days)
+        extra = {"channel": channel} if channel else {}
+        df: dict = {**(dim_filters or {}), **extra}
+        clicks = await store.metric_series(workspace_id, "gsc_clicks", days=days,
+                                           dim_filters=df, entity_allow=entity_allow)
+        sessions = await store.metric_series(workspace_id, "ga4_sessions", days=days,
+                                             dim_filters=df, entity_allow=entity_allow)
+        conversions = await store.metric_series(workspace_id, "ga4_conversions",
+                                                days=days, dim_filters=df,
+                                                entity_allow=entity_allow)
         totals = await store.metric_totals(
             workspace_id, ["gsc_clicks", "gsc_impressions",
-                           "ga4_sessions", "ga4_conversions"], days=days)
+                           "ga4_sessions", "ga4_conversions"], days=days,
+            dim_filters=df)
         # CTR 是比率，取均值（不能求和）
-        ctr = await store.metric_total(workspace_id, "gsc_ctr", days=days, agg="avg")
+        ctr = await store.metric_total(workspace_id, "gsc_ctr", days=days, agg="avg",
+                                       dim_filters=df)
         cwv = await store.latest_metrics(workspace_id, [
             "crux_lcp", "crux_inp", "crux_cls", "crux_ttfb"])
         insights = await store.list_insights(workspace_id, limit=300)
         anomalies = [i for i in insights
                      if i.type in ("traffic_anomaly", "conversion_low", "keyword_opportunity")]
+        # 上期对比（同环比）：再取前一个等长窗口
+        prev_clicks = await store.metric_series(workspace_id, "gsc_clicks", days=days * 2)
+        prev_sessions = await store.metric_series(workspace_id, "ga4_sessions", days=days * 2)
+        half = len(prev_clicks) // 2 if prev_clicks else 0
         # 关键词机会（从洞察证据取，散点：搜索量 × 排名）
         scatter = []
         for ins in insights:
@@ -171,11 +186,62 @@ async def traffic(workspace_id: str, days: float = 14,
                 "sessions": [p["value"] for p in sessions],
             },
             "conversions": [p["value"] for p in conversions],
+            "compare": {
+                "name": "上期",
+                "clicks": [p["value"] for p in prev_clicks[:half]],
+                "sessions": [p["value"] for p in prev_sessions[:half]],
+            },
+            "annotations": [{"ts": i.created_at.isoformat()[:10], "label": i.type[:10],
+                             "kind": "insight", "severity": i.severity.value}
+                            for i in anomalies[:8]],
             "cwv": {m["metric"]: float(m["value"]) for m in cwv},
             "scatter": scatter[:60],
             "anomalies": anomalies[:10],
+            "geo": [(r["key"], r["value"]) for r in await store.metric_dim_breakdown(
+                workspace_id, "ga4_sessions", "province", days=days, limit=40,
+                dim_filters=df)],
+            "geo_scope": _geo_scope(workspace_id, [r["key"] for r in
+                                                   await store.metric_dim_breakdown(
+                                                       workspace_id, "ga4_sessions",
+                                                       "province", days=days, limit=5)]),
+            "box": await _channel_box(store, workspace_id, days, dim_filters=df),
+            "cf": df,
         }
-    return await cache.get_or_compute(_key(f"traffic:{channel}", workspace_id, days), build, TTL)
+    return await cache.get_or_compute(
+        _key(f"traffic:{channel}:{sorted((dim_filters or {}).items())}", workspace_id, days),
+        build, TTL)
+
+
+def _geo_scope(workspace_id: str, keys: list[str]) -> str:
+    """判断地图口径：出现中国省份 → china；否则 world"""
+    from ...viz.charts import CHINA_GRID
+    return "china" if any(k in CHINA_GRID for k in keys) else "world"
+
+
+async def _channel_box(store, workspace_id: str, days: float,
+                       dim_filters: dict | None = None) -> list[tuple[str, list[float]]]:
+    """按渠道分组的多日转化率样本（箱线图：分布与稳定性对比）"""
+    rows = await store._fetchall(
+        """SELECT dim_json, value, ts FROM metrics
+           WHERE workspace_id = ? AND metric = 'ga4_conversions' AND ts >= ?
+           ORDER BY ts ASC LIMIT 400""",
+        (workspace_id, _since_iso(days)))
+    import json as _json
+    from collections import defaultdict
+    groups: dict[str, list[float]] = defaultdict(list)
+    for r in rows:
+        try:
+            dim = _json.loads(r["dim_json"] or "{}")
+        except Exception:
+            dim = {}
+        ch = str(dim.get("channel") or "未标注")
+        groups[ch].append(float(r["value"] or 0))
+    return sorted(groups.items(), key=lambda t: -len(t[1]))[:6]
+
+
+def _since_iso(days: float) -> str:
+    from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+    return (_dt.now(_tz.utc) - _td(days=days)).isoformat()
 
 
 # ================= C4 竞品 =================
@@ -245,6 +311,8 @@ async def journey(workspace_id: str, days: float = 30) -> dict:
         return {
             "kpis": {"steps": len(funnel), "gaps": len(gaps), "at_risk": len(at_risk)},
             "funnel": funnel,
+            "path_sankey": [(funnel[i][0], funnel[i + 1][0], funnel[i + 1][1])
+                            for i in range(len(funnel) - 1)],
             "retention": sorted(retention, key=lambda x: x["bucket"]),
             "gaps": gaps[:12],
             "at_risk": at_risk[:6],

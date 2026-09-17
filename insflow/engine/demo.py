@@ -16,6 +16,17 @@ from ..core.files import EventBus
 from ..core.store import get_store, generate_id
 
 RNG = random.Random(20260916)
+# 地域/渠道/设备分布（演示网格地图、箱线、透视与 cross-filter）
+PROVINCE_MIX = [("广东", 0.17), ("北京", 0.12), ("上海", 0.11), ("浙江", 0.09),
+                ("江苏", 0.08), ("四川", 0.07), ("山东", 0.06), ("湖北", 0.05),
+                ("福建", 0.05), ("陕西", 0.04), ("湖南", 0.04), ("河南", 0.04)]
+CHANNEL_MIX = [("search", 0.38), ("social", 0.22), ("direct", 0.18),
+               ("referral", 0.12), ("email", 0.10)]
+DEVICES = ["desktop", "mobile", "tablet"]
+# 自有站 + 竞品域名的外部信号强度（用于相对流量指数估算）
+COMPETITOR_SIGNALS = [("main-site.com", 1.0), ("competitor-a.com", 0.62),
+                      ("competitor-b.com", 0.38)]
+
 TOPICS = ["某品牌", "增长自动化工具", "替代方案"]
 STEPS = [("访问定价页", 12000), ("开始试用", 2600), ("完成激活", 900), ("付费转化", 220)]
 
@@ -53,7 +64,8 @@ class DemoSeeder:
     async def _ins_metric(self, store, metric: str, value: float, ts: str,
                           entity: str = "main", entity_type: str = "site",
                           dim: dict | None = None) -> None:
-        window_key = str(ts)[:13].replace("T", "-").replace(":", "")[:13] or "w"
+        from ..core.store import dim_window_key
+        window_key = dim_window_key(ts, dim)
         await store._execute(
             """INSERT INTO metrics (id, workspace_id, entity_type, entity_id, metric,
                value, dim_json, ts, monitor_id, window_key)
@@ -79,6 +91,31 @@ class DemoSeeder:
             await self._ins_metric(store, "ga4_sessions", int(clicks * 1.8 * weekend), ts)
             await self._ins_metric(store, "ga4_conversions",
                                    max(1, int(clicks * 0.021)), ts)
+            # 维度样本：地域 × 渠道 × 设备（供网格地图 / 箱线 / 透视表 / cross-filter）
+            sess = int(clicks * 1.8 * weekend)
+            for pi, (prov, w) in enumerate(PROVINCE_MIX):
+                ch = CHANNEL_MIX[pi % len(CHANNEL_MIX)][0]
+                await self._ins_metric(
+                    store, "ga4_sessions", max(1, int(sess * w) + RNG.randint(-3, 3)),
+                    ts, dim={"province": prov, "channel": ch,
+                             "device": RNG.choice(DEVICES)})
+                await self._ins_metric(
+                    store, "ga4_conversions", max(1, int(sess * w * 0.021)),
+                    ts, dim={"province": prov})
+            for ch, w in CHANNEL_MIX:
+                await self._ins_metric(
+                    store, "ga4_conversions",
+                    max(1, int(clicks * 0.021 * w) + RNG.randint(-1, 1)), ts,
+                    dim={"channel": ch, "device": RNG.choice(DEVICES)})
+            # 竞品/自有域名的外部信号（供"流量估算指数"合成，方法见
+            # engine/traffic_estimate.py：只做相对指数，不做绝对流量承诺）
+            for domain, dw in COMPETITOR_SIGNALS:
+                for metric, base in (("referring_domains", 180), ("serp_organic", 4200),
+                                     ("content_published", 26),
+                                     ("social_engagement", 380)):
+                    await self._ins_metric(
+                        store, metric, max(1, int(base * dw * RNG.uniform(0.85, 1.15))),
+                        ts, entity=domain, entity_type="domain")
             await self._ins_metric(store, "ga4_retention",
                                    round(0.46 - i * 0.0016 + RNG.uniform(-0.01, 0.01), 4), ts)
             await self._ins_metric(store, "ltv", 2400 + i * 12, ts)
@@ -428,10 +465,22 @@ class DemoSeeder:
     async def clear(self) -> dict:
         store = await get_store()
         counts = {}
-        # 按依赖倒序删除（feedback → actions → insights → 其余），避免外键冲突
+        # feedback 需先取 id 再删：MySQL 不允许 DELETE 的子查询引用目标表本身
+        # （Error 1093: You can't specify target table 'feedback' for update in FROM clause）
+        ids = await store._fetchall(
+            """SELECT f.id AS id FROM feedback f JOIN actions a ON f.action_id = a.id
+               WHERE f.workspace_id = ? AND a.baseline_json LIKE '%"demo": true%'""",
+            (self.workspace_id,))
+        if ids:
+            marks = ", ".join(["?"] * len(ids))
+            cur = await store._execute(
+                f"DELETE FROM feedback WHERE id IN ({marks})",
+                tuple(r["id"] for r in ids))
+            counts["feedback"] = cur.rowcount
+        else:
+            counts["feedback"] = 0
+        # 其余按依赖倒序删除（actions → insights → …）
         for table, cond in [
-                ("feedback", "id IN (SELECT f.id FROM feedback f JOIN actions a ON f.action_id = a.id "
-                             "WHERE a.baseline_json LIKE '%\"demo\": true%')"),
                 ("actions", "baseline_json LIKE '%\"demo\": true%'"),
                 ("insights", "evidence_json LIKE '%\"demo\": true%'"),
                 ("metrics", "dim_json LIKE '%\"demo\": true%'"),

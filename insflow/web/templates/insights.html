@@ -67,6 +67,51 @@ async function triggerAction(id) {
 }
 </script>
 
+<h2>讨论（协作评论）</h2>
+<div class="card" data-cap="read">
+  <p class="sub">把结论/异议写在洞察上，团队共享上下文（评论不会触发动作，动作仍走"派发 → 14 天验证"）。</p>
+  <div class="toolbar" style="flex-wrap:wrap;gap:8px">
+    <select id="c-insight" style="min-width:280px">
+      <option value="">选择洞察…</option>
+      {% for i in insights %}
+      <option value="{{ i.id }}">{{ i.title[:40] }}</option>
+      {% endfor %}
+    </select>
+    <input id="c-body" placeholder="写点评论…" style="min-width:280px">
+    <button onclick="postComment()">发表</button>
+    <span id="c-status" class="sub"></span>
+  </div>
+  <div id="c-list" class="sub" style="margin-top:10px"></div>
+</div>
+<script>
+async function loadComments(){
+  var id = document.getElementById('c-insight').value;
+  var box = document.getElementById('c-list');
+  if(!id){ box.innerHTML = ''; return; }
+  var r = await fetch('/api/v1/comments?workspace_id={{ workspace_id }}&target_type=insight&target_id=' + encodeURIComponent(id));
+  var j = await r.json();
+  box.innerHTML = (j.comments || []).map(function(c){
+    return '<div style="padding:6px 0;border-bottom:1px solid var(--border)">' +
+      '<b>' + c.author + '</b> · ' + String(c.created_at).slice(0,16).replace('T',' ') +
+      '<div>' + c.body + '</div></div>';
+  }).join('') || '<span class="sub">暂无评论</span>';
+}
+document.getElementById('c-insight').addEventListener('change', loadComments);
+async function postComment(){
+  var st = document.getElementById('c-status');
+  var id = document.getElementById('c-insight').value;
+  var body = document.getElementById('c-body').value.trim();
+  if(!id || !body){ st.textContent = '请选择洞察并填写内容'; return; }
+  var r = await fetch('/api/v1/comments', {method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({workspace_id:'{{ workspace_id }}', target_type:'insight',
+                          target_id:id, body:body})});
+  st.textContent = r.ok ? '已发表 ✓' : '发表失败';
+  document.getElementById('c-body').value = '';
+  loadComments();
+}
+</script>
+
 <div class="toolbar">
   {% if page > 1 %}
   <a href="/console/insights?page={{ page - 1 }}&severity={{ severity }}&status={{ status }}">← 上一页</a>

@@ -1,0 +1,7 @@
+{% extends "base.html" %}
+{% block title %} · 无权限{% endblock %}
+{% block content %}
+<h1>无权限</h1>
+<div class="card"><p class="sub">当前角色（{{ role or 'viewer' }}）没有访问该主体/功能的权限。
+请联系工作区管理员调整角色或行级权限（设置 → 角色与行级权限）。</p></div>
+{% endblock %}

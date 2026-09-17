@@ -251,6 +251,73 @@ MIGRATIONS = [
     CREATE INDEX IF NOT EXISTS idx_metrics_ws_entity_metric_ts
         ON metrics(workspace_id, entity_id, metric, ts);
     """,
+
+    # V4: 预聚合（物化视图等价物）+ 语义层 + 协作 + 告警
+    """
+    CREATE TABLE IF NOT EXISTS metric_daily (
+        id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL,
+        metric TEXT NOT NULL,
+        day TEXT NOT NULL,
+        entity_type TEXT NOT NULL DEFAULT 'site',
+        entity_id TEXT NOT NULL DEFAULT 'main',
+        dim_key TEXT NOT NULL DEFAULT '',
+        agg_sum REAL NOT NULL DEFAULT 0,
+        agg_avg REAL NOT NULL DEFAULT 0,
+        agg_max REAL NOT NULL DEFAULT 0,
+        n INTEGER NOT NULL DEFAULT 0,
+        updated_at TEXT NOT NULL
+    );
+    """,
+    """
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_metric_daily_key
+    ON metric_daily(workspace_id, metric, day, entity_type, entity_id, dim_key);
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS metric_defs (
+        id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL,
+        name TEXT NOT NULL,
+        label TEXT NOT NULL DEFAULT '',
+        expr TEXT NOT NULL DEFAULT '',
+        unit TEXT NOT NULL DEFAULT '',
+        owner TEXT NOT NULL DEFAULT '',
+        version INTEGER NOT NULL DEFAULT 1,
+        status TEXT NOT NULL DEFAULT 'active',
+        notes TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    );
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS comments (
+        id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL,
+        target_type TEXT NOT NULL,
+        target_id TEXT NOT NULL,
+        author TEXT NOT NULL DEFAULT '',
+        body TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL
+    );
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS alert_rules (
+        id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL,
+        name TEXT NOT NULL,
+        metric TEXT NOT NULL,
+        op TEXT NOT NULL DEFAULT 'gt',
+        threshold REAL NOT NULL DEFAULT 0,
+        window_days REAL NOT NULL DEFAULT 7,
+        dims_json TEXT NOT NULL DEFAULT '{}',
+        routes_json TEXT NOT NULL DEFAULT '[]',
+        escalation_json TEXT NOT NULL DEFAULT '{}',
+        enabled INTEGER NOT NULL DEFAULT 1,
+        last_fired_at TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    );
+    """,
 ]
 
 # V3: metrics 幂等去重（R1-4）—— ALTER 语句需要幂等执行（检查列是否存在）
@@ -267,6 +334,8 @@ def generate_id() -> str:
     """生成唯一ID"""
     import uuid
     return str(uuid.uuid4())[:8]
+new_id = generate_id  # 别名：新增行主键
+
 
 
 def to_json(value) -> str:
@@ -276,6 +345,23 @@ def to_json(value) -> str:
             return o.model_dump(mode="json")
         return str(o)
     return json.dumps(value, ensure_ascii=False, default=_default)
+
+
+def dim_window_key(ts_iso: str, dim: dict | None = None) -> str:
+    """幂等窗口键 = 数据时间（小时） + 维度指纹
+
+    唯一索引是 (workspace, monitor, entity_type, entity_id, metric, window_key)，
+    不含 dim_json。带维度的指标（地域/渠道/设备）若共用同一窗口键会互相覆盖
+    （SQLite 静默忽略、MySQL 唯一键报错），因此维度非空时附加 6 位指纹。
+    """
+    key = str(ts_iso)[:13].replace("T", "-").replace(":", "")
+    if dim:
+        import hashlib as _hashlib
+        fp = _hashlib.sha1(
+            json.dumps(dim, sort_keys=True, ensure_ascii=False).encode()
+        ).hexdigest()[:6]
+        return f"{key}#{fp}"
+    return key
 
 
 class Store:
@@ -710,10 +796,32 @@ class Store:
             return "%Y-%m-%d"
         return "%Y-W%W"
 
+    def _dim_where(self, dim_filters: dict | None) -> tuple[str, list]:
+        """维度等值过滤（cross-filter）：{province: 广东} → JSON 字段条件
+
+        维度值是用户可控输入（URL 参数），因此只允许白名单键 + 参数化取值，
+        并在取值为空时忽略该条件。
+        """
+        sql, params = "", []
+        if not dim_filters:
+            return sql, params
+        allowed = {"province", "country", "channel", "device", "step_name",
+                   "keyword", "query", "source", "campaign", "competitor"}
+        for key, val in list(dim_filters.items())[:6]:
+            if key not in allowed or val in (None, ""):
+                continue
+            expr = (self._backend.dialect.json_field("dim_json", key)
+                    if self._backend else f"json_extract(dim_json, '$.{key}')")
+            sql += f" AND {expr} = ?"
+            params.append(str(val)[:80])
+        return sql, params
+
     async def metric_series(self, workspace_id: str, metric: str,
                             days: float = 7, agg: str = "sum",
                             entity_id: str | None = None,
-                            limit: int | None = None) -> list[dict]:
+                            limit: int | None = None,
+                            dim_filters: dict | None = None,
+                            entity_allow: list[str] | None = None) -> list[dict]:
         """按时间桶降采样的指标序列（驾驶舱趋势图）
 
         agg: sum | avg | max
@@ -729,6 +837,19 @@ class Store:
         if entity_id:
             where += " AND entity_id = ?"
             params.append(entity_id)
+        # 长窗口优先读日汇总表（预聚合）：明细滚雪球后显著更快；无汇总自动回退
+        if days >= 30 and not entity_id:
+            try:
+                from .rollup import daily_series
+                rolled = await daily_series(workspace_id, metric, days=days, agg=agg,
+                                            dim_filters=dim_filters)
+                if rolled:
+                    return rolled[:limit] if limit else rolled
+            except Exception:
+                pass
+        dim_sql, dim_params = self._dim_where(dim_filters)
+        where += dim_sql
+        params.extend(dim_params)
         rows = await self._fetchall(
             f"""SELECT {bucket_expr} AS bucket, {fn}(value) AS v, COUNT(*) AS n
                 FROM metrics WHERE {where}
@@ -739,7 +860,9 @@ class Store:
                 for r in rows]
 
     async def metric_total(self, workspace_id: str, metric: str, days: float = 7,
-                           agg: str = "sum", entity_id: str | None = None) -> float:
+                           agg: str = "sum", entity_id: str | None = None,
+                           dim_filters: dict | None = None,
+                           entity_allow: list[str] | None = None) -> float:
         """单指标窗口内聚合值（KPI 卡）"""
         from datetime import timedelta
         since = (datetime.now(UTC) - timedelta(days=days)).isoformat()
@@ -749,12 +872,20 @@ class Store:
         if entity_id:
             where += " AND entity_id = ?"
             params.append(entity_id)
+        if entity_allow:
+            marks = ", ".join(["?"] * len(entity_allow[:50]))
+            where += f" AND entity_id IN ({marks})"
+            params.extend([str(v)[:80] for v in entity_allow[:50]])
+        dim_sql, dim_params = self._dim_where(dim_filters)
+        where += dim_sql
+        params.extend(dim_params)
         row = await self._fetchone(
             f"SELECT {fn}(value) AS v FROM metrics WHERE {where}", tuple(params))
         return float((row or {}).get("v") or 0)
 
     async def metric_totals(self, workspace_id: str, metrics: list[str],
-                            days: float = 7, agg: str = "sum") -> dict:
+                            days: float = 7, agg: str = "sum",
+                            dim_filters: dict | None = None) -> dict:
         """多指标聚合（一次查询，避免 N+1）"""
         if not metrics:
             return {}
@@ -770,19 +901,253 @@ class Store:
         )
         return {r["metric"]: {"value": float(r["v"] or 0), "n": r["n"]} for r in rows}
 
-    async def metric_breakdown(self, workspace_id: str, metric: str,
-                               days: float = 7, limit: int = 20) -> list[dict]:
-        """按主体（entity_id）聚合（横向条形图）"""
+    async def metric_catalog(self, workspace_id: str, days: float = 90) -> list[dict]:
+        """可用指标目录（即席探索用：指标名 + 数据量 + 主体 + 最近时间）"""
         from datetime import timedelta
         since = (datetime.now(UTC) - timedelta(days=days)).isoformat()
         rows = await self._fetchall(
-            """SELECT entity_id, SUM(value) AS v, MAX(ts) AS last_ts, COUNT(*) AS n
-               FROM metrics WHERE workspace_id = ? AND metric = ? AND ts >= ?
+            """SELECT metric, COUNT(*) AS n, COUNT(DISTINCT entity_id) AS entities,
+                      MAX(ts) AS last_ts
+               FROM metrics WHERE workspace_id = ? AND ts >= ?
+               GROUP BY metric ORDER BY n DESC LIMIT 200""",
+            (workspace_id, since),
+        )
+        out = []
+        for r in rows:
+            ents = await self._fetchall(
+                """SELECT entity_id, COUNT(*) AS n FROM metrics
+                   WHERE workspace_id = ? AND metric = ? AND ts >= ?
+                   GROUP BY entity_id ORDER BY n DESC LIMIT 30""",
+                (workspace_id, r["metric"], since))
+            out.append({"metric": r["metric"], "count": r["n"],
+                        "entity_count": r["entities"], "last_ts": r["last_ts"],
+                        "entities": [e["entity_id"] for e in ents]})
+        return out
+
+    async def metric_breakdown(self, workspace_id: str, metric: str,
+                               days: float = 7, limit: int = 20,
+                               dim_filters: dict | None = None) -> list[dict]:
+        """按主体（entity_id）聚合（横向条形图）"""
+        from datetime import timedelta
+        since = (datetime.now(UTC) - timedelta(days=days)).isoformat()
+        dim_sql, dim_params = self._dim_where(dim_filters)
+        rows = await self._fetchall(
+            f"""SELECT entity_id, SUM(value) AS v, MAX(ts) AS last_ts, COUNT(*) AS n
+               FROM metrics WHERE workspace_id = ? AND metric = ? AND ts >= ?{dim_sql}
                GROUP BY entity_id ORDER BY v DESC LIMIT ?""",
-            (workspace_id, metric, since, limit),
+            tuple([workspace_id, metric, since, *dim_params, limit]),
         )
         return [{"entity_id": r["entity_id"], "value": float(r["v"] or 0),
                  "last_ts": r["last_ts"], "n": r["n"]} for r in rows]
+
+    async def metric_dim_breakdown(self, workspace_id: str, metric: str, dim_key: str,
+                                   days: float = 7, limit: int = 40,
+                                   agg: str = "sum",
+                                   dim_filters: dict | None = None) -> list[dict]:
+        """按 dim_json 中的某个维度聚合（地域/渠道/设备等）
+
+        用于网格地图、透视表与跨图联动。dim 缺失的行自动忽略。
+        """
+        from datetime import timedelta
+        since = (datetime.now(UTC) - timedelta(days=days)).isoformat()
+        expr = (self._backend.dialect.json_field("dim_json", dim_key)
+                if self._backend else f"json_extract(dim_json, '$.{dim_key}')")
+        fn = {"sum": "SUM", "avg": "AVG", "max": "MAX", "count": "COUNT"}.get(agg, "SUM")
+        extra = ""
+        params: list = [workspace_id, metric, since]
+        for k2, v2 in (dim_filters or {}).items():
+            if k2 == dim_key or v2 in (None, ""):
+                continue
+            expr2 = (self._backend.dialect.json_field("dim_json", k2)
+                     if self._backend else f"json_extract(dim_json, '$.{k2}')")
+            extra += f" AND {expr2} = ?"
+            params.append(str(v2)[:80])
+        params.append(limit)
+        rows = await self._fetchall(
+            f"""SELECT {expr} AS k, {fn}(value) AS v, COUNT(*) AS n
+                FROM metrics
+                WHERE workspace_id = ? AND metric = ? AND ts >= ?
+                  AND {expr} IS NOT NULL{extra}
+                GROUP BY k ORDER BY v DESC LIMIT ?""",
+            tuple(params),
+        )
+        return [{"key": r["k"], "value": float(r["v"] or 0), "n": r["n"]} for r in rows]
+
+    # ========== 透视 / 语义层 / 协作 / 告警 ==========
+
+    async def pivot(self, workspace_id: str, metric: str, dim_key: str,
+                    dim_key2: str = "", days: float = 30, limit: int = 12) -> dict:
+        """二维透视（行列可切换）：dim_key × dim_key2 的聚合矩阵
+
+        即席探索用：未指定第二维时退化为「维度 × 时间」。
+        """
+        store_rows = await self.metric_dim_breakdown(
+            workspace_id, metric, dim_key, days=days, limit=limit)
+        keys = [r["key"] for r in store_rows if r["key"]]
+        if not dim_key2:
+            series = await self.metric_series(workspace_id, metric, days=days)
+            buckets = [s["bucket"] for s in series]
+            matrix = []
+            for k in keys:
+                rows = await self.metric_series(workspace_id, metric, days=days,
+                                                dim_filters={dim_key: k})
+                vals = {r["bucket"]: r["value"] for r in rows}
+                matrix.append([vals.get(b, 0.0) for b in buckets])
+            return {"rows": keys, "cols": buckets, "matrix": matrix,
+                    "metric": metric, "dim": dim_key, "dim2": "time"}
+        from datetime import UTC, datetime, timedelta
+        since = (datetime.now(UTC) - timedelta(days=days)).isoformat()
+        e1 = (self._backend.dialect.json_field("dim_json", dim_key)
+              if self._backend else f"json_extract(dim_json, '$.{dim_key}')")
+        e2 = (self._backend.dialect.json_field("dim_json", dim_key2)
+              if self._backend else f"json_extract(dim_json, '$.{dim_key2}')")
+        sql_rows = await self._fetchall(
+            f"""SELECT {e1} AS a, {e2} AS b, SUM(value) AS v
+                FROM metrics WHERE workspace_id = ? AND metric = ? AND ts >= ?
+                  AND {e1} IS NOT NULL AND {e2} IS NOT NULL
+                GROUP BY a, b ORDER BY v DESC LIMIT 400""",
+            (workspace_id, metric, since))
+        cols: list[str] = []
+        aset: list[str] = []
+        cell: dict[tuple[str, str], float] = {}
+        for r in sql_rows:
+            a, b = str(r["a"])[:40], str(r["b"])[:40]
+            if a not in aset:
+                aset.append(a)
+            if b not in cols:
+                cols.append(b)
+            cell[(a, b)] = float(r["v"] or 0)
+        aset, cols = aset[:limit], cols[:limit]
+        matrix = [[cell.get((a, b), 0.0) for b in cols] for a in aset]
+        return {"rows": aset, "cols": cols, "matrix": matrix, "metric": metric,
+                "dim": dim_key, "dim2": dim_key2}
+
+    # ---- 语义层：指标口径（定义/版本/责任人）----
+
+    async def upsert_metric_def(self, workspace_id: str, name: str, **fields) -> dict:
+        now = datetime.now(UTC).isoformat()
+        cur = await self._fetchone(
+            "SELECT * FROM metric_defs WHERE workspace_id = ? AND name = ?",
+            (workspace_id, name))
+        if cur:
+            sets, params = [], []
+            for col in ("label", "expr", "unit", "owner", "notes"):
+                if col in fields and fields[col] is not None:
+                    sets.append(f"{col} = ?")
+                    params.append(str(fields[col]))
+            # 口径变更 → 版本自增（可追溯历史）
+            if fields.get("expr") and fields["expr"] != (cur["expr"] or ""):
+                sets.append("version = version + 1")
+            sets.append("status = ?")
+            params.append(str(fields.get("status") or cur["status"] or "active"))
+            sets.append("updated_at = ?")
+            params.append(now)
+            params.extend([workspace_id, name])
+            await self._execute(
+                f"UPDATE metric_defs SET {', '.join(sets)} "
+                f"WHERE workspace_id = ? AND name = ?", tuple(params))
+        else:
+            await self._execute(
+                """INSERT INTO metric_defs (id, workspace_id, name, label, expr, unit,
+                   owner, version, status, notes, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, 1, 'active', ?, ?, ?)""",
+                (new_id(), workspace_id, name, str(fields.get("label") or name),
+                 str(fields.get("expr") or ""), str(fields.get("unit") or ""),
+                 str(fields.get("owner") or ""), str(fields.get("notes") or ""),
+                 now, now))
+        await self._db.commit()
+        return await self._fetchone(
+            "SELECT * FROM metric_defs WHERE workspace_id = ? AND name = ?",
+            (workspace_id, name)) or {}
+
+    async def list_metric_defs(self, workspace_id: str) -> list[dict]:
+        return await self._fetchall(
+            "SELECT * FROM metric_defs WHERE workspace_id = ? ORDER BY name",
+            (workspace_id,))
+
+    # ---- 协作：评论 ----
+
+    async def add_comment(self, workspace_id: str, target_type: str, target_id: str,
+                          body: str, author: str = "") -> dict:
+        cid = new_id()
+        await self._execute(
+            """INSERT INTO comments (id, workspace_id, target_type, target_id,
+               author, body, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (cid, workspace_id, target_type[:32], target_id[:96], author[:96],
+             body[:4000], datetime.now(UTC).isoformat()))
+        await self._db.commit()
+        return {"id": cid, "target_type": target_type, "target_id": target_id,
+                "author": author, "body": body}
+
+    async def list_comments(self, workspace_id: str, target_type: str = "",
+                            target_id: str = "", limit: int = 200) -> list[dict]:
+        where = "workspace_id = ?"
+        params: list = [workspace_id]
+        if target_type:
+            where += " AND target_type = ?"
+            params.append(target_type)
+        if target_id:
+            where += " AND target_id = ?"
+            params.append(target_id)
+        return await self._fetchall(
+            f"SELECT * FROM comments WHERE {where} ORDER BY created_at DESC LIMIT ?",
+            tuple([*params, limit]))
+
+    # ---- 告警规则 ----
+
+    async def upsert_alert_rule(self, workspace_id: str, rule: dict) -> dict:
+        now = datetime.now(UTC).isoformat()
+        rid = rule.get("id") or new_id()
+        existing = await self._fetchone(
+            "SELECT id FROM alert_rules WHERE workspace_id = ? AND id = ?",
+            (workspace_id, rid))
+        cols = ("name", "metric", "op", "threshold", "window_days", "dims_json",
+                "routes_json", "escalation_json", "enabled")
+        vals = [str(rule.get("name") or "未命名规则")[:191],
+                str(rule.get("metric") or "")[:96], str(rule.get("op") or "gt")[:8],
+                float(rule.get("threshold") or 0), float(rule.get("window_days") or 7),
+                json.dumps(rule.get("dims") or {}, ensure_ascii=False),
+                json.dumps(rule.get("routes") or [], ensure_ascii=False),
+                json.dumps(rule.get("escalation") or {}, ensure_ascii=False),
+                1 if rule.get("enabled", True) else 0]
+        if existing:
+            sets = ", ".join(f"{c} = ?" for c in cols)
+            await self._execute(
+                f"UPDATE alert_rules SET {sets}, updated_at = ? "
+                f"WHERE workspace_id = ? AND id = ?",
+                tuple([*vals, now, workspace_id, rid]))
+        else:
+            await self._execute(
+                f"""INSERT INTO alert_rules (id, workspace_id, {', '.join(cols)},
+                    last_fired_at, created_at, updated_at)
+                    VALUES (?, ?, {', '.join(['?'] * len(cols))}, '', ?, ?)""",
+                tuple([rid, workspace_id, *vals, now, now]))
+        await self._db.commit()
+        return await self._fetchone(
+            "SELECT * FROM alert_rules WHERE workspace_id = ? AND id = ?",
+            (workspace_id, rid)) or {}
+
+    async def list_alert_rules(self, workspace_id: str,
+                               enabled_only: bool = False) -> list[dict]:
+        where = "workspace_id = ?"
+        if enabled_only:
+            where += " AND enabled = 1"
+        return await self._fetchall(
+            f"SELECT * FROM alert_rules WHERE {where} ORDER BY created_at DESC",
+            (workspace_id,))
+
+    async def delete_alert_rule(self, workspace_id: str, rule_id: str) -> bool:
+        cur = await self._execute(
+            "DELETE FROM alert_rules WHERE workspace_id = ? AND id = ?",
+            (workspace_id, rule_id))
+        await self._db.commit()
+        return cur.rowcount > 0
+
+    async def mark_rule_fired(self, workspace_id: str, rule_id: str) -> None:
+        await self._execute(
+            "UPDATE alert_rules SET last_fired_at = ? WHERE workspace_id = ? AND id = ?",
+            (datetime.now(UTC).isoformat(), workspace_id, rule_id))
+        await self._db.commit()
 
     # ========== Competitors（M3: 竞品档案）==========
 

@@ -116,13 +116,47 @@ async def bootstrap_scheduled_jobs() -> dict:
         from ..engine.subscriptions import SubscriptionService
         for ws in await store.list_workspaces():
             try:
-                await SubscriptionService(ws.id).dispatch_daily()
+                svc = SubscriptionService(ws.id)
+                await svc.dispatch_daily()
+                await svc.dispatch_metric_charts()   # 图表级订阅
             except Exception:
                 logger.exception(f"订阅日报推送失败: {ws.id}")
 
     scheduler.add_job("subscription.daily", "25 9 * * *", "subscription.daily", {})
     scheduler.register_handler("subscription.daily", _subscription_daily)
     registered["jobs"].append("subscription.daily@daily-09:25")
+
+
+    # 8. 每日 09:05：预聚合汇总（metric_daily，长窗口查询提速）
+    async def _rollup_daily():
+        from ..core.rollup import rollup
+        for ws in await store.list_workspaces():
+            try:
+                await rollup(ws.id, days=120)
+            except Exception:
+                logger.exception(f"预聚合失败: {ws.id}")
+
+    scheduler.add_job("rollup.daily", "5 9 * * *", "rollup.daily", {})
+    scheduler.register_handler("rollup.daily", _rollup_daily)
+    registered["jobs"].append("rollup.daily@daily-09:05")
+
+    # 9. 每小时：阈值告警规则评估 + 升级检查
+    async def _alerts_hourly():
+        from ..engine.alerts import evaluate_workspace, sweep_escalations
+        for ws in await store.list_workspaces():
+            try:
+                fired = await evaluate_workspace(ws.id)
+                if fired:
+                    logger.info(f"阈值告警命中: {ws.id} x{len(fired)}")
+                esc = await sweep_escalations(ws.id)
+                if esc:
+                    logger.info(f"告警升级: {ws.id} x{len(esc)}")
+            except Exception:
+                logger.exception(f"告警评估失败: {ws.id}")
+
+    scheduler.add_job("alerts.hourly", "40 * * * *", "alerts.hourly", {})
+    scheduler.register_handler("alerts.hourly", _alerts_hourly)
+    registered["jobs"].append("alerts.hourly@hourly-40")
 
     scheduler.start()
     logger.info(f"Bootstrap 完成: {registered}")

@@ -55,6 +55,46 @@
 <div class="empty">暂无订阅 —— 上面填一个飞书机器人地址即可开始接收洞察推送</div>
 {% endif %}
 
+<h2>图表订阅（按期推送某个指标的图）</h2>
+<div class="card">
+  <p class="sub">把某个指标的图（含同环比 / 异常标记 / 7 期预测）按日推送到飞书/邮件/Webhook，
+    客户不必登录也能看到进展；指标名可用「即席探索 → 指标目录」里的任意指标。</p>
+  <div class="toolbar" style="flex-wrap:wrap;gap:8px">
+    <input id="m-name" placeholder="订阅名（如：核心指标日报）" style="min-width:200px">
+    <input id="m-metric" placeholder="指标名（如 ga4_sessions）" style="min-width:180px">
+    <input id="m-days" type="number" value="30" style="width:90px">
+    <select id="m-channel">
+      <option value="webhook">Webhook</option>
+      <option value="feishu">飞书</option>
+      <option value="email">邮件</option>
+    </select>
+    <input id="m-target" placeholder="目标地址（webhook_url / feishu_url / email_to）" style="min-width:240px">
+    <button onclick="createMetricSub()">创建图表订阅</button>
+    <span id="m-status" class="sub"></span>
+  </div>
+</div>
+<script>
+async function createMetricSub(){
+  var st = document.getElementById('m-status');
+  var ch = document.getElementById('m-channel').value;
+  var tgt = {};
+  if(ch === 'webhook') tgt.webhook_url = document.getElementById('m-target').value;
+  if(ch === 'feishu') tgt.feishu_url = document.getElementById('m-target').value;
+  if(ch === 'email') tgt.email_to = document.getElementById('m-target').value;
+  var metric = document.getElementById('m-metric').value.trim();
+  if(!metric){ st.textContent = '请填指标名'; return; }
+  st.textContent = '创建中…';
+  var r = await fetch('/api/v1/subscriptions/metric', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({workspace_id:'{{ workspace_id }}',
+      name: document.getElementById('m-name').value || metric + ' 日报',
+      metric: metric, channels:[ch], target: tgt,
+      days: Number(document.getElementById('m-days').value || 30)})});
+  if(r.ok){ st.textContent = '已创建 ✓'; location.reload(); }
+  else { var d = await r.json(); st.textContent = d.detail || '创建失败'; }
+}
+</script>
+
 <script>
 async function createSub() {
   const st = document.getElementById('s-status');

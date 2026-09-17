@@ -445,6 +445,107 @@ def backup(keep_days: int, restore_from: str, yes: bool):
 
 
 @main.group()
+def embed():
+    """嵌入交付（只读面板 + 签名令牌）"""
+    pass
+
+
+@embed.command("token")
+@click.option("--workspace", "-w", required=True, help="工作区ID")
+@click.option("--panel", "-p", required=True,
+              help="面板：cockpit:traffic / metric:gsc_clicks")
+@click.option("--hours", default=720, help="有效期（小时）")
+@click.option("--company", default="", help="白标公司名")
+def embed_token(workspace: str, panel: str, hours: int, company: str):
+    """签发嵌入令牌（贴到 iframe src 即可）"""
+    from .engine.embed import mint
+    branding = {"company": company} if company else {}
+    token = mint(workspace, panel, hours=hours, branding=branding)
+    url = (f"/inflow/console/embed?token={token}")
+    console.print("[green]嵌入代码（含缓存绕过，贴到交付页面）：[/]")
+    console.print(
+        f'<iframe id="ifEmbed" width="100%" height="420" style="border:0" '
+        f'title="Insight Flow 面板" loading="lazy"></iframe>\n'
+        f'<script>(function(){{var f=document.getElementById("ifEmbed");'
+        f'f.src="{url}"+(f.src.indexOf("?")<0?"?":"&")+"_t="+Date.now();}})();</script>')
+
+
+@main.group("rollup")
+def rollup_group():
+    """预聚合（metric_daily 汇总表）：长窗口查询提速"""
+    pass
+
+
+@rollup_group.command("build")
+@click.option("--workspace", "-w", default="", help="工作区ID（空=全部）")
+@click.option("--days", default=400, help="回溯天数")
+def rollup_build(workspace: str, days: int):
+    """构建/刷新日汇总（幂等，可定时执行）"""
+    from .core.rollup import rollup, rollup_stats
+    res = run_async(rollup(workspace, days=days))
+    stats = run_async(rollup_stats(workspace))
+    console.print(f"[green]OK 汇总完成[/] 写入 {res['rows']} 行 · "
+                  f"覆盖 {stats['first_day']} ~ {stats['last_day']} · "
+                  f"{stats['metrics']} 个指标")
+
+
+@rollup_group.command("status")
+@click.option("--workspace", "-w", default="")
+def rollup_status(workspace: str):
+    """查看汇总表状态"""
+    from .core.rollup import rollup_stats
+    console.print(run_async(rollup_stats(workspace)))
+
+
+@main.group("alerts")
+def alerts_group():
+    """阈值告警规则：评估与升级"""
+    pass
+
+
+@alerts_group.command("check")
+@click.option("--workspace", "-w", required=True)
+def alerts_check(workspace: str):
+    """立即评估规则（命中生成洞察并按路由通知）"""
+    from .engine.alerts import evaluate_workspace, sweep_escalations
+    fired = run_async(evaluate_workspace(workspace))
+    esc = run_async(sweep_escalations(workspace))
+    console.print(f"命中 {len(fired)} 条 · 升级 {len(esc)} 条")
+    for f in fired:
+        console.print(f"  - {f.get('name') or f.get('rule_id')}: "
+                      f"{f.get('metric')} = {f.get('value')} "
+                      f"(阈值 {f.get('op')} {f.get('threshold')})")
+
+
+@main.command("estimate")
+@click.option("--workspace", "-w", required=True)
+@click.option("--domains", "-d", required=True, help="逗号分隔的域名")
+@click.option("--days", default=30)
+def estimate_cmd(workspace: str, domains: str, days: int):
+    """域名相对流量指数（方法/置信度透明，不做绝对承诺）"""
+    from .engine.traffic_estimate import estimate_many
+    for e in run_async(estimate_many(workspace, [d for d in domains.split(",") if d], days)):
+        console.print(f"{e['domain']:<24} 指数 {e['index']:<6} 区间 {e['range']} "
+                      f"置信 {e['confidence']} 覆盖 {e['coverage']}")
+
+
+@main.command("sql")
+@click.option("--workspace", "-w", required=True)
+@click.argument("query")
+def sql_cmd(workspace: str, query: str):
+    """只读 SQL 沙箱（白名单表 + 租户隔离）"""
+    from .engine.explore_sql import SqlError, run as sql_run
+    try:
+        res = run_async(sql_run(workspace, query))
+    except SqlError as e:
+        console.print(f"[red]拒绝：{e}[/]")
+        raise SystemExit(1)
+    console.print(f"{res['count']} 行（截断 {res['truncated']}） · 列 {res['columns']}")
+    for row in res["rows"][:20]:
+        console.print("  " + " | ".join(str(v) for v in row))
+
+
+@main.group()
 def demo():
     """演示数据（供查看驾驶舱效果）"""
     pass

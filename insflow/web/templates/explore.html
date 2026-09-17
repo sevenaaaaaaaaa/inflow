@@ -1,0 +1,218 @@
+{% extends "base.html" %}
+{% block title %} · 即席探索{% endblock %}
+{% block content %}
+<h1>即席探索</h1>
+<p class="sub">指标 × 维度透视 × 图表类型 × 聚合 × 变量——自己提问、自己找答案（URL 可分享；
+发现的价值信号可一键派发动作；写 SQL 走只读沙箱，仅限本租户数据）</p>
+
+<form class="if-filter" method="get" action="/console/explore">
+  <input type="hidden" name="workspace_id" value="{{ workspace_id }}">
+  <label>指标</label>
+  <select name="metric" onchange="this.form.submit()">
+    <option value="">选择指标…</option>
+    {% for m in catalog %}
+    <option value="{{ m.metric }}" {% if metric == m.metric %}selected{% endif %}>
+      {{ m.metric }}（{{ m.count }} 点{% if m.entity_count > 1 %} · {{ m.entity_count }} 主体{% endif %}）
+    </option>
+    {% endfor %}
+  </select>
+  {% if entity_options %}
+  <label>主体</label>
+  <select name="entity" onchange="this.form.submit()">
+    <option value="">全部</option>
+    {% for e in entity_options %}
+    <option value="{{ e }}" {% if entity == e %}selected{% endif %}>{{ e[:24] }}</option>
+    {% endfor %}
+  </select>
+  {% endif %}
+  <label>图表</label>
+  {% for ct, lbl in [('line','趋势'),('bar','条形'),('box','箱线'),('scatter','散点'),('map','网格地图')] %}
+  <a class="if-chip {{ 'on' if chart_type == ct }}" href="#" onclick="exSet('chart','{{ ct }}');return false">{{ lbl }}</a>
+  {% endfor %}
+  <label>时间</label>
+  {% for d, lbl in [(7,'7天'),(30,'30天'),(90,'90天'),(180,'180天')] %}
+  <a class="if-chip {{ 'on' if days|int == d }}" href="#" onclick="exSet('days','{{ d }}');return false">{{ lbl }}</a>
+  {% endfor %}
+  <label>聚合</label>
+  {% for a, lbl in [('sum','求和'),('avg','均值'),('max','最大')] %}
+  <a class="if-chip {{ 'on' if agg == a }}" href="#" onclick="exSet('agg','{{ a }}');return false">{{ lbl }}</a>
+  {% endfor %}
+  {% for k, v in vars_.items() %}
+  <span class="badge" style="background:var(--accent);color:var(--on-accent)">var.{{ k }} = {{ v }}</span>
+  {% endfor %}
+</form>
+<script>
+function exSet(k, v){
+  var u = new URL(location.href);
+  u.pathname = '/console/explore';
+  u.searchParams.set(k, v);
+  location.href = u.toString();
+}
+</script>
+
+{% if chart %}
+<div class="cards">
+  {{ viz.kpi_card('指标', chart.metric, color='var(--accent)') | safe }}
+  {{ viz.kpi_card('区间合计', chart.total | round | int, color='var(--accent)') | safe }}
+  {{ viz.kpi_card('数据点', chart.rows | length, color='var(--muted)') | safe }}
+  {{ viz.kpi_card('时间范围', chart.days ~ ' 天', color='var(--muted)') | safe }}
+</div>
+
+{% set rows = chart.rows | map(attribute='bucket') | zip(
+      chart.rows | map(attribute='value'), chart.rows | map(attribute='n')) | map('list') | list %}
+{% if chart_type == 'bar' and dim_values %}
+  {{ viz.datapanel(chart.metric ~ ' · 按 ' ~ dim, ['维度', '值'],
+      dim_values | map(attribute=0) | zip(dim_values | map(attribute=1)) | map('list') | list,
+      viz.bar_chart(dim_values, filter_dim=dim), csv_name='explore-bar') | safe }}
+{% elif chart_type == 'map' and dim_values %}
+  {{ viz.datapanel(chart.metric ~ ' · 地域网格', ['地域', '值'],
+      dim_values | map(attribute=0) | zip(dim_values | map(attribute=1)) | map('list') | list,
+      viz.tile_map(dim_values, scope='china', label='网格地图（近似地理，非精确边界）',
+                   filter_dim=dim), csv_name='explore-map') | safe }}
+{% elif chart_type == 'box' and box_groups %}
+  {{ viz.datapanel(chart.metric ~ ' · 各 ' ~ dim ~ ' 分布（箱线）', ['维度', '样本数'],
+      box_groups | map(attribute=0) | zip(box_groups | map(attribute=1) | map('length')) | map('list') | list,
+      viz.boxplot(box_groups, y_label=chart.agg),
+      csv_name='explore-box', subtitle='中位/IQR/离群：看各维度的稳定性') | safe }}
+{% elif chart_type == 'scatter' and scatter_points %}
+  {{ viz.datapanel(chart.metric ~ ' · 值 × 排名', ['维度', '值'],
+      dim_values | map(attribute=0) | zip(dim_values | map(attribute=1)) | map('list') | list,
+      viz.scatter(scatter_points, x_label='值', y_label='排名（越小越前）',
+                  canvas_threshold=200), csv_name='explore-scatter') | safe }}
+{% else %}
+  {{ viz.datapanel(chart.metric ~ ((' · ' ~ chart.entity) if chart.entity else ''),
+      ['时间桶', '值', '样本数'], rows,
+      viz.line_chart([{'name': chart.metric, 'values': chart.y_values}], chart.labels,
+                     y_label=chart.agg, as_area=True, forecast_periods=7,
+                     anomaly=True),
+      csv_name='explore-' ~ chart.metric) | safe }}
+{% endif %}
+
+<h2>二维透视（{{ dim }} × {{ dim2 }}）</h2>
+<div class="card">
+  {% if pivot and pivot.rows and pivot.cols %}
+  {{ viz.datapanel(chart.metric ~ ' · ' ~ pivot.dim ~ ' × ' ~ pivot.dim2,
+      [pivot.dim ~ ' \\ ' ~ pivot.dim2] + pivot.cols,
+      pivot.rows | zip(pivot.matrix) | map('list') | list,
+      viz.heatmap(pivot.rows, pivot.cols, pivot.matrix),
+      csv_name='explore-pivot', subtitle='颜色越深值越大；点击热力格可下钻') | safe }}
+  {% else %}
+  <div class="empty">该指标暂无可透视的维度数据（采集维度含 {{ dim }}/{{ dim2 }} 时自动出现）</div>
+  {% endif %}
+</div>
+
+<h2>只读 SQL 沙箱</h2>
+<div class="card">
+  <p class="sub">白名单表：metrics / metric_daily / insights / actions / competitors / journey_events；
+    租户过滤由系统注入（只能查自己的数据），单次最多 500 行。</p>
+  <textarea id="ex-sql" rows="3" style="width:100%;font-family:ui-monospace,monospace;font-size:12.5px"
+    placeholder="SELECT metric, SUM(value) AS v FROM metrics GROUP BY metric ORDER BY v DESC"></textarea>
+  <div class="toolbar" style="margin-top:8px">
+    <button onclick="exRunSql()">运行</button>
+    <span id="ex-sql-status" class="sub"></span>
+  </div>
+  <div id="ex-sql-out"></div>
+</div>
+
+<h2>发现价值？派发动作 / 登记口径</h2>
+<div class="card">
+  <p class="sub">探索结论可一键转成动作（写入洞察流并进入 14 天验证）；也可以把口径登记进语义层（变更自动升版本）。</p>
+  <div class="toolbar">
+    <button onclick="exPublish()">把该指标结论写入洞察流</button>
+    <button onclick="exSaveDef()">登记/更新口径</button>
+    <span id="ex-status" class="sub"></span>
+  </div>
+  {% if defs %}
+  <h3 style="margin-top:14px">已登记口径</h3>
+  <table>
+    <tr><th>指标</th><th>口径表达式</th><th>单位</th><th>责任人</th><th>版本</th><th>更新时间</th></tr>
+    {% for d in defs %}
+    <tr>
+      <td><code>{{ d.name }}</code> <span class="sub">{{ d.label }}</span></td>
+      <td><code>{{ d.expr or '—' }}</code></td>
+      <td>{{ d.unit or '—' }}</td>
+      <td>{{ d.owner or '—' }}</td>
+      <td>v{{ d.version }}</td>
+      <td>{{ (d.updated_at or '')[:16].replace('T', ' ') }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% endif %}
+</div>
+
+<script>
+async function exRunSql(){
+  var st = document.getElementById('ex-sql-status'), out = document.getElementById('ex-sql-out');
+  st.textContent = '执行中…'; out.innerHTML = '';
+  var r = await fetch('/api/v1/explore/sql', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({workspace_id:'{{ workspace_id }}',
+                          sql: document.getElementById('ex-sql').value})});
+  var j = await r.json();
+  if(!r.ok){ st.textContent = '拒绝：' + (j.detail || ''); return; }
+  st.textContent = j.count + ' 行' + (j.truncated ? '（已截断）' : '');
+  var html = '<table><tr>' + j.columns.map(function(c){return '<th>'+c+'</th>';}).join('') + '</tr>';
+  j.rows.forEach(function(row){
+    html += '<tr>' + row.map(function(v){return '<td>'+String(v==null?'':v).slice(0,80)+'</td>';}).join('') + '</tr>';
+  });
+  out.innerHTML = html + '</table>';
+}
+async function exPublish(){
+  var st = document.getElementById('ex-status');
+  st.textContent = '写入中…';
+  var r = await fetch('/api/v1/insights', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({
+      workspace_id: '{{ workspace_id }}',
+      type: 'explore_finding',
+      title: '探索发现：{{ metric }}{% if entity %} · {{ entity }}{% endif %}',
+      summary: '来自即席探索：{{ agg }} · {{ days }} 天 · 合计 {{ chart.total | round | int }}。',
+      severity: 'medium', confidence: 0.6,
+      evidence_json: [{type: 'explore', metric: '{{ metric }}', entity: '{{ entity }}',
+                       agg: '{{ agg }}', days: {{ days }}, total: {{ chart.total }}}],
+      actions_json: [{action_type: 'investigate', description: '复核该探索结论并评估行动'}]
+    })});
+  st.textContent = r.ok ? '已写入洞察流 ✓（可在洞察页确认并派发动作）' : '写入失败';
+}
+async function exSaveDef(){
+  var st = document.getElementById('ex-status');
+  var expr = prompt('口径表达式（可用指标名 + 四则运算，例：ga4_conversions / ga4_sessions * 100）',
+                    '{{ metric }}');
+  if(!expr) return;
+  st.textContent = '登记中…';
+  var r = await fetch('/api/v1/metrics/defs', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({workspace_id:'{{ workspace_id }}', name:'{{ metric }}',
+                          label:'{{ metric }}', expr: expr, unit:'',
+                          owner:'{{ (defs[0].owner if defs else "") }}'})});
+  st.textContent = r.ok ? '口径已登记（再次修改表达式会自动升版本）' : '登记失败';
+}
+</script>
+{% else %}
+<div class="empty">
+  {% if catalog %}
+  从上方选择一个指标开始探索（共 {{ catalog | length }} 个可用指标）
+  {% else %}
+  暂无指标数据 —— 先创建监控任务（舆情/关键词/旅程等）或接入第一方数据
+  {% endif %}
+</div>
+{% endif %}
+
+<h2>指标目录</h2>
+{% if catalog %}
+<table>
+  <tr><th>指标</th><th>数据点</th><th>主体数</th><th>最近</th><th></th></tr>
+  {% for m in catalog %}
+  <tr>
+    <td><code>{{ m.metric }}</code></td>
+    <td>{{ m.count }}</td>
+    <td>{{ m.entity_count }}</td>
+    <td>{{ (m.last_ts or '')[:16].replace('T', ' ') }}</td>
+    <td><a href="/console/explore?workspace_id={{ workspace_id }}&metric={{ m.metric }}">探索 →</a></td>
+  </tr>
+  {% endfor %}
+</table>
+{% else %}
+<div class="empty">暂无指标</div>
+{% endif %}
+{% endblock %}

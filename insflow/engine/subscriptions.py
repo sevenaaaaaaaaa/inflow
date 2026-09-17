@@ -151,6 +151,63 @@ class SubscriptionService:
             })
         return {"sent": sent, "failed": failed}
 
+    async def create_metric(self, name: str, metric: str, channels: list[str],
+                            target: dict, *, chart: str = "line", days: float = 30,
+                            compare_prev: bool = True, notes: str = "") -> dict:
+        """图表级订阅：把某个指标的图（+同环比）按期推送给客户/团队"""
+        return await self.create(name, channels, target,
+                                 filters={"kind": "metric_chart", "metric": metric,
+                                          "chart": chart, "days": days,
+                                          "compare_prev": compare_prev, "notes": notes},
+                                 mode="daily")
+
+    async def dispatch_metric_charts(self) -> dict:
+        """所有 metric_chart 订阅 → 渲染图表 HTML → 推送"""
+        from ..viz.charts import line_chart
+        from ..viz.frame import datapanel
+        store = await get_store()
+        sent = failed = 0
+        for sub in await self.list():
+            if not sub["enabled"] or sub["filters"].get("kind") != "metric_chart":
+                continue
+            metric = str(sub["filters"].get("metric") or "")
+            if not metric:
+                continue
+            try:
+                days = float(sub["filters"].get("days") or 30)
+                series = await store.metric_series(self.workspace_id, metric, days=days)
+                prev = await store.metric_series(self.workspace_id, metric, days=days * 2)
+                labels = [p["bucket"] for p in series]
+                vals = [p["value"] for p in series]
+                half = len(prev) // 2 if prev else 0
+                chart_svg = line_chart(
+                    [{"name": metric, "values": vals}], labels, as_area=True,
+                    anomaly=True, forecast_periods=7,
+                    compare={"name": "上期",
+                             "series": [{"name": "上期",
+                                         "values": [p["value"] for p in prev[:half]]}]}
+                    if (sub["filters"].get("compare_prev") and half) else None)
+                total = sum(vals)
+                body = (f"<h3>{metric} · 近 {days:g} 天</h3>"
+                        f"<p>合计 {total:,.0f}；数据点 {len(vals)}</p>{chart_svg}")
+                title = f"[图表订阅] {sub['name']} · {metric}"
+                router = get_action_router()
+                for action in _build_actions(sub, _MetricInsight(title, body),
+                                             self.workspace_id):
+                    action["summary"] = body      # 通道侧渲染图表 HTML
+                    try:
+                        res = await router.dispatch(
+                            action, ActionContext(workspace_id=self.workspace_id))
+                        sent += 1 if res.get("ok") else 0
+                        failed += 0 if res.get("ok") else 1
+                    except Exception:
+                        failed += 1
+            except Exception as e:
+                failed += 1
+                self.bus.emit("subscription.push_failed",
+                              {"subscription_id": sub["id"], "error": str(e)})
+        return {"sent": sent, "failed": failed}
+
     async def dispatch_daily(self) -> dict:
         """每日模式：按最近 24h 匹配洞察聚合推送（无状态）"""
         store = await get_store()
@@ -187,6 +244,17 @@ class _DailyDigestStub:
         self.severity = "medium"
         self.confidence = 1.0
         self.type = "daily_digest"
+
+
+class _MetricInsight:
+    """把"图表订阅"适配成洞察形状（复用 _build_actions 的通道构造）"""
+
+    def __init__(self, title: str, summary: str):
+        self.id = ""
+        self.type = "metric_chart"
+        self.title = title
+        self.summary = summary
+        self.severity = "info"
 
 
 def _build_actions(sub: dict, insight, workspace_id: str) -> list[dict]:

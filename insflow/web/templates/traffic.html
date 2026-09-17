@@ -22,7 +22,10 @@
       viz.line_chart([
         {'name': 'GSC 点击', 'values': data.trend.clicks},
         {'name': 'GA4 会话', 'values': data.trend.sessions},
-      ], data.trend.labels, y_label='数量'), csv_name='traffic-trend') | safe }}
+      ], data.trend.labels, y_label='数量',
+        compare={'name': '上期', 'series': [{'name': 'GSC 点击(上期)', 'values': data.compare.clicks}]},
+        annotations=data.annotations, forecast_periods=7),
+      csv_name='traffic-trend', subtitle='虚线=上期对比；竖线=洞察标注；末端虚线=线性预测') | safe }}
   {% else %}<div class="empty">暂无流量数据（接入 GSC/GA4 后生成）</div>{% endif %}
 </div>
 
@@ -59,6 +62,31 @@
       subtitle='右上更优；点击查看明细') | safe }}
   {% else %}
   <div class="empty">暂无关键词机会数据 —— 创建 keyword 监控后生成</div>
+  {% endif %}
+</div>
+
+<h2 data-block="geo">地域分布（网格地图）</h2>
+<div class="card">
+  {% if data.geo %}
+  {{ viz.datapanel('会话来源地域', ['地域', '会话数'],
+      data.geo | map(attribute=0) | zip(data.geo | map(attribute=1)) | map('list') | list,
+      viz.tile_map(data.geo, scope=data.geo_scope or 'china', unit=' 会话',
+                   filter_dim='province',
+                   label='会话数（近似地理网格，非精确边界）'),
+      csv_name='traffic-geo') | safe }}
+  {% else %}
+  <div class="empty">暂无地域维度数据 —— 采集维度含 province/country 时自动出现</div>
+  {% endif %}
+</div>
+
+<h2 data-block="box">渠道转化分布（箱线）</h2>
+<div class="card">
+  {% if data.box %}
+  {{ viz.datapanel('各渠道转化量分布（中位/IQR/离群）', ['渠道', '样本数'],
+      data.box | map(attribute=0) | zip(data.box | map(attribute=1) | map('length')) | map('list') | list,
+      viz.boxplot(data.box, y_label='转化量'), csv_name='traffic-box') | safe }}
+  {% else %}
+  <div class="empty">暂无渠道维度数据 —— 采集维度含 channel 时自动出现</div>
   {% endif %}
 </div>
 

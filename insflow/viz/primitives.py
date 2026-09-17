@@ -18,10 +18,13 @@ def esc(text) -> str:
     return html.escape(str(text if text is not None else ""))
 
 
-def svg(width: int, height: int, body: str, *, cls: str = "chart") -> str:
-    """SVG 外壳：响应式 + 可访问性"""
+def svg(width: int, height: int, body: str, *, cls: str = "chart",
+        aria: str = "") -> str:
+    """SVG 外壳：响应式 + 可访问性（role=img + aria-label；无标签用通用描述）"""
+    label = aria or "图表（数据表见下方）"
     return (f'<svg class="{cls}" viewBox="0 0 {width} {height}" width="100%" '
-            f'height="{height}" role="img" xmlns="http://www.w3.org/2000/svg" '
+            f'height="{height}" role="img" aria-label="{esc(label)}" '
+            f'xmlns="http://www.w3.org/2000/svg" '
             f'style="display:block;overflow:visible">{body}</svg>')
 
 
@@ -108,15 +111,29 @@ def y_grid(y_max: float, x0: float, y0: float, w: float, h: float,
     return "".join(parts)
 
 
-def legend(items: Sequence[tuple[str, str]], x: float, y: float) -> str:
-    """图例（名称 + 色块）"""
+def legend(items: Sequence[tuple[str, str]], x: float, y: float,
+           *, interactive: bool = True) -> str:
+    """图例（名称 + 色块）；interactive=True 时可点击开关序列（a11y：role=button）"""
     parts = []
     cx = x
     for name, color in items:
-        parts.append(f'<rect x="{cx:.1f}" y="{y - 8:.1f}" width="9" height="9" rx="2" fill="{color}"/>')
-        parts.append(f'<text x="{cx + 13:.1f}" y="{y:.1f}" '
-                     f'style="font-size:10.5px;fill:{theme.MUTED}">{esc(name)}</text>')
-        cx += 22 + len(str(name)) * 8
+        label = str(name)
+        rect = (f'<rect x="{cx:.1f}" y="{y - 8:.1f}" width="9" height="9" rx="2" '
+                f'fill="{color}"/>')
+        text = (f'<text x="{cx + 13:.1f}" y="{y:.1f}" '
+                f'style="font-size:10.5px;fill:{theme.MUTED}">{esc(label)}</text>')
+        if interactive:
+            w = 22 + len(label) * 8
+            parts.insert(0, "")  # no-op 占位（保持结构可读）
+            parts.append(
+                f'<g class="if-legend" data-series="{esc(label)}" role="button" '
+                f'tabindex="0" aria-pressed="true" aria-label="切换 {esc(label)} 显示" '
+                f'onclick="ifToggleSeries(\'{esc(label)}\', this)" '
+                f'onkeydown="ifLegendKey(event, \'{esc(label)}\', this)">{rect}{text}</g>')
+            cx += w
+        else:
+            parts.append(rect); parts.append(text)
+            cx += 22 + len(label) * 8
     return "".join(parts)
 
 

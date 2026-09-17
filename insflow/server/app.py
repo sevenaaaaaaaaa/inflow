@@ -57,6 +57,7 @@ app = FastAPI(
 # ========== API Key 认证（可选启用，M4）==========
 
 import os as _os
+import time
 
 from ..core.auth import AuthManager
 
@@ -81,6 +82,17 @@ BASE_PATH = _os.environ.get("INSFLOW_BASE_PATH", "").rstrip("/")
 
 
 @app.middleware("http")
+async def no_store_middleware(request, call_next):
+    """控制台/REST 响应禁止中间缓存（防跨会话命中，宝塔/Apache 默认会缓存 HTML）"""
+    response = await call_next(request)
+    path = request.url.path
+    if path.startswith(("/console", "/api/")):
+        response.headers["Cache-Control"] = "private, no-store, max-age=0"
+        response.headers["Pragma"] = "no-cache"
+    return response
+
+
+@app.middleware("http")
 async def saas_guard(request, call_next):
     if _os.environ.get("INSFLOW_SAAS", "") != "1":
         return await call_next(request)
@@ -91,10 +103,15 @@ async def saas_guard(request, call_next):
         from fastapi.responses import RedirectResponse
         from ..core.accounts import COOKIE_NAME, AccountManager
         user = await AccountManager().verify_session(request.cookies.get(COOKIE_NAME))
-        if not user:
+        # /console/embed 由 HMAC 令牌鉴权（第三方 iframe 无会话 Cookie）：
+        # 不重定向（有会话则照常带上身份）；/console/embed/token 仍需登录。
+        exempt = path in ("/console/embed", "/console/manifest.webmanifest",
+                          "/console/sw.js", "/console/icon.svg")
+        if user:
+            request.state.user = user
+        elif not exempt:
             return RedirectResponse(
                 f"{BASE_PATH}/console/login?next={quote(path)}", status_code=303)
-        request.state.user = user
     return await call_next(request)
 
 
@@ -476,6 +493,300 @@ async def build_invoice(workspace_id: str = Query(...), month: str | None = Quer
 
 class TemplateApplyRequest(BaseModel):
     template_id: str
+
+
+@app.get("/api/v1/metrics/catalog")
+async def metrics_catalog(workspace_id: str = Query(...), days: float = Query(90)):
+    """可用指标目录（即席探索）"""
+    store = await get_store()
+    return {"metrics": await store.metric_catalog(workspace_id, days)}
+
+
+@app.get("/api/v1/ui/layout")
+async def api_load_layout(workspace_id: str = Query(""), path: str = Query("")):
+    """读取看板布局（跨设备；无则返回空数组，前端回落 localStorage）"""
+    store = await get_store()
+    ws = await store.get_workspace(workspace_id)
+    layouts = dict((ws.settings_json or {}).get("layouts") or {}) if ws else {}
+    return {"ok": True, "path": path, "order": layouts.get(path, [])}
+
+
+@app.put("/api/v1/ui/layout")
+async def api_save_layout(payload: dict):
+    """保存看板布局（按路径存于工作区设置，不需要新表/迁移）"""
+    workspace_id = str(payload.get("workspace_id") or "")
+    path = str(payload.get("path") or "")[:200]
+    order = [str(x)[:60] for x in (payload.get("order") or [])][:80]
+    if not workspace_id or not path:
+        raise HTTPException(status_code=400, detail="需要 workspace_id 与 path")
+    store = await get_store()
+    ws = await store.get_workspace(workspace_id)
+    if not ws:
+        raise HTTPException(status_code=404, detail="工作区不存在")
+    settings = dict(ws.settings_json or {})
+    layouts = dict(settings.get("layouts") or {})
+    prev = layouts.get(path)
+    layouts[path] = order
+    settings["layouts"] = layouts
+    if prev and prev != order:      # 版本历史（可回溯，最多留 20 版）
+        history = list(settings.get("layouts_history") or [])
+        history.append({"path": path, "order": prev,
+                        "at": time.strftime("%Y-%m-%dT%H:%M:%S%z")})
+        settings["layouts_history"] = history[-20:]
+    ws.settings_json = settings
+    await store.update_workspace(ws)
+    return {"ok": True, "path": path, "order": order}
+
+
+# ========== 即席探索 / 语义层 / 协作 / 告警 / 估算（P1-P2 能力面） ==========
+
+def _role_of(request) -> str:
+    """当前请求角色（SaaS 会话；无会话视为 owner，兼容私有化单租户）"""
+    user = getattr(request.state, "user", None)
+    if isinstance(user, dict):
+        return str(user.get("role") or "owner")
+    return "owner"
+
+
+def _guard(request, action: str):
+    from ..engine.permissions import PermissionError_, require
+    try:
+        require(_role_of(request), action)
+    except PermissionError_ as e:
+        raise HTTPException(status_code=403, detail=str(e))
+
+
+@app.post("/api/v1/explore/pivot")
+async def explore_pivot(request: Request, workspace_id: str = Query(...),
+                        metric: str = Query(...), dim: str = Query(...),
+                        dim2: str = Query(""), days: float = Query(30)):
+    """二维透视（即席探索）：维度 × 维度 / 维度 × 时间"""
+    _guard(request, "read")
+    store = await get_store()
+    return await store.pivot(workspace_id, metric, dim, dim2, days=days)
+
+
+@app.post("/api/v1/explore/sql")
+async def explore_sql_api(request: Request, payload: dict):
+    """只读 SQL 沙箱（白名单表 + 强制租户隔离 + LIMIT）"""
+    _guard(request, "explore.sql")
+    from ..engine.explore_sql import SqlError, run as sql_run
+    try:
+        return await sql_run(str(payload.get("workspace_id") or ""),
+                             str(payload.get("sql") or ""))
+    except SqlError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get("/api/v1/metrics/defs")
+async def list_metric_defs(workspace_id: str = Query(...)):
+    """语义层：指标口径清单（含版本/责任人）"""
+    return {"defs": await (await get_store()).list_metric_defs(workspace_id)}
+
+
+@app.post("/api/v1/metrics/defs")
+async def upsert_metric_def(request: Request, payload: dict):
+    """登记/更新指标口径（expr 变更自动升版本）"""
+    _guard(request, "workspace_id.write" if False else "insight.write")
+    store = await get_store()
+    ws = str(payload.get("workspace_id") or "")
+    name = str(payload.get("name") or "").strip()
+    if not ws or not name:
+        raise HTTPException(status_code=400, detail="需要 workspace_id 与 name")
+    return await store.upsert_metric_def(ws, name, **{
+        k: payload.get(k) for k in ("label", "expr", "unit", "owner", "notes")
+        if payload.get(k) is not None})
+
+
+@app.get("/api/v1/comments")
+async def list_comments(workspace_id: str = Query(...), target_type: str = Query(""),
+                        target_id: str = Query("")):
+    """协作评论列表"""
+    return {"comments": await (await get_store()).list_comments(
+        workspace_id, target_type, target_id)}
+
+
+@app.post("/api/v1/comments")
+async def add_comment(request: Request, payload: dict):
+    """新增评论（协作）"""
+    _guard(request, "read")
+    store = await get_store()
+    ws = str(payload.get("workspace_id") or "")
+    body = str(payload.get("body") or "").strip()
+    if not ws or not body:
+        raise HTTPException(status_code=400, detail="需要 workspace_id 与 body")
+    user = getattr(request.state, "user", None) or {}
+    author = str(payload.get("author") or user.get("email") or "本地用户")
+    return await store.add_comment(ws, str(payload.get("target_type") or "insight"),
+                                   str(payload.get("target_id") or ""), body, author)
+
+
+@app.get("/api/v1/alerts/rules")
+async def list_alert_rules(workspace_id: str = Query(...)):
+    """阈值告警规则列表"""
+    return {"rules": await (await get_store()).list_alert_rules(workspace_id)}
+
+
+@app.post("/api/v1/alerts/rules")
+async def upsert_alert_rule(request: Request, payload: dict):
+    """新建/更新阈值告警规则（含路由与升级策略）"""
+    _guard(request, "alert.write")
+    ws = str(payload.get("workspace_id") or "")
+    if not ws:
+        raise HTTPException(status_code=400, detail="需要 workspace_id")
+    return await (await get_store()).upsert_alert_rule(ws, payload)
+
+
+@app.delete("/api/v1/alerts/rules/{rule_id}")
+async def delete_alert_rule(request: Request, workspace_id: str = Query(...),
+                            rule_id: str = ""):
+    _guard(request, "alert.write")
+    ok = await (await get_store()).delete_alert_rule(workspace_id, rule_id)
+    return {"ok": ok}
+
+
+@app.post("/api/v1/alerts/check")
+async def alerts_check(request: Request, workspace_id: str = Query(...)):
+    """立即评估阈值规则（命中生成洞察 + 按路由通知）并检查升级"""
+    _guard(request, "alert.write")
+    from ..engine.alerts import evaluate_workspace, sweep_escalations
+    return {"fired": await evaluate_workspace(workspace_id),
+            "escalations": await sweep_escalations(workspace_id)}
+
+
+@app.post("/api/v1/subscriptions/metric")
+async def create_metric_subscription(request: Request, payload: dict):
+    """图表级订阅：按期推送某指标的图（含同环比/异常/预测）"""
+    _guard(request, "subscription.write")
+    from ..engine.subscriptions import SubscriptionError, SubscriptionService
+    ws = str(payload.get("workspace_id") or "")
+    if not ws:
+        raise HTTPException(status_code=400, detail="需要 workspace_id")
+    try:
+        return await SubscriptionService(ws).create_metric(
+            str(payload.get("name") or "指标图订阅"),
+            str(payload.get("metric") or ""),
+            list(payload.get("channels") or ["webhook"]),
+            dict(payload.get("target") or {}),
+            chart=str(payload.get("chart") or "line"),
+            days=float(payload.get("days") or 30),
+            compare_prev=bool(payload.get("compare_prev", True)))
+    except SubscriptionError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get("/api/v1/vars")
+async def template_vars(workspace_id: str = Query(...), metric: str = Query(""),
+                        dims: str = Query("province,channel,device")):
+    """变量模板（Grafana 式）：给定指标的维度可选值（供下拉切换）"""
+    store = await get_store()
+    out: dict[str, list[str]] = {}
+    for dim in [d for d in dims.split(",") if d][:4]:
+        rows = await store.metric_dim_breakdown(workspace_id, metric or "ga4_sessions",
+                                                dim, days=90, limit=30)
+        out[dim] = [str(r["key"]) for r in rows if r["key"]]
+    return {"vars": out}
+
+
+@app.get("/api/v1/estimate")
+async def estimate_traffic(workspace_id: str = Query(...), domain: str = Query(""),
+                           domains: str = Query(""), days: float = Query(30)):
+    """竞品/自有域名相对流量指数（方法+置信度透明，不做绝对承诺）"""
+    from ..engine.traffic_estimate import estimate_domain, estimate_many
+    if domains:
+        return {"estimates": await estimate_many(
+            workspace_id, [d for d in domains.split(",") if d], days)}
+    if not domain:
+        raise HTTPException(status_code=400, detail="需要 domain 或 domains")
+    return await estimate_domain(workspace_id, domain, days)
+
+
+@app.get("/api/v1/ui/layout/history")
+async def layout_history(workspace_id: str = Query(...), path: str = Query("")):
+    """布局版本历史（协作可回溯到上一版）"""
+    ws = await (await get_store()).get_workspace(workspace_id)
+    history = list(((ws.settings_json or {}).get("layouts_history") or [])) if ws else []
+    if path:
+        history = [h for h in history if h.get("path") == path]
+    return {"history": history[-20:][::-1]}
+
+
+@app.get("/api/v1/auth/me")
+async def whoami(request: Request):
+    """当前身份与能力（前端据此隐藏无权限入口）"""
+    from ..engine.permissions import MATRIX
+    role = _role_of(request)
+    return {"role": role, "capabilities": sorted(MATRIX.get(role, MATRIX["viewer"])),
+            "user": getattr(request.state, "user", None) or {}}
+
+
+@app.get("/api/v1/export/xlsx")
+async def export_xlsx(workspace_id: str = Query(...), panel: str = Query(...),
+                      days: float = Query(30)):
+    """整页 Excel 导出：驾驶舱（或单指标）→ 多表工作簿
+
+    把聚合结果按可读表拍平（KPI / 趋势 / 地域 / 渠道 …），交付给客户继续分析。
+    """
+    from urllib.parse import quote as _quote
+
+    from fastapi.responses import Response
+
+    from ..core.xlsx import write_xlsx
+    from ..web.routes import _embed_normalize, build_export_sheets
+    kind, _, name = panel.partition(":")
+    if kind == "metric":
+        series = await (await get_store()).metric_series(workspace_id, name, days=days)
+        sheets = [("趋势", ["时间桶", "值", "样本数"],
+                   [[r["bucket"], r["value"], r["n"]] for r in series])]
+        stem = f"metric-{name}"
+    elif kind == "cockpit":
+        from ..web.cockpit import COCKPITS
+        fn = COCKPITS.get(name)
+        if not fn:
+            raise HTTPException(status_code=404, detail="驾驶舱不存在")
+        data = _embed_normalize(await fn(workspace_id, days))
+        sheets = build_export_sheets(name, data)
+        stem = f"cockpit-{name}"
+    else:
+        raise HTTPException(status_code=400, detail="panel 形如 cockpit:traffic")
+    data_bytes = write_xlsx([(t, cols, rows) for t, cols, rows in sheets])
+    return Response(
+        content=data_bytes,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition":
+                 f"attachment; filename={stem}-{time.strftime('%Y%m%d')}.xlsx; "
+                 f"filename*=UTF-8''{_quote(stem)}.xlsx"})
+
+
+@app.get("/api/v1/charts/range")
+async def chart_range(workspace_id: str = Query(...), from_: str = Query("", alias="from"),
+                      to: str = Query("")):
+    """区间洞察：某时间窗内的洞察 + 动作（含验证结论）
+
+    用途：框选时间轴 → 查看"这段时间发生了什么、动作验证结果如何"（服务闭环验证）。
+    """
+    import json as _json
+    store = await get_store()
+    lo = (from_ or "0000")[:10]
+    hi = (to or "9999")[:10]
+    insights = [i for i in await store.list_insights(workspace_id, limit=300)
+                if lo <= i.created_at.strftime("%Y-%m-%d") <= hi]
+    actions = []
+    for a in await store.list_actions(workspace_id):
+        ts = (a.dispatched_at or a.created_at).strftime("%Y-%m-%d")
+        if lo <= ts <= hi:
+            actions.append({
+                "id": a.id, "action_type": a.action_type, "state": a.state.value,
+                "verdict": (a.result_json or {}).get("verdict", ""),
+                "insight_id": a.insight_id,
+            })
+    return {
+        "from": from_, "to": to,
+        "insights": [{"id": i.id, "type": i.type, "title": i.title,
+                      "severity": i.severity.value,
+                      "created_at": i.created_at.isoformat()} for i in insights[:40]],
+        "actions": actions[:40],
+    }
 
 
 @app.get("/api/v1/charts/drill")

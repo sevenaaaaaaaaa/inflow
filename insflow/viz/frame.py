@@ -1,9 +1,11 @@
-"""Insight Flow 图表框架（P0：数据表切换 + 单图 CSV 导出）
+"""Insight Flow 图表框架（数据表切换 + CSV / XLSX / PNG 导出）
 
-零依赖：CSV 用 data-URI 内联（无需后端导出接口），表格服务端渲染隐藏，
-前端只做显隐切换。所有图表外层可包 `datapanel()`，实现"每个图都能看数、能导出"。
+零依赖：CSV 与 XLSX 用 data-URI 内联（无需后端导出接口），PNG 由前端把
+SVG/Canvas 光栅化后下载；表格服务端渲染隐藏，前端只做显隐切换。
+所有图表外层可包 `datapanel()`，实现"每个图都能看数、能导出"。
 """
 
+import base64
 import csv
 import html
 import io
@@ -20,24 +22,48 @@ def _csv_data_uri(columns: list[str], rows: list[list], stem: str) -> str:
     return f"data:text/csv;charset=utf-8,{payload}"
 
 
-def _table_html(columns: list[str], rows: list[list]) -> str:
-    head = "".join(f"<th>{html.escape(str(c))}</th>" for c in columns)
+def _table_html(columns: list[str], rows: list[list], caption: str = "") -> str:
+    head = "".join(f'<th scope="col">{html.escape(str(c))}</th>' for c in columns)
     body = "".join(
         "<tr>" + "".join(f"<td>{html.escape(str(v))}</td>" for v in row) + "</tr>"
         for row in rows
     )
-    return f'<table class="dp-table"><thead><tr>{head}</tr></thead><tbody>{body}</tbody></table>'
+    cap = f'<caption class="sr-only">{html.escape(caption)}</caption>' if caption else ""
+    return f'<table class="dp-table">{cap}<thead><tr>{head}</tr></thead><tbody>{body}</tbody></table>'
+
+
+def _xlsx_data_uri(columns: list[str], rows: list[list], name: str,
+                   limit: int = 5000) -> str:
+    """XLSX 内联（stdlib zipfile；超限返回空串，避免 HTML 体积失控）"""
+    if len(rows) > limit:
+        return ""
+    from ..core.xlsx import write_xlsx
+    try:
+        data = write_xlsx([(name or "data", columns, rows)])
+    except Exception:
+        return ""
+    b64 = base64.b64encode(data).decode()
+    return ("data:application/vnd.openxmlformats-officedocument."
+            f"spreadsheetml.sheet;base64,{b64}")
 
 
 def datapanel(title: str, columns: list[str], rows: list[list], chart_html: str, *,
               csv_name: str = "chart", subtitle: str = "", drill_metric: str = "",
-              drill_entity: str = "") -> str:
-    """图表面板：图/表切换 + CSV 导出（+ 可选下钻提示）
+              drill_entity: str = "", xlsx: bool = True, png: bool = True) -> str:
+    """图表面板：图/表切换 + CSV / XLSX / PNG 导出（+ 可选下钻提示）
 
-    columns/rows 同时用于表格渲染与 CSV 导出（单一数据源，不会图表与表格不一致）。
+    columns/rows 同时用于表格渲染与导出（单一数据源，不会图表与表格不一致）。
     """
     uid = f"dp{abs(hash(title + str(len(rows)))) % 100000:05d}"
     csv_uri = _csv_data_uri(columns, rows, csv_name)
+    xlsx_uri = _xlsx_data_uri(columns, rows, csv_name) if xlsx else ""
+    xlsx_btn = (f'<a class="dp-btn" href="{xlsx_uri}" '
+                f'download="{html.escape(csv_name)}.xlsx" aria-label="导出 Excel" '
+                f'title="导出 Excel（可继续透视/建模）">XLSX</a>') if xlsx_uri else ""
+    png_btn = (f'<button type="button" class="dp-btn" '
+               f'onclick="ifExportPNG(\'{uid}\',\'{html.escape(csv_name)}\')" '
+               f'aria-label="导出 PNG" title="导出 PNG（图表图片，可直接贴报告）">PNG</button>'
+               ) if png else ""
     drill_attr = ""
     if drill_metric and drill_entity:
         drill_attr = (f' data-drill-metric="{html.escape(drill_metric)}"'
@@ -47,11 +73,16 @@ def datapanel(title: str, columns: list[str], rows: list[list], chart_html: str,
     <div class="dp-title">{html.escape(title)}
       {f'<span class="dp-sub">{html.escape(subtitle)}</span>' if subtitle else ''}</div>
     <div class="dp-tools">
-      <button type="button" class="dp-btn dp-on" onclick="dpView('{uid}','chart')" title="图表视图">图</button>
-      <button type="button" class="dp-btn" onclick="dpView('{uid}','table')" title="数据视图">表</button>
-      <a class="dp-btn" href="{csv_uri}" download="{html.escape(csv_name)}.csv" title="导出 CSV">CSV</a>
+      <button type="button" class="dp-btn dp-on" aria-pressed="true" aria-label="图表视图"
+        onclick="dpView('{uid}','chart')" title="图表视图">图</button>
+      <button type="button" class="dp-btn" aria-pressed="false" aria-label="数据表视图"
+        onclick="dpView('{uid}','table')" title="数据表视图">表</button>
+      <a class="dp-btn" href="{csv_uri}" download="{html.escape(csv_name)}.csv"
+        aria-label="导出 CSV" title="导出 CSV（当前数据表）">CSV</a>
+      {xlsx_btn}
+      {png_btn}
     </div>
   </div>
   <div class="dp-chart"{drill_attr}>{chart_html}</div>
-  <div class="dp-tablewrap" hidden>{_table_html(columns, rows)}</div>
+  <div class="dp-tablewrap" hidden>{_table_html(columns, rows, title)}</div>
 </div>'''

@@ -19,6 +19,17 @@
   {% endif %}
 </div>
 
+<h2>路径流量（桑基）</h2>
+<div class="card">
+  {% if data.path_sankey %}
+  {{ viz.datapanel('步骤间流量去向', ['来源', '去向', '流量'],
+      data.path_sankey | map('list') | list,
+      viz.sankey(data.path_sankey, unit=' 人'), csv_name='journey-path') | safe }}
+  {% else %}
+  <div class="empty">暂无路径数据 —— 创建 journey 监控后生成</div>
+  {% endif %}
+</div>
+
 <h2>留存趋势（GA4）</h2>
 <div class="card">
   {% if data.retention %}

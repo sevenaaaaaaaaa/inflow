@@ -13,7 +13,7 @@ from ..collectors.base import CollectContext
 from ..core.entities import Insight, InsightAction, Metric
 from ..core.files import EventBus
 from ..core.security import get_vault
-from ..core.store import get_store
+from ..core.store import dim_window_key, get_store
 from ..engine.quality_gates import get_quality_gates
 
 
@@ -72,7 +72,10 @@ async def _save_metrics(workspace_id: str, rows: list[dict],
         row_ts = r.get("ts", now.isoformat())
         # 幂等窗口键由**数据时间**推导（不是当前时钟）：否则历史回填/补采会被
         # 误判为同窗口而丢数据（SQLite 静默忽略，MySQL 唯一键直接报错）
-        window_key = r.get("window_key") or _window_key_from_ts(row_ts, now)
+        dim = r.get("dim") or {}
+        window_key = (r.get("window_key")
+                      or dim_window_key(row_ts, dim)
+                      or _window_key_from_ts(row_ts, now))
         # 代码层幂等（OpenFlow 教训 #3：空值不能依赖普通唯一索引，去重放代码层）
         exists = await store._fetchone(
             """SELECT 1 AS x FROM metrics

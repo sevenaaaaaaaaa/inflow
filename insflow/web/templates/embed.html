@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="zh-CN"{% if theme == 'dark' or theme == 'light' %} data-theme="{{ theme }}"{% endif %}>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% if branding.get('company') %}{{ branding.get('company') }} · {% endif %}Insight Flow 嵌入视图</title>
+<style>
+{{ viz.tokens_css | safe }}
+body{padding:14px;max-width:none}
+.emb-head{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:12px}
+.emb-brand{font-weight:800;color:{{ branding.get('accent_color') or 'var(--accent)' }};display:flex;align-items:center;gap:8px}
+.emb-brand img{height:22px;width:auto}
+.emb-note{color:var(--faint);font-size:11px}
+.emb-note a{color:inherit}
+.emb-kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;margin-bottom:14px}
+.emb-grid{display:grid;gap:14px}
+@media(min-width:900px){.emb-grid.two{grid-template-columns:1fr 1fr}}
+</style>
+</head>
+<body>
+<div class="emb-head">
+  <div class="emb-brand">
+    {% if branding.get('logo_url') %}<img src="{{ branding.get('logo_url') }}" alt="">{% endif %}
+    {{ branding.get('company') or 'Insight Flow' }}
+  </div>
+  <div class="emb-note">{{ name }} · 只读嵌入 ·
+    <a href="https://inflow.dev" rel="noopener noreferrer">Insight Flow</a></div>
+</div>
+
+{% if data and data.kpis and (kind in ('cockpit', 'board')) %}
+<div class="emb-kpis">
+  {% for k, v in data.kpis.items() %}
+    {% if v is number or v is string %}
+    {{ viz.kpi_card(k, v, color='var(--accent)') | safe }}
+    {% endif %}
+  {% endfor %}
+</div>
+{% endif %}
+
+{% if kind == 'metric' and data %}
+  <div class="emb-kpis">
+    {{ viz.kpi_card(metric, data.total | round | int, color='var(--accent)') | safe }}
+    {{ viz.kpi_card('数据点', data.rows | length, color='var(--muted)') | safe }}
+  </div>
+{% endif %}
+
+{% if panels %}
+<div class="emb-grid {{ 'two' if panels | length > 1 and kind == 'board' else '' }}">
+  {% for p in panels %}
+  {{ viz.datapanel(p.title, p.columns, p.rows, p.chart, csv_name=p.csv, png=False) | safe }}
+  {% endfor %}
+</div>
+{% elif kind == 'metric' and data %}
+  {{ viz.datapanel(metric ~ '（近 30 天）', ['时间桶', '值'],
+      data.rows | map(attribute='bucket') | zip(data.rows | map(attribute='value')) | map('list') | list,
+      viz.line_chart([{'name': metric, 'values': data.y_values}], data.labels,
+                     as_area=True, anomaly=True, forecast_periods=7),
+      csv_name='embed-' ~ metric, png=False) | safe }}
+{% elif not data %}
+  <div class="empty">面板不可用（{{ panel }}）</div>
+{% else %}
+  <div class="empty">该面板暂无可展示内容</div>
+{% endif %}
+
+<script>
+/* 只读嵌入：保留 tooltip 与图例开关（轻量交互），不加载控制台脚本 */
+{% include "_embed_js.html" %}
+</script>
+</body>
+</html>

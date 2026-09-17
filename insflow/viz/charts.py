@@ -61,47 +61,314 @@ def sparkline(values: Sequence[float], *, width: int = 120, height: int = 26,
 
 # ========== 折线 / 面积（趋势）==========
 
+def forecast_series(values: Sequence[float], periods: int = 7) -> tuple[list[float], list[float]]:
+    """极简趋势外推（最小二乘线性）+ 波动带宽（不含 ML 承诺）
+
+    返回 (预测值, 带宽半宽)。用途：与真实值对比，判断动作是否改变了轨迹。
+    """
+    n = len(values)
+    if n < 3 or periods <= 0:
+        return [], []
+    xs = list(range(n))
+    mean_x = sum(xs) / n
+    mean_y = sum(values) / n
+    denom = sum((x - mean_x) ** 2 for x in xs) or 1.0
+    slope = sum((x - mean_x) * (y - mean_y) for x, y in zip(xs, values)) / denom
+    intercept = mean_y - slope * mean_x
+    resid = [values[i] - (intercept + slope * xs[i]) for i in range(n)]
+    std = (sum(r * r for r in resid) / n) ** 0.5
+    preds = [intercept + slope * (n + k) for k in range(periods)]
+    band = [1.96 * std] * periods
+    return [max(0.0, p) for p in preds], band
+
+
+def forecast_series_seasonal(values: Sequence[float], periods: int = 7,
+                            season: int | None = None
+                            ) -> tuple[list[float], list[float]]:
+    """季节性外推：季节指数分解 + 去季节化线性趋势 + 复原
+
+    比纯线性外推更贴近日报/周报的周期规律。样本不足自动回落线性外推。
+    仍然不是 ML/ARIMA（诚实标注：`seasonal-naive + trend`）。
+    """
+    n = len(values)
+    if periods <= 0:
+        return [], []
+    if n < 8:
+        return forecast_series(values, periods)
+    if not season:
+        # 自动探测：日粒度数据常见 7 天周期；样本够长则回落到 7
+        season = 7 if n >= 14 else n
+    season = max(2, min(season, n // 2))
+    buckets: list[list[float]] = [[] for _ in range(season)]
+    for i, v in enumerate(values):
+        buckets[i % season].append(float(v))
+    overall = sum(float(v) for v in values) / n
+    idx = []
+    for b in buckets:
+        m = sum(b) / len(b) if b else overall
+        idx.append((m / overall) if overall else 1.0)
+    des = [(float(v) / idx[i % season]) if idx[i % season] else float(v)
+           for i, v in enumerate(values)]
+    preds, band = forecast_series(des, periods)
+    if not preds:
+        return [], []
+    out = [max(0.0, p * idx[(n + k) % season]) for k, p in enumerate(preds)]
+    return out, band
+
+
+def anomaly_points(values: Sequence[float], *, k: float = 2.5,
+                   window: int = 7) -> tuple[list[float], list[float], list[int]]:
+    """滚动均值 ± kσ 异常带（统计口径明确，非 ML）
+
+    返回 (上界, 下界, 异常点下标)。样本 < window 时用全局均值/标准差。
+    """
+    vals = [float(v) for v in values]
+    n = len(vals)
+    if n < 3:
+        return [], [], []
+    win = max(3, min(window, n))
+    upper, lower, bad = [], [], []
+    for i in range(n):
+        # 留一法：统计量剔除当前点，避免异常点把自身上下限撑大（自掩蔽）
+        lo = max(0, i - win)
+        seg = vals[lo:i]
+        if len(seg) < 3:
+            seg = vals[:i] + vals[i + 1:]
+        if not seg:
+            upper.append(vals[i]); lower.append(vals[i]); continue
+        mean = sum(seg) / len(seg)
+        var = sum((x - mean) ** 2 for x in seg) / len(seg)
+        std = var ** 0.5
+        upper.append(max(0.0, mean + k * std))
+        lower.append(max(0.0, mean - k * std))
+        dev = abs(vals[i] - mean)
+        if std > 0:
+            if dev > k * std:
+                bad.append(i)
+        elif dev > max(1e-9, abs(mean) * 0.25):
+            bad.append(i)   # 平稳序列上的突变（σ=0）同样视为异常
+    return upper, lower, bad
+
+
 def line_chart(series: list[dict], labels: Sequence[str], *, width: int = 720,
-               height: int = 220, y_label: str = "", as_area: bool = False) -> str:
-    """多序列趋势（series: [{name, values, color?}]）"""
+               height: int = 220, y_label: str = "", as_area: bool = False,
+               compare: dict | None = None, annotations: Sequence[dict] | None = None,
+               forecast_periods: int = 0, canvas_threshold: int = 400,
+               chart_id: str = "", anomaly: bool = False, anomaly_k: float = 2.5,
+               seasonal: bool = False, season: int | None = None,
+               anim: bool = True) -> str:
+    """多序列趋势图
+
+    compare: {"name": "上期", "series": [{"name","values","color"?}]} —— 虚线对比（同环比）
+    annotations: [{"ts"/"pos", "label", "kind": "insight|action|verified", "severity"}] —— 钉在时间轴
+    forecast_periods: >0 时按趋势外推（虚线 + 置信带；seasonal=True 用季节分解）
+    canvas_threshold: 数据点超过该值改用 Canvas 渲染（大数据量），由前端 JS 绘制
+    anomaly: 叠加滚动均值 ± kσ 异常带并标记越界点
+    anim: 首次渲染做淡入/描线动画（前端尊重 prefers-reduced-motion）
+    """
     if not series or not any(s.get("values") for s in series):
         return placeholder(width, height)
 
     pad_l, pad_r, pad_t, pad_b = 44, 12, 14, 26
     plot_w, plot_h = width - pad_l - pad_r, height - pad_t - pad_b
-    y_max = nice_max(max((max(s["values"]) if s["values"] else 0) for s in series))
+
+    # 预算外推，决定坐标上界
+    forecast = {}
+    if forecast_periods:
+        for s in series:
+            if seasonal:
+                preds, band = forecast_series_seasonal(list(s["values"]),
+                                                       forecast_periods, season)
+            else:
+                preds, band = forecast_series(list(s["values"]), forecast_periods)
+            if preds:
+                forecast[s["name"]] = {"preds": preds, "band": band}
+
+    # 异常带（滚动均值 ± kσ）
+    anomaly_band = {}
+    if anomaly:
+        for s in series:
+            up, low, bad = anomaly_points(list(s["values"]), k=anomaly_k)
+            if up:
+                anomaly_band[s["name"]] = {"upper": up, "lower": low, "points": bad}
+    y_candidates = [max(s["values"]) if s["values"] else 0 for s in series]
+    for f in forecast.values():
+        y_candidates.append(max(f["preds"]))
+    if compare:
+        for s in compare.get("series", []):
+            if s.get("values"):
+                y_candidates.append(max(s["values"]))
+    y_max = nice_max(max(y_candidates) if y_candidates else 1)
+
+    total_points = sum(len(s.get("values") or []) for s in series)
+    import json as _json
+    meta = {
+        "labels": list(labels)[:2000],
+        "series": [{"name": s["name"], "values": list(s["values"])[:2000],
+                    "color": s.get("color") or theme.series_color(i)}
+                   for i, s in enumerate(series)],
+        "plot": [pad_l, pad_t, plot_w, plot_h], "y_max": y_max, "as_area": as_area,
+        "compare": None, "forecast": {k: {"preds": v["preds"], "band": v["band"]}
+                                      for k, v in forecast.items()},
+        "annotations": [],
+        "anomaly": anomaly_band, "anim": bool(anim),
+        "kind": "line",
+    }
+    if compare:
+        meta["compare"] = {
+            "name": compare.get("name", "上期"),
+            "series": [{"name": s["name"], "values": list(s["values"])[:2000],
+                        "color": s.get("color") or theme.MUTED}
+                       for s in compare.get("series", [])],
+        }
+
+    # 注释：把洞察/动作钉到时间轴上（视觉化"洞察 → 动作 → 验证"）
+    ann_html = []
+    if annotations:
+        total_slots = max(1, len(labels) - 1)
+        for ann in annotations:
+            pos = ann.get("pos")
+            if pos is None and ann.get("ts") and labels:
+                idx = _nearest_label_index(str(ann["ts"]), list(labels))
+                if idx is None:
+                    continue
+                pos = idx
+            if pos is None:
+                continue
+            x = pad_l + plot_w * min(1.0, max(0.0, float(pos) / total_slots))
+            color = theme.severity_color(str(ann.get("kind", ann.get("severity", "info"))))
+            label = str(ann.get("label", ""))
+            meta["annotations"].append({"x": round(x, 1), "label": label,
+                                        "kind": str(ann.get("kind", "insight"))})
+            ann_html.append(
+                f'<line x1="{x:.1f}" y1="{pad_t}" x2="{x:.1f}" y2="{pad_t + plot_h}" '
+                f'stroke="{color}" stroke-width="1.2" stroke-dasharray="4 3" opacity="0.75"/>')
+            ann_html.append(f'<circle cx="{x:.1f}" cy="{pad_t + 4}" r="3.2" fill="{color}"/>')
+            if label:
+                ann_html.append(
+                    f'<text x="{x + 4:.1f}" y="{pad_t + 12}" class="ann" '
+                    f'style="font-size:9.5px;fill:{color}">{esc(label[:14])}</text>')
+
+    # 大数据量 → Canvas（前端绘制，避免 SVG 节点爆炸）
+    if total_points > canvas_threshold:
+        meta_json = _json.dumps(meta, ensure_ascii=False)
+        cid = chart_id or f"c{abs(hash(meta_json)) % 1000000:06d}"
+        return (f'<div class="if-chart" data-canvas="1" id="{cid}">'
+                f'<canvas width="{width}" height="{height}" '
+                f'data-chart=\'{esc(meta_json)}\' '
+                f'role="img" aria-label="{esc(y_label or "趋势图")}（{total_points} 个数据点，Canvas 渲染）" '
+                f'style="width:100%;height:{height}px"></canvas></div>')
 
     body = [y_grid(y_max, pad_l, pad_t, plot_w, plot_h)]
+    # 对比（上期）虚线
+    if compare:
+        for i, s in enumerate(compare.get("series", [])):
+            if not s.get("values"):
+                continue
+            color = s.get("color") or theme.MUTED
+            pts, _ = line_points(list(s["values"]), pad_l, pad_t, plot_w, plot_h, y_max)
+            nm = str(compare.get("name", "上期"))
+            body.append(f'<polyline points="{pts}" fill="none" stroke="{color}" '
+                        f'stroke-width="1.4" stroke-dasharray="5 4" opacity="0.75" '
+                        f'data-series="{esc(nm)}"/>')
     legend_items = []
     for i, s in enumerate(series):
         color = s.get("color") or theme.series_color(i)
         legend_items.append((s["name"], color))
         pts, coords = line_points(list(s["values"]), pad_l, pad_t, plot_w, plot_h, y_max)
+        snm = esc(str(s["name"]))
         if as_area and coords:
             body.append(f'<polygon points="{coords[0][0]:.1f},{pad_t + plot_h} {pts} '
-                        f'{coords[-1][0]:.1f},{pad_t + plot_h}" fill="{color}" opacity="0.10"/>')
+                        f'{coords[-1][0]:.1f},{pad_t + plot_h}" fill="{color}" opacity="0.10" '
+                        f'data-series="{snm}"/>')
         body.append(f'<polyline points="{pts}" fill="none" stroke="{color}" '
-                    f'stroke-width="2" stroke-linejoin="round"/>')
-        # 每个点带 data-tip（hover 提示；点少时同时画点）
+                    f'stroke-width="2" stroke-linejoin="round" data-series="{snm}"/>')
         for idx, (x, y) in enumerate(coords):
             label = labels[idx] if idx < len(labels) else ""
             tip = f"{label} · {s['name']}: {fmt_num(s['values'][idx])}"
             body.append(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="{2.2 if len(coords) <= 40 else 0.1}" '
-                        f'fill="{color}" data-tip="{esc(tip)}" class="pt"/>')
+                        f'fill="{color}" data-tip="{esc(tip)}" class="pt" tabindex="0" '
+                        f'data-series="{snm}" aria-label="{esc(tip)}"/>')
+        # 外推虚线 + 置信带
+        f = forecast.get(s["name"])
+        if f and f["preds"]:
+            xs = [pad_l + plot_w * (len(coords) - 1 + k + 1) / max(1, len(labels) - 1 + len(f["preds"]))
+                  for k in range(len(f["preds"]))]
+            pts = []
+            for x, v in zip(xs, f["preds"]):
+                y = pad_t + plot_h - (max(0.0, v) / y_max) * plot_h
+                pts.append(f"{x:.1f},{y:.1f}")
+            up = [f"{x:.1f},{pad_t + plot_h - (min(y_max, v + b) / y_max) * plot_h:.1f}"
+                  for x, v, b in zip(xs, f["preds"], f["band"])]
+            down = [f"{x:.1f},{pad_t + plot_h - (max(0.0, v - b) / y_max) * plot_h:.1f}"
+                    for x, v, b in zip(xs, f["preds"], f["band"])]
+            band_pts = " ".join(up + list(reversed(down)))
+            body.append(f'<polygon points="{band_pts}" fill="{color}" opacity="0.10"/>')
+            body.append(f'<polyline points="{" ".join(pts)}" fill="none" stroke="{color}" '
+                        f'stroke-width="1.6" stroke-dasharray="6 4" opacity="0.85"/>')
+            if pts:
+                body.append(f'<text x="{xs[0]:.1f}" y="{pad_t + 10}" '
+                            f'style="font-size:9px;fill:{color}">预测</text>')
+    # 异常带（滚动 ± kσ）+ 越界点标注
+    if anomaly_band:
+        for sname, ab in anomaly_band.items():
+            col = theme.DANGER
+            up_pts = [f"{pad_l + plot_w * i / max(1, len(labels) - 1):.1f},"
+                      f"{pad_t + plot_h - (min(y_max, v) / y_max) * plot_h:.1f}"
+                      for i, v in enumerate(ab["upper"][:len(labels)])]
+            dn_pts = [f"{pad_l + plot_w * i / max(1, len(labels) - 1):.1f},"
+                      f"{pad_t + plot_h - (max(0.0, v) / y_max) * plot_h:.1f}"
+                      for i, v in enumerate(ab["lower"][:len(labels)])]
+            if up_pts:
+                body.append(f'<polygon points="{" ".join(up_pts + list(reversed(dn_pts)))}" '
+                            f'fill="{col}" opacity="0.07" data-series="__anomaly__"/>')
+            for i in ab["points"]:
+                if i >= len(labels):
+                    continue
+                vals = None
+                for s2 in series:
+                    if str(s2["name"]) == sname:
+                        vals = list(s2["values"])
+                if not vals or i >= len(vals):
+                    continue
+                x = pad_l + plot_w * i / max(1, len(labels) - 1)
+                y = pad_t + plot_h - (min(y_max, max(0.0, vals[i])) / y_max) * plot_h
+                body.append(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="4.2" fill="none" '
+                            f'stroke="{col}" stroke-width="2" class="anom" '
+                            f'data-tip="{esc(str(labels[i]))} · 异常值 {fmt_num(vals[i])}" '
+                            f'tabindex="0" aria-label="{esc(str(labels[i]))} 异常值 {fmt_num(vals[i])}"/>')
+    body.extend(ann_html)
     body.append(axis_labels(labels, pad_l, pad_t + plot_h, plot_w))
-    if len(series) > 1:
-        body.append(legend(legend_items, pad_l, 10))
+    if len(series) > 1 or compare:
+        items = list(legend_items)
+        if compare and compare.get("series"):
+            items.append((compare.get("name", "上期"), theme.MUTED))
+        body.append(legend(items, pad_l, 10))
     if y_label:
         body.append(f'<text x="{pad_l}" y="{pad_t - 4}" style="font-size:10px;'
                     f'fill:{theme.FAINT}">{esc(y_label)}</text>')
-    # data-chart：供前端十字准线 + 多序列合并提示（零依赖 JSON）
-    import json as _json
-    meta = _json.dumps({"labels": list(labels)[:200],
-                        "series": [{"name": s["name"], "values": list(s["values"])[:200]}
-                                   for s in series],
-                        "plot": [pad_l, pad_t, plot_w, plot_h]}, ensure_ascii=False)
-    return svg(width, height, "".join(body)).replace(
-        "<svg ", f"<svg data-chart='{esc(meta)}' ", 1)
+
+    meta["series"] = [{"name": s["name"], "values": s["values"], "color": s["color"]}
+                      for s in meta["series"]]
+    meta_json = _json.dumps(meta, ensure_ascii=False)
+    aria = (f"{y_label or '趋势图'}：{'、'.join(s['name'] for s in series)}；"
+            f"{len(labels)} 个时间点"
+            + (f"；含{len(annotations)}个标注" if annotations else "")
+            + (f"；含{forecast_periods}期预测" if forecast_periods else "")
+            + ("；含异常标记" if anomaly_band else ""))
+    cls = "chart if-anim" if anim else "chart"
+    return svg(width, height, "".join(body), cls=cls).replace(
+        "<svg ", f'<svg data-chart=\'{esc(meta_json)}\' role="img" aria-label="{esc(aria)}" ', 1)
+
+
+def _nearest_label_index(ts: str, labels: Sequence[str]) -> int | None:
+    """时间字符串 → 最近的时间轴下标（注释定位用；支持前缀匹配）"""
+    key = ts[:10]
+    for i, lab in enumerate(labels):
+        if str(lab)[:10] >= key:
+            return i
+    return len(labels) - 1 if labels else None
+
 
 
 # ========== 横向条形（分类对比）==========
@@ -109,7 +376,8 @@ def line_chart(series: list[dict], labels: Sequence[str], *, width: int = 720,
 def bar_chart(items: Sequence[tuple[str, float]], *, width: int = 720,
               height: int | None = None, color: str = theme.ACCENT,
               threshold: float | None = None, threshold_label: str = "",
-              value_fmt=fmt_num, colors: Sequence[str] | None = None) -> str:
+              value_fmt=fmt_num, colors: Sequence[str] | None = None,
+              filter_dim: str = "") -> str:
     """横向条形（名称长时优于柱状）；可选阈值参考线"""
     items = [(str(k), float(v or 0)) for k, v in items]
     if not items:
@@ -129,12 +397,16 @@ def bar_chart(items: Sequence[tuple[str, float]], *, width: int = 720,
                     f'{esc(label[:22])}</text>')
         body.append(f'<rect x="{label_w}" y="{y + 3}" width="{bar_w}" height="12" rx="6" '
                     f'fill="{theme.BORDER}" opacity="0.5"/>')
-        body.append(f'<rect x="{label_w}" y="{y + 3}" width="{w:.1f}" height="12" rx="6" fill="{c}" '
+        cf = (f' data-cf="{esc(filter_dim)}:{esc(label)}" data-cf-label="{esc(label)}"'
+              if filter_dim else "")
+        body.append(f'<rect x="{label_w}" y="{y + 3}" width="{w:.1f}" height="12" rx="6" '
+                    f'fill="{c}"{cf} '
                     f'data-tip="{esc(label)}: {esc(value_fmt(value))}" '
                     f'data-drill-entity="{esc(label)}" class="bar"/>')
         body.append(f'<text x="{label_w + bar_w + 8}" y="{y + 13}" '
                     f'style="font-size:11px;fill:{theme.MUTED};font-weight:600">'
                     f'{esc(value_fmt(value))}</text>')
+    aria = "横向条形图：" + "；".join(f"{k} {value_fmt(v)}" for k, v in items[:6])
     if threshold is not None and v_max:
         tx = label_w + bar_w * threshold / v_max
         body.append(f'<line x1="{tx:.1f}" y1="6" x2="{tx:.1f}" y2="{height - 6}" '
@@ -142,13 +414,14 @@ def bar_chart(items: Sequence[tuple[str, float]], *, width: int = 720,
         if threshold_label:
             body.append(f'<text x="{tx + 4:.1f}" y="12" style="font-size:9.5px;'
                         f'fill:{theme.DANGER}">{esc(threshold_label)}</text>')
-    return svg(width, height, "".join(body))
+    return svg(width, height, "".join(body), aria=aria)
 
 
 # ========== 构成（堆叠条 / 百分比条）==========
 
 def percent_bar(parts: Sequence[tuple[str, float, str]], *, width: int = 720,
-                height: int = 26, show_legend: bool = True) -> str:
+                height: int = 26, show_legend: bool = True,
+                filter_dim: str = "") -> str:
     """构成占比（parts: [(name, value, color)]）——≤6 类时优于饼图"""
     total = sum(max(0.0, float(v)) for _, v, _ in parts)
     if total <= 0:
@@ -159,14 +432,19 @@ def percent_bar(parts: Sequence[tuple[str, float, str]], *, width: int = 720,
         if w <= 0:
             continue
         pct = max(0.0, float(value)) / total
+        cf = (f' data-cf="{esc(filter_dim)}:{esc(str(name))}" data-cf-label="{esc(str(name))}"'
+              if filter_dim else "")
         body.append(f'<rect x="{x:.1f}" y="0" width="{max(0.5, w):.1f}" height="{height}" '
-                    f'fill="{color}" data-tip="{esc(name)}: {fmt_num(value)}（{pct:.0%}）" class="seg"/>')
+                    f'fill="{color}"{cf} '
+                    f'data-tip="{esc(name)}: {fmt_num(value)}（{pct:.0%}）" class="seg"/>')
         if w > 34:  # 太窄不放字
             body.append(f'<text x="{x + w / 2:.1f}" y="{height / 2 + 4:.1f}" '
                         f'text-anchor="middle" style="font-size:10.5px;fill:'
                         f'{theme.SURFACE if False else "oklch(100% 0 0)"}">{pct:.0%}</text>')
         x += w
-    out = svg(width, height, "".join(body))
+    aria = "构成占比：" + "；".join(
+        f"{n} {fmt_num(v)}（{fmt_pct(float(v) / total)}）" for n, v, _ in parts[:6])
+    out = svg(width, height, "".join(body), aria=aria)
     if show_legend:
         out += (f'<div style="font-size:11px;color:{theme.MUTED};margin-top:6px">'
                 + " · ".join(f'<span style="color:{c};font-weight:700">■</span> {esc(n)} '
@@ -201,11 +479,12 @@ def stacked_bar(rows: Sequence[tuple[str, list[tuple[str, float, str]]]], *,
                         f'height="{h:.1f}" fill="{color}" class="seg" '
                         f'data-tip="{esc(nm)}: {fmt_num(value)}"/>')
     body.append(axis_labels([r[0] for r in rows], pad_l, pad_t + plot_h, plot_w))
+    aria = "堆叠柱状图：" + "；".join(str(r[0]) for r in rows[:6])
     names = [nm for nm, _, _ in rows[0][1]] if rows and rows[0][1] else []
     if names:
         colors = [c for _, _, c in rows[0][1]]
         body.append(legend(list(zip(names, colors)), pad_l, 10))
-    return svg(width, height, "".join(body))
+    return svg(width, height, "".join(body), aria=aria)
 
 
 # ========== 漏斗（旅程 / 转化）==========
@@ -220,6 +499,7 @@ def funnel(steps: Sequence[tuple[str, float]], *, width: int = 720,
     n = len(steps)
     label_h = 22
     band_h = max(24, (height - 10) / n - 6)
+    aria = "漏斗图：" + "；".join(f"{k} {fmt_num(v)}" for k, v in steps[:6])
     body = []
     for i, (label, value) in enumerate(steps):
         ratio = value / top
@@ -242,20 +522,35 @@ def funnel(steps: Sequence[tuple[str, float]], *, width: int = 720,
             body.append(f'<text x="2" y="{y + 6:.1f}" style="font-size:10px;fill:'
                         f'{theme.DANGER if warn else theme.FAINT};font-weight:'
                         f'{"700" if warn else "400"}">↓ {conv:.0%}</text>')
-    return svg(width, height, "".join(body))
+    return svg(width, height, "".join(body), aria=aria)
 
 
 # ========== 热力矩阵（双维交叉）==========
 
 def heatmap(rows: Sequence[str], cols: Sequence[str], matrix: Sequence[Sequence[float]], *,
             width: int = 720, height: int | None = None,
-            row_w: int = 120) -> str:
+            row_w: int = 120, canvas_threshold: int = 900,
+            chart_id: str = "") -> str:
     """热力矩阵（如旅程阶段 × 触点数、时段 × 渠道）"""
     if not rows or not cols:
         return placeholder(width, height or 160)
     cell_w = max(18, (width - row_w - 8) / len(cols))
     cell_h = 26
     height = height or max(80, 20 + cell_h * len(rows))
+    if len(rows) * len(cols) > canvas_threshold:
+        import json as _json
+        meta = {"kind": "heatmap", "rows": [str(r) for r in rows],
+                "cols": [str(c) for c in cols],
+                "matrix": [[float(matrix[i][j]) if i < len(matrix) and j < len(matrix[i])
+                            else 0.0 for j in range(len(cols))] for i in range(len(rows))],
+                "plot": [row_w + 1, 18, cell_w, cell_h], "anim": True}
+        cid = chart_id or f"hm{abs(hash(_json.dumps(meta, ensure_ascii=False))) % 1000000:06d}"
+        return (f'<div class="if-chart" data-canvas="1" id="{cid}">'
+                f'<canvas width="{width}" height="{height}" '
+                f"data-chart='{esc(_json.dumps(meta, ensure_ascii=False))}' "
+                f'role="img" aria-label="热力矩阵：{len(rows)} 行 × {len(cols)} 列（Canvas 渲染）" '
+                f'style="width:100%;height:{height}px"></canvas></div>')
+    aria = f"热力矩阵：{len(rows)} 行 × {len(cols)} 列"
     body = []
     for j, c in enumerate(cols):
         body.append(f'<text x="{row_w + cell_w * j + cell_w / 2:.1f}" y="12" '
@@ -273,7 +568,7 @@ def heatmap(rows: Sequence[str], cols: Sequence[str], matrix: Sequence[Sequence[
                         f'width="{cell_w - 2:.1f}" height="{cell_h - 4}" rx="4" '
                         f'fill="{theme.ACCENT}" opacity="{opacity:.2f}" class="cell" '
                         f'data-tip="{esc(str(r))} × {esc(str(c))}: {v:.2f}"/>')
-    return svg(width, height, "".join(body))
+    return svg(width, height, "".join(body), aria=aria)
 
 
 # ========== 散点四象限（机会矩阵）==========
@@ -281,7 +576,8 @@ def heatmap(rows: Sequence[str], cols: Sequence[str], matrix: Sequence[Sequence[
 def scatter(points: Sequence[tuple[float, float, str]], *, x_label: str = "",
             y_label: str = "", width: int = 720, height: int = 300,
             x_mid: float | None = None, y_mid: float | None = None,
-            good_quadrant: str = "tr") -> str:
+            good_quadrant: str = "tr", canvas_threshold: int = 800,
+            chart_id: str = "") -> str:
     """散点（如关键词机会：搜索量 × 排名/竞争力），支持四象限标注"""
     pts = [(float(x or 0), float(y or 0), str(l)) for x, y, l in points]
     if not pts:
@@ -292,6 +588,20 @@ def scatter(points: Sequence[tuple[float, float, str]], *, x_label: str = "",
     y_max = nice_max(max(p[1] for p in pts) or 1)
     xm = x_mid if x_mid is not None else x_max / 2
     ym = y_mid if y_mid is not None else y_max / 2
+    # 大数据量 → Canvas（散点 > 800 个时 SVG 节点会明显拖慢）
+    if len(pts) > canvas_threshold:
+        import json as _json
+        meta = {"kind": "scatter", "points": [[round(x, 4), round(y, 4), l] for x, y, l in pts],
+                "x_max": x_max, "y_max": y_max, "x_mid": xm, "y_mid": ym,
+                "x_label": x_label, "y_label": y_label, "plot": [pad_l, pad_t, plot_w, plot_h],
+                "good_quadrant": good_quadrant, "anim": True}
+        cid = chart_id or f"sc{abs(hash(_json.dumps(meta, ensure_ascii=False))) % 1000000:06d}"
+        return (f'<div class="if-chart" data-canvas="1" id="{cid}">'
+                f'<canvas width="{width}" height="{height}" '
+                f"data-chart='{esc(_json.dumps(meta, ensure_ascii=False))}' "
+                f'role="img" aria-label="{esc(x_label or "散点")} × {esc(y_label or "指标")}'
+                f'：{len(pts)} 个点（Canvas 渲染）" '
+                f'style="width:100%;height:{height}px"></canvas></div>')
     body = [y_grid(y_max, pad_l, pad_t, plot_w, plot_h)]
 
     # 象限分割线 + 高亮"好"象限
@@ -318,7 +628,8 @@ def scatter(points: Sequence[tuple[float, float, str]], *, x_label: str = "",
     if y_label:
         body.append(f'<text x="{pad_l}" y="{pad_t - 5}" style="font-size:10.5px;'
                     f'fill:{theme.MUTED}">{esc(y_label)}</text>')
-    return svg(width, height, "".join(body))
+    aria = f"散点图（{x_label} × {y_label}）：{len(pts)} 个点"
+    return svg(width, height, "".join(body), aria=aria)
 
 
 # ========== 雷达（多维评分）==========
@@ -353,7 +664,8 @@ def radar(axes: Sequence[tuple[str, float]], *, width: int = 320, height: int = 
         pts.append(f"{cx + R * v * math.cos(a):.1f},{cy + R * v * math.sin(a):.1f}")
     body.append(f'<polygon points="{" ".join(pts)}" fill="{color}" opacity="0.28" '
                 f'stroke="{color}" stroke-width="2"/>')
-    return svg(width, height, "".join(body))
+    aria = "雷达图：" + "；".join(f"{k} {fmt_pct(v)}" for k, v in axes)
+    return svg(width, height, "".join(body), aria=aria)
 
 
 # ========== 进度环（配额 / 命中率）==========
@@ -378,7 +690,8 @@ def gauge(value: float, label: str = "", *, size: int = 96,
     if label:
         body.append(f'<text x="{cx}" y="{size - 2}" text-anchor="middle" '
                     f'style="font-size:9.5px;fill:{theme.FAINT}">{esc(label[:10])}</text>')
-    return svg(size, size + 10, "".join(body))
+    return svg(size, size + 10, "".join(body),
+               aria=f"{label or '进度'}：{fmt_pct(v)}")
 
 
 # ========== 时间线 / 标签云（HTML）==========
@@ -422,3 +735,223 @@ def tag_cloud(tags: Sequence[tuple[str, float]], *, max_items: int = 30,
             f'{esc(str(text)[:14])} <span style="color:{theme.FAINT};font-weight:400">'
             f'{int(weight)}</span></span>')
     return '<div style="line-height:1.9">' + "".join(spans) + "</div>"
+
+# ========== 桑基（流量/来源→转化路径）==========
+
+def sankey(flows: Sequence[tuple[str, str, float]], *, width: int = 720,
+           height: int = 300, unit: str = "") -> str:
+    """桑基图：flows=[(来源, 去向, 数值)]
+
+    分层规则：来源按出现顺序排左列，去向排右列；跨层流量用贝塞尔带连接。
+    纯 SVG 零依赖，节点带宽即流量占比。
+    """
+    items = [(str(a), str(b), float(v or 0)) for a, b, v in flows if float(v or 0) > 0]
+    if not items:
+        return placeholder(width, height)
+    srcs: list[str] = []
+    dsts: list[str] = []
+    for a, b, _ in items:
+        if a not in srcs:
+            srcs.append(a)
+        if b not in dsts:
+            dsts.append(b)
+    total = sum(v for _, _, v in items)
+    out_sum = {k: sum(v for a, _, v in items if a == k) for k in srcs}
+    in_sum = {k: sum(v for _, b, v in items if b == k) for k in dsts}
+    pad_t, pad_b, node_w = 12, 24, 14
+    plot_h = height - pad_t - pad_b
+    gap = 6 if len(srcs) <= 6 else 3
+    sx, dx = 8, width - 8 - node_w
+
+    def stack(names: list[str], sums: dict, x: float):
+        """按流量比例分配节点 y 位置与高度"""
+        avail = plot_h - gap * max(0, len(names) - 1)
+        pos, y = {}, pad_t
+        for k in names:
+            h = max(4.0, (sums[k] / total) * avail)
+            pos[k] = [y, h]
+            y += h + gap
+        return pos
+
+    spos, dpos = stack(srcs, out_sum, sx), stack(dsts, in_sum, dx)
+    s_cursor = {k: v[0] for k, v in spos.items()}
+    d_cursor = {k: v[0] for k, v in dpos.items()}
+    body = []
+    for i, (a, b, v) in enumerate(sorted(items, key=lambda t: (srcs.index(t[0]),
+                                                              dsts.index(t[1])))):
+        sh = max(2.0, (v / total) * (plot_h - gap * max(0, len(srcs) - 1)))
+        dh = max(2.0, (v / total) * (plot_h - gap * max(0, len(dsts) - 1)))
+        y0 = s_cursor[a]; s_cursor[a] = y0 + sh
+        y1 = d_cursor[b]; d_cursor[b] = y1 + dh
+        color = theme.series_color(srcs.index(a))
+        c1 = sx + node_w + (dx - sx - node_w) * 0.42
+        c2 = sx + node_w + (dx - sx - node_w) * 0.58
+        body.append(
+            f'<path d="M{sx + node_w:.1f},{y0:.1f} C{c1:.1f},{y0:.1f} {c2:.1f},{y1:.1f} '
+            f'{dx:.1f},{y1:.1f} L{dx:.1f},{y1 + dh:.1f} C{c2:.1f},{y1 + dh:.1f} '
+            f'{c1:.1f},{y0 + sh:.1f} {sx + node_w:.1f},{y0 + sh:.1f} Z" '
+            f'fill="{color}" opacity="0.32" class="flow" '
+            f'data-tip="{esc(a)} → {esc(b)}：{fmt_num(v)}{esc(unit)}"/>')
+    for k in srcs:
+        y, h = spos[k]
+        body.append(f'<rect x="{sx}" y="{y:.1f}" width="{node_w}" height="{h:.1f}" '
+                    f'rx="3" fill="{theme.series_color(srcs.index(k))}" '
+                    f'data-tip="{esc(k)}：{fmt_num(out_sum[k])}{esc(unit)}"/>')
+        body.append(f'<text x="{sx + node_w + 5}" y="{y + h / 2 + 3:.1f}" '
+                    f'style="font-size:10.5px;fill:{theme.FG}">{esc(k[:14])} '
+                    f'<tspan style="fill:{theme.FAINT}">{fmt_num(out_sum[k])}</tspan></text>')
+    for k in dsts:
+        y, h = dpos[k]
+        body.append(f'<rect x="{dx}" y="{y:.1f}" width="{node_w}" height="{h:.1f}" '
+                    f'rx="3" fill="{theme.MUTED}" '
+                    f'data-tip="{esc(k)}：{fmt_num(in_sum[k])}{esc(unit)}"/>')
+        body.append(f'<text x="{dx - 5}" y="{y + h / 2 + 3:.1f}" text-anchor="end" '
+                    f'style="font-size:10.5px;fill:{theme.FG}">{esc(k[:14])} '
+                    f'<tspan style="fill:{theme.FAINT}">{fmt_num(in_sum[k])}</tspan></text>')
+    aria = (f"桑基图：{len(srcs)} 个来源 → {len(dsts)} 个去向，合计 {fmt_num(total)}"
+            + (f" {unit}" if unit else ""))
+    return svg(width, height, "".join(body), aria=aria)
+
+
+# ========== 网格地图（tile grid map，非精确边界）==========
+
+# 中国省级网格排布（7 列 × 8 行，近似地理相对位置；用于快速地理分布判断）
+CHINA_GRID = {
+    "黑龙江": (6, 0), "吉林": (6, 1), "辽宁": (5, 2), "内蒙古": (4, 1),
+    "北京": (4.6, 2), "天津": (5.1, 2.4), "河北": (4.5, 2.6), "山西": (3.9, 3),
+    "陕西": (3.4, 3.6), "宁夏": (2.9, 3.2), "甘肃": (2.4, 3.4), "青海": (1.6, 3.6),
+    "新疆": (0.9, 2.6), "西藏": (1.1, 4.6), "四川": (2.7, 4.4), "重庆": (3.3, 4.5),
+    "云南": (2.6, 5.4), "贵州": (3.2, 5.1), "广西": (3.6, 5.8), "海南": (4.2, 6.6),
+    "广东": (4.5, 5.7), "湖南": (4.0, 4.9), "湖北": (4.3, 4.3), "河南": (4.4, 3.5),
+    "山东": (5.0, 2.9), "江苏": (5.3, 3.5), "安徽": (4.9, 4.0), "上海": (5.9, 3.9),
+    "浙江": (5.6, 4.4), "江西": (4.8, 4.9), "福建": (5.3, 5.2), "台湾": (6.1, 5.2),
+    "香港": (4.9, 6.1), "澳门": (4.5, 6.2),
+}
+
+# 全球主要市场网格（8 列 × 5 行，近似相对位置）
+WORLD_GRID = {
+    "美国": (1, 1), "加拿大": (1.4, 0.4), "墨西哥": (1.3, 1.8), "巴西": (2.6, 2.8),
+    "阿根廷": (2.4, 3.6), "智利": (2.1, 3.4), "英国": (3.9, 0.8), "爱尔兰": (3.7, 0.8),
+    "法国": (4.1, 1.2), "德国": (4.3, 1.1), "荷兰": (4.2, 0.9), "西班牙": (3.9, 1.6),
+    "意大利": (4.4, 1.4), "瑞士": (4.2, 1.3), "瑞典": (4.4, 0.6), "挪威": (4.2, 0.4),
+    "波兰": (4.6, 1.1), "俄罗斯": (5.6, 0.7), "土耳其": (4.9, 1.6), "沙特": (5.1, 2.1),
+    "阿联酋": (5.4, 2.1), "印度": (5.8, 2.2), "巴基斯坦": (5.6, 2.0), "泰国": (6.2, 2.6),
+    "越南": (6.3, 2.4), "马来西亚": (6.2, 2.9), "新加坡": (6.2, 3.1), "印尼": (6.4, 3.2),
+    "菲律宾": (6.6, 2.6), "中国": (6.0, 1.7), "日本": (6.8, 1.4), "韩国": (6.6, 1.6),
+    "台湾": (6.6, 1.9), "香港": (6.1, 2.2), "澳大利亚": (6.7, 3.8), "新西兰": (7.1, 4.2),
+    "南非": (4.6, 3.6), "埃及": (4.7, 2.2), "尼日利亚": (4.0, 2.6), "肯尼亚": (5.0, 2.9),
+}
+
+
+def tile_map(items: Sequence[tuple[str, float]], *, width: int = 720, height: int = 320,
+             scope: str = "china", unit: str = "", label: str = "",
+             filter_dim: str = "province") -> str:
+    """网格地图（tile grid map）：地理相对位置 + 指标热力
+
+    诚实标注：非精确边界/非投影地图，用于「哪个区域多/少」的快速判断；
+    需要精确地图时接入 GeoJSON（当前零依赖约束下不内置）。
+    """
+    grid = CHINA_GRID if scope == "china" else WORLD_GRID
+    data = {str(k): float(v or 0) for k, v in items}
+    cols = max(x for x, _ in grid.values()) + 1
+    rows = max(y for _, y in grid.values()) + 1
+    cell = min((width - 24) / cols, (height - 30) / rows)
+    vmax = max(data.values(), default=0) or 1
+    body = []
+    for name, (gx, gy) in grid.items():
+        v = data.get(name)
+        x, y = 12 + gx * cell, 18 + gy * cell
+        if v is None:
+            fill, op, col = theme.BORDER, 0.35, theme.FAINT
+        else:
+            fill, op, col = theme.ACCENT, 0.12 + 0.88 * (v / vmax), theme.FG
+        cf = (f' data-cf="{esc(filter_dim)}:{esc(name)}" data-cf-label="{esc(name)}"'
+              if v is not None else "")
+        body.append(f'<rect x="{x:.1f}" y="{y:.1f}" width="{cell - 2:.1f}" '
+                    f'height="{cell - 2:.1f}" rx="4" fill="{fill}" opacity="{op:.2f}" '
+                    f'class="cell"{cf} data-tip="{esc(name)}：'
+                    f'{fmt_num(v) if v is not None else "无数据"}{esc(unit)}"/>')
+        short = name[:3]
+        body.append(f'<text x="{x + cell / 2 - 1:.1f}" y="{y + cell / 2 - 3:.1f}" '
+                    f'text-anchor="middle" style="font-size:{max(8, cell * 0.26):.1f}px;'
+                    f'fill:{col};pointer-events:none">{esc(short)}</text>')
+        if v is not None:
+            body.append(f'<text x="{x + cell / 2 - 1:.1f}" y="{y + cell / 2 + 9:.1f}" '
+                        f'text-anchor="middle" style="font-size:{max(7.5, cell * 0.24):.1f}px;'
+                        f'fill:{theme.MUTED};pointer-events:none">{fmt_num(v)}</text>')
+    if label:
+        body.append(f'<text x="12" y="11" style="font-size:10.5px;fill:{theme.MUTED}">'
+                    f'{esc(label)}</text>')
+    top = sorted(((k, v) for k, v in data.items()), key=lambda t: -t[1])[:5]
+    aria = (f"网格地图（{'中国省份' if scope == 'china' else '全球市场'}）："
+            + "；".join(f"{k} {fmt_num(v)}" for k, v in top))
+    return svg(width, height, "".join(body), aria=aria)
+
+
+# ========== 箱线图（分布对比）==========
+
+def _quantile(sorted_vals: list[float], q: float) -> float:
+    """线性插值分位数（与 numpy/pandas 默认一致）"""
+    if not sorted_vals:
+        return 0.0
+    if len(sorted_vals) == 1:
+        return sorted_vals[0]
+    pos = q * (len(sorted_vals) - 1)
+    lo = int(pos)
+    hi = min(lo + 1, len(sorted_vals) - 1)
+    frac = pos - lo
+    return sorted_vals[lo] * (1 - frac) + sorted_vals[hi] * frac
+
+
+def boxplot(groups: Sequence[tuple[str, Sequence[float]]], *, width: int = 720,
+            height: int = 260, y_label: str = "") -> str:
+    """箱线图：中位数/四分位/须（1.5IQR）/离群点；用于分布与稳定性对比"""
+    data = [(str(k), sorted(float(x) for x in vals))
+            for k, vals in groups if vals]
+    if not data:
+        return placeholder(width, height)
+    pad_l, pad_r, pad_t, pad_b = 46, 12, 18, 30
+    plot_w, plot_h = width - pad_l - pad_r, height - pad_t - pad_b
+    y_max = nice_max(max(v[-1] for _, v in data) or 1)
+    body = [y_grid(y_max, pad_l, pad_t, plot_w, plot_h)]
+    step = plot_w / len(data)
+    bw = min(46.0, step * 0.5)
+    for i, (name, vals) in enumerate(data):
+        q1, q2, q3 = (_quantile(vals, 0.25), _quantile(vals, 0.5), _quantile(vals, 0.75))
+        iqr = q3 - q1
+        lo_bound, hi_bound = q1 - 1.5 * iqr, q3 + 1.5 * iqr
+        inner = [v for v in vals if lo_bound <= v <= hi_bound] or vals
+        w_lo, w_hi = inner[0], inner[-1]
+        out = [v for v in vals if v < lo_bound or v > hi_bound]
+        cx = pad_l + step * (i + 0.5)
+        color = theme.series_color(i)
+
+        def Y(v: float) -> float:
+            return pad_t + plot_h - (max(0.0, min(y_max, v)) / y_max) * plot_h
+
+        body.append(f'<line x1="{cx:.1f}" y1="{Y(w_hi):.1f}" x2="{cx:.1f}" y2="{Y(w_lo):.1f}" '
+                    f'stroke="{color}" stroke-width="1.4"/>')
+        body.append(f'<line x1="{cx - bw / 3:.1f}" y1="{Y(w_hi):.1f}" x2="{cx + bw / 3:.1f}" '
+                    f'y2="{Y(w_hi):.1f}" stroke="{color}" stroke-width="1.4"/>')
+        body.append(f'<line x1="{cx - bw / 3:.1f}" y1="{Y(w_lo):.1f}" x2="{cx + bw / 3:.1f}" '
+                    f'y2="{Y(w_lo):.1f}" stroke="{color}" stroke-width="1.4"/>')
+        body.append(f'<rect x="{cx - bw / 2:.1f}" y="{Y(q3):.1f}" width="{bw:.1f}" '
+                    f'height="{max(1.0, Y(q1) - Y(q3)):.1f}" rx="3" fill="{color}" '
+                    f'opacity="0.20" stroke="{color}" stroke-width="1.6" '
+                    f'class="box" data-cf="channel:{esc(name)}" data-cf-label="{esc(name)}" '
+                    f'data-tip="{esc(name)} · 中位 {fmt_num(q2)} · IQR '
+                    f'{fmt_num(q1)}~{fmt_num(q3)} · n={len(vals)}"/>')
+        body.append(f'<line x1="{cx - bw / 2:.1f}" y1="{Y(q2):.1f}" x2="{cx + bw / 2:.1f}" '
+                    f'y2="{Y(q2):.1f}" stroke="{color}" stroke-width="2.4"/>')
+        for v in out[:20]:
+            body.append(f'<circle cx="{cx:.1f}" cy="{Y(v):.1f}" r="2.6" fill="none" '
+                        f'stroke="{color}" stroke-width="1.4" '
+                        f'data-tip="{esc(name)} · 离群 {fmt_num(v)}"/>')
+        body.append(f'<text x="{cx:.1f}" y="{pad_t + plot_h + 16:.1f}" text-anchor="middle" '
+                    f'style="font-size:10.5px;fill:{theme.MUTED}">{esc(name[:10])}</text>')
+    if y_label:
+        body.append(f'<text x="{pad_l}" y="{pad_t - 5}" style="font-size:10.5px;'
+                    f'fill:{theme.MUTED}">{esc(y_label)}</text>')
+    aria = ("箱线图：" + "；".join(
+        f"{k} 中位 {fmt_num(_quantile(v, 0.5))}" for k, v in data[:6]))
+    return svg(width, height, "".join(body), aria=aria)
