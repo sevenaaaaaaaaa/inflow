@@ -38,6 +38,15 @@ class TestDialect:
         # 周：SQLite %W ↔ MySQL %x-W%v（ISO 年-周）
         assert get_dialect("mysql").bucket("ts", "%Y-W%W") == "DATE_FORMAT(ts, '%x-W%v')"
 
+    def test_mysql_percent_escaping(self):
+        """教训 #4：SQL 字面量 % 必须转义（否则 pymysql 参数替换报错）"""
+        d = get_dialect("mysql")
+        out = d.adapt("SELECT DATE_FORMAT(ts, '%Y-%m-%d') AS b FROM m WHERE a = ?")
+        assert "%%Y-%%m-%%d" in out            # 字面量 % 已转义
+        assert out.count("%s") == 1            # 占位符未被误伤
+        rendered = out % ("x",)                # 模拟 pymysql：不应抛 ValueError
+        assert "%Y-%m-%d" in rendered and "x" in rendered
+
     def test_partial_index_capability(self):
         """教训 #3：MySQL 5.7 无部分索引"""
         assert get_dialect("sqlite").supports_partial_index is True

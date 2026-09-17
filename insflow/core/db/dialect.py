@@ -41,8 +41,14 @@ class MySQLDialect:
     supports_partial_index = False   # MySQL 5.7 无部分索引（OpenFlow 教训 #3）
 
     def adapt(self, sql: str) -> str:
-        """`?` → `%s`（项目内所有 SQL 统一用 ? 书写）"""
-        return sql.replace("?", "%s")
+        """`?` → `%s`，并转义 SQL 中字面量 `%`（教训 #4）
+
+        pymysql 用 `query % args` 做参数替换：SQL 里 DATE_FORMAT('%Y-%m-%d') 的 `%Y`
+        会被误认为格式符报 "unsupported format character"。
+        做法：先占位符转换，再把非占位符的 `%` 全部翻倍（`%%`）。
+        """
+        sql = sql.replace("?", "%s")
+        return "%s".join(part.replace("%", "%%") for part in sql.split("%s"))
 
     def parse_duration(self, expr_sql: str) -> str:
         return expr_sql
