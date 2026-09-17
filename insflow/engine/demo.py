@@ -101,7 +101,7 @@ class DemoSeeder:
             for name, base in STEPS:
                 await self._ins_metric(store, "journey_step",
                                        int(base * (0.85 + i / (d * 2.2))), ts,
-                                       entity="main", dim={"step_name": name})
+                                       entity=name, dim={"step_name": name})
         # 竞品定价指标（含一次降价）
         for k, (domain, price, new_price) in enumerate([
                 ("competitor-a.com", 99, 99), ("competitor-b.com", 149, 119),

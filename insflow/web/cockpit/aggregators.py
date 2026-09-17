@@ -15,6 +15,14 @@ from ...core.store import get_store
 TTL = 90.0  # 驾驶舱缓存秒数
 
 
+def _load_json(raw):
+    import json
+    try:
+        return json.loads(raw) if raw else {}
+    except Exception:
+        return {}
+
+
 def _key(cockpit: str, workspace_id: str, days: float) -> str:
     return f"cockpit:{cockpit}:{workspace_id}:{days}"
 
@@ -204,14 +212,28 @@ async def competitor(workspace_id: str, days: float = 14) -> dict:
 async def journey(workspace_id: str, days: float = 30) -> dict:
     async def build():
         store = await get_store()
-        rows = await store.latest_metrics(workspace_id, ["journey_step", "ga4_retention"])
-        funnel: list[tuple[str, float]] = []
+        # 漏斗：各步共用 entity_id，不能按 entity 取最新，需按 dim.step_name 归并取最新
+        from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+        since = (_dt.now(_tz.utc) - _td(days=days)).isoformat()
+        step_rows = await store._fetchall(
+            """SELECT value, dim_json, ts FROM metrics
+               WHERE workspace_id = ? AND metric = 'journey_step' AND ts >= ?
+               ORDER BY ts ASC LIMIT 500""",
+            (workspace_id, since))
+        latest_by_step: dict[str, float] = {}
+        order: list[str] = []
+        for r in step_rows:
+            dim = _load_json(r["dim_json"])
+            name = str(dim.get("step_name") or "步骤")
+            if name not in latest_by_step:
+                order.append(name)
+            latest_by_step[name] = float(r["value"])
+        funnel = [(n, latest_by_step[n]) for n in order]
+
+        rows = await store.latest_metrics(workspace_id, ["ga4_retention"])
         retention: list[dict] = []
         for r in rows:
-            if r["metric"] == "journey_step":
-                dim = r["dim_json"] or {}
-                funnel.append((str(dim.get("step_name", r["entity_id"])), float(r["value"])))
-            elif r["metric"] == "ga4_retention":
+            if r["metric"] == "ga4_retention":
                 retention.append({"bucket": str(r["ts"])[5:10], "value": float(r["value"])})
         insights = await store.list_insights(workspace_id, limit=300)
         gaps = [i for i in insights if i.type in ("journey_gap", "journey_content_gap")]
