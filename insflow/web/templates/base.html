@@ -127,6 +127,38 @@ blockquote{border-left:4px solid var(--accent); margin:0; padding:4px 16px; colo
   body.sb-open #sidebar{transform:none}
   main{margin-left:24px}
 }
+/* ── P0 交互：tooltip / 十字准线 / 下钻抽屉 / 图表面板 / 筛选栏 ── */
+#if-tip{position:fixed;z-index:99998;pointer-events:none;opacity:0;transition:opacity .12s;
+  background:var(--glass-bright);backdrop-filter:blur(16px) saturate(170%);border:1px solid var(--border);
+  border-radius:10px;padding:7px 11px;font-size:12px;box-shadow:var(--shadow-sm);max-width:320px;line-height:1.6}
+#if-tip.on{opacity:1}
+#if-tip b{color:var(--accent)}
+.dp{border:1px solid var(--border);border-radius:var(--r-md);background:var(--surface);
+  backdrop-filter:blur(20px) saturate(160%);box-shadow:var(--shadow-sm);padding:14px 16px;margin:10px 0}
+.dp-head{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:8px}
+.dp-title{font-size:13.5px;font-weight:700}
+.dp-sub{font-weight:400;color:var(--faint);font-size:11px;margin-left:6px}
+.dp-tools{display:flex;gap:4px;flex-shrink:0}
+.dp-btn{font-size:11.5px;padding:3px 9px;border:1px solid var(--border);border-radius:8px;
+  background:var(--surface-strong);color:var(--muted);cursor:pointer;text-decoration:none;line-height:1.6}
+.dp-btn:hover{background:var(--hover)}
+.dp-btn.dp-on{background:var(--accent);color:var(--on-accent);border-color:var(--accent)}
+.dp-tablewrap{max-height:340px;overflow:auto}
+table.dp-table{font-size:12px}
+#if-drawer{position:fixed;top:0;right:0;bottom:0;width:min(460px,92vw);z-index:99999;
+  background:var(--bg);border-left:1px solid var(--border);box-shadow:-24px 0 60px -24px oklch(0% 0 0/.4);
+  transform:translateX(105%);transition:transform .28s cubic-bezier(.32,.72,0,1);overflow:auto;padding:18px 20px}
+#if-drawer.on{transform:none}
+#if-drawer h3{font-size:15px;margin:0 0 4px}
+#if-drawer .dr-sub{color:var(--faint);font-size:11.5px;margin-bottom:14px}
+#if-drawer .dr-sec{font-size:12px;font-weight:700;color:var(--muted);margin:16px 0 6px;letter-spacing:.04em}
+.if-filter{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:16px;
+  padding:10px 14px;border:1px solid var(--border);border-radius:var(--r-md);background:var(--surface)}
+.if-filter label{font-size:11.5px;color:var(--muted);font-weight:700}
+.if-chip{font-size:12px;padding:4px 11px;border-radius:999px;border:1px solid var(--border);
+  background:var(--surface-strong);cursor:pointer;text-decoration:none;color:var(--fg)}
+.if-chip.on{background:var(--accent);color:var(--on-accent);border-color:var(--accent)}
+
 /* 裸标签兜底（页面模板无需逐处加类） */
 main > h1{font-size:var(--fs-3xl); font-weight:800; letter-spacing:-.02em; margin-bottom:6px}
 main > h2, main > section > h2{font-size:var(--fs-xl); font-weight:700; margin:26px 0 12px}
@@ -136,7 +168,7 @@ main button.secondary{display:inline-flex; align-items:center; gap:6px; padding:
 main button.secondary:hover{background:var(--hover)}
 </style>
 </head>
-<body>
+<body data-ws="{{ workspace_id }}">
 {% set groups = {
   'overview': {'label':'总览', 'links':[('overview','/console/cockpit/overview','📊 情报总览')]},
   'monitor': {'label':'数据监测', 'links':[('onboarding','/console/onboarding','🔌 接入向导'),('monitors','/console/monitors','📡 监控任务')]},
@@ -147,6 +179,37 @@ main button.secondary:hover{background:var(--hover)}
   'ecosystem': {'label':'生态', 'links':[('plugins','/console/plugins','🧩 插件与市场')]},
   'settings': {'label':'设置', 'links':[('subscriptions','/console/subscriptions','🔔 洞察订阅'),('usage','/console/usage','💳 套餐用量'),('ops','/console/cockpit/ops','🩺 运维监控'),('api','/api/v1/docs','🛠 API 文档 ↗')]},
 } %}
+
+{% macro filter_bar(days, entities=None, active_entity='', channels=None, active_channel='') %}
+{# 全局筛选栏：时间范围 + 主体/渠道多选（URL 可分享，改后全屏联动） #}
+<form class="if-filter" method="get" id="ifFilter">
+  <label>时间</label>
+  {% for d, lbl in [(7,'7天'),(14,'14天'),(30,'30天'),(90,'90天')] %}
+  <a class="if-chip {{ 'on' if days|int == d }}" href="#" onclick="ifSetFilter('days','{{ d }}');return false">{{ lbl }}</a>
+  {% endfor %}
+  {% if entities %}
+  <label style="margin-left:8px">主体</label>
+  <a class="if-chip {{ 'on' if not active_entity }}" href="#" onclick="ifSetFilter('entity','');return false">全部</a>
+  {% for e in entities[:6] %}
+  <a class="if-chip {{ 'on' if active_entity == e }}" href="#" onclick="ifSetFilter('entity','{{ e }}');return false">{{ e[:12] }}</a>
+  {% endfor %}
+  {% endif %}
+  {% if channels %}
+  <label style="margin-left:8px">渠道</label>
+  <a class="if-chip {{ 'on' if not active_channel }}" href="#" onclick="ifSetFilter('channel','');return false">全部</a>
+  {% for c in channels[:6] %}
+  <a class="if-chip {{ 'on' if active_channel == c }}" href="#" onclick="ifSetFilter('channel','{{ c }}');return false">{{ c }}</a>
+  {% endfor %}
+  {% endif %}
+</form>
+<script>
+function ifSetFilter(k, v){
+  var u = new URL(location.href);
+  if (v) u.searchParams.set(k, v); else u.searchParams.delete(k);
+  location.href = u.toString();
+}
+</script>
+{% endmacro %}
 
 <header id="chrome">
   <div class="brand">Insight Flow<small>情报台 {{ version }}</small></div>
@@ -193,6 +256,120 @@ function toast(text, type){
   box.appendChild(el);
   setTimeout(function(){ el.remove(); }, 3200);
 }
+
+/* ── P0 图表交互：tooltip / 十字准线 / 下钻抽屉 / 图-表切换 ── */
+function dpView(uid, mode){
+  var box = document.getElementById(uid); if(!box) return;
+  var chart = box.querySelector('.dp-chart'), table = box.querySelector('.dp-tablewrap');
+  chart.hidden = (mode !== 'chart'); table.hidden = (mode !== 'table');
+  box.querySelectorAll('.dp-btn').forEach(function(b){
+    if(b.tagName === 'BUTTON') b.classList.toggle('dp-on',
+      (mode === 'chart' && b.textContent.trim() === '图') ||
+      (mode === 'table' && b.textContent.trim() === '表'));
+  });
+}
+var _tip = null;
+function _tipEl(){
+  if(!_tip){ _tip = document.createElement('div'); _tip.id = 'if-tip'; document.body.appendChild(_tip); }
+  return _tip;
+}
+function _showTip(html, ev){
+  var t = _tipEl(); t.innerHTML = html; t.classList.add('on');
+  var pad = 14, w = t.offsetWidth, h = t.offsetHeight;
+  var x = Math.min(ev.clientX + pad, window.innerWidth - w - 8);
+  var y = Math.max(8, ev.clientY - h - pad);
+  t.style.left = x + 'px'; t.style.top = y + 'px';
+}
+function _hideTip(){ if(_tip) _tip.classList.remove('on'); }
+document.addEventListener('mouseover', function(e){
+  var el = e.target.closest('[data-tip]'); if(!el) return;
+  _showTip(String(el.getAttribute('data-tip')).replace(/·/g, '·'), e);
+});
+document.addEventListener('mousemove', function(e){
+  if(_tip && _tip.classList.contains('on')) _showTip(_tip.innerHTML, e);
+});
+document.addEventListener('mouseout', function(e){ if(e.target.closest('[data-tip]')) _hideTip(); });
+
+/* 十字准线：折线图 hover 时显示竖线 + 各序列值（服务端已写 data-chart） */
+document.addEventListener('mousemove', function(e){
+  var svg = e.target.closest('svg[data-chart]');
+  document.querySelectorAll('svg[data-chart] .if-cross').forEach(function(n){ n.remove(); });
+  if(!svg) return;
+  var meta; try { meta = JSON.parse(svg.getAttribute('data-chart')); } catch(err){ return; }
+  var rect = svg.getBoundingClientRect();
+  var vb = svg.viewBox.baseVal, sx = vb.width / rect.width;
+  var x = (e.clientX - rect.left) * sx;
+  var x0 = meta.plot[0], w = meta.plot[2], ptW = meta.plot[3];
+  if(x < x0 || x > x0 + w) return;
+  var n = meta.labels.length; if(n < 2) return;
+  var i = Math.round((x - x0) / w * (n - 1));
+  i = Math.max(0, Math.min(n - 1, i));
+  var g = document.createElementNS('http://www.w3.org/2000/svg','g');
+  g.setAttribute('class','if-cross');
+  var gx = x0 + w * i / (n - 1);
+  var line = document.createElementNS('http://www.w3.org/2000/svg','line');
+  line.setAttribute('x1',gx); line.setAttribute('x2',gx);
+  line.setAttribute('y1',meta.plot[1]); line.setAttribute('y2',meta.plot[1]+ptW);
+  line.setAttribute('stroke','var(--border-strong)'); line.setAttribute('stroke-dasharray','3 3');
+  g.appendChild(line);
+  var lines = ['<b>' + meta.labels[i] + '</b>'];
+  meta.series.forEach(function(s){
+    var v = s.values[i]; if(v === undefined) return;
+    lines.push(s.name + ': ' + Number(v).toLocaleString());
+  });
+  svg.appendChild(g);
+  _showTip(lines.join('<br>'), e);
+});
+document.addEventListener('mouseleave', function(){
+  document.querySelectorAll('svg[data-chart] .if-cross').forEach(function(n){ n.remove(); });
+});
+
+/* 下钻抽屉：点击带 data-drill-entity 的元素 → 拉原始记录 + 关联洞察 */
+function ifDrill(metric, entity){
+  var d = document.getElementById('if-drawer');
+  if(!d){
+    d = document.createElement('div'); d.id = 'if-drawer'; document.body.appendChild(d);
+    d.addEventListener('click', function(e){ if(e.target === d) d.classList.remove('on'); });
+  }
+  d.classList.add('on');
+  d.innerHTML = '<h3>' + entity + '</h3><div class="dr-sub">加载中…</div>';
+  var ws = document.body.getAttribute('data-ws') || '';
+  fetch('/api/v1/charts/drill?workspace_id=' + encodeURIComponent(ws) +
+        '&metric=' + encodeURIComponent(metric) + '&entity_id=' + encodeURIComponent(entity))
+    .then(function(r){ return r.json(); })
+    .then(function(dd){
+      var rows = dd.rows || [], ins = dd.insights || [];
+      var html = '<h3>' + entity + '</h3><div class="dr-sub">指标 ' + metric +
+                 ' · ' + rows.length + ' 个数据点 · ' + ins.length + ' 条关联洞察</div>';
+      html += '<div class="dr-sec">时间序列</div>';
+      if(rows.length){
+        html += '<table class="dp-table"><thead><tr><th>时间</th><th>值</th></tr></thead><tbody>';
+        rows.slice(0, 40).forEach(function(r){
+          html += '<tr><td>' + String(r.ts).slice(0,16).replace('T',' ') + '</td><td>' + r.value + '</td></tr>';
+        });
+        html += '</tbody></table>';
+      } else { html += '<div class="empty">无数据</div>'; }
+      html += '<div class="dr-sec">关联洞察</div>';
+      if(ins.length){
+        html += '<table class="dp-table"><thead><tr><th>严重度</th><th>标题</th></tr></thead><tbody>';
+        ins.forEach(function(i){
+          html += '<tr><td><span class="badge b-' + i.severity + '">' + i.severity + '</span></td><td>' + i.title + '</td></tr>';
+        });
+        html += '</tbody></table>';
+      } else { html += '<div class="empty">无关联洞察</div>'; }
+      html += '<div class="dr-sec"><button class="dp-btn" onclick="document.getElementById(\'if-drawer\').classList.remove(\'on\')">关闭</button></div>';
+      d.innerHTML = html;
+    })
+    .catch(function(){ d.innerHTML = '<h3>' + entity + '</h3><div class="empty">加载失败</div>'; });
+}
+document.addEventListener('click', function(e){
+  var el = e.target.closest('[data-drill-entity]'); if(!el) return;
+  var svg = el.closest('[data-chart]');
+  var metric = svg ? (el.closest('.dp') || {}).getAttribute?.('data-drill-metric') : null;
+  metric = metric || el.getAttribute('data-drill-metric') ||
+           (el.closest('.dp') && el.closest('.dp').getAttribute('data-drill-metric')) || '';
+  ifDrill(metric, el.getAttribute('data-drill-entity'));
+});
 
 /* 自动刷新（性能守则·学 OpenFlow 心跳教训）：
    ① 延迟 60s 才启动（避免一进页面就打接口）

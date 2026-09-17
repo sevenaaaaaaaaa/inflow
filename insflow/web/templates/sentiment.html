@@ -1,8 +1,10 @@
 {% extends "base.html" %}
 {% block title %} · {{ title }}{% endblock %}
+{% import "base.html" as base %}
 {% block content %}
 <h1>{{ title }}</h1>
 <p class="sub">我的品牌/话题在网上被怎么说：情绪分布 · 负面预警 · 渠道构成（近 {{ days }} 天）</p>
+{{ base.filter_bar(days, entities=data.topics | map(attribute=0) | list, active_entity=entity, channels=data.channels | map(attribute=0) | list, active_channel=channel) }}
 
 <div class="cards">
   {{ viz.kpi_card('总提及', data.kpis.mentions | round | int, color='var(--accent)') | safe }}
@@ -38,10 +40,14 @@
 <h2>情绪趋势</h2>
 <div class="card">
   {% if data.trend.labels %}
-  {{ viz.line_chart([
-      {'name': '负向占比', 'values': data.trend.negative_ratio, 'color': 'var(--danger)'},
-      {'name': '情绪均分', 'values': data.trend.score, 'color': 'var(--ok)'},
-  ], data.trend.labels) | safe }}
+  {{ viz.datapanel('情绪趋势（负向占比 / 情绪均分）',
+      ['时间', '负向占比', '情绪均分'],
+      data.trend.labels | zip(data.trend.negative_ratio, data.trend.score) | map('list') | list,
+      viz.line_chart([
+        {'name': '负向占比', 'values': data.trend.negative_ratio, 'color': 'var(--danger)'},
+        {'name': '情绪均分', 'values': data.trend.score, 'color': 'var(--ok)'},
+      ], data.trend.labels),
+      csv_name='sentiment-trend') | safe }}
   <p class="sub" style="margin-top:8px">负向占比越高越危险；情绪均分（-1~1）为正说明口碑偏正面。</p>
   {% else %}
   <div class="empty">暂无趋势数据 —— 创建 topic 监测（品牌词/话题）后生成</div>
@@ -50,14 +56,19 @@
 
 <h2>渠道构成</h2>
 <div class="card">
-  {{ viz.percent_bar(data.channels) | safe }}
+  {{ viz.datapanel('渠道构成', ['渠道', '提及量'],
+      data.channels | map(attribute=0) | zip(data.channels | map(attribute=1)) | map('list') | list,
+      viz.percent_bar(data.channels), csv_name='sentiment-channels') | safe }}
 </div>
 
 <h2>主体情绪热力（负向占比，预警线 35%）</h2>
 <div class="card">
   {% if data.topics %}
-  {{ viz.bar_chart(data.topics, threshold=0.35, threshold_label='预警线',
-                   value_fmt=viz.fmt_pct) | safe }}
+  {{ viz.datapanel('各主体负向占比（点击可下钻）', ['主体', '负向占比'],
+      data.topics | map('list') | list,
+      viz.bar_chart(data.topics, threshold=0.35, threshold_label='预警线', value_fmt=viz.fmt_pct),
+      csv_name='sentiment-topics', drill_metric='topic_negative_ratio',
+      subtitle='点击条形查看明细与关联洞察') | safe }}
   {% else %}
   <div class="empty">暂无主体数据</div>
   {% endif %}

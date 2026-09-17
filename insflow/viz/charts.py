@@ -82,16 +82,26 @@ def line_chart(series: list[dict], labels: Sequence[str], *, width: int = 720,
                         f'{coords[-1][0]:.1f},{pad_t + plot_h}" fill="{color}" opacity="0.10"/>')
         body.append(f'<polyline points="{pts}" fill="none" stroke="{color}" '
                     f'stroke-width="2" stroke-linejoin="round"/>')
-        if len(coords) <= 40:  # 点少时标点，便于 hover
-            for x, y in coords:
-                body.append(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="2.2" fill="{color}"/>')
+        # 每个点带 data-tip（hover 提示；点少时同时画点）
+        for idx, (x, y) in enumerate(coords):
+            label = labels[idx] if idx < len(labels) else ""
+            tip = f"{label} · {s['name']}: {fmt_num(s['values'][idx])}"
+            body.append(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="{2.2 if len(coords) <= 40 else 0.1}" '
+                        f'fill="{color}" data-tip="{esc(tip)}" class="pt"/>')
     body.append(axis_labels(labels, pad_l, pad_t + plot_h, plot_w))
     if len(series) > 1:
         body.append(legend(legend_items, pad_l, 10))
     if y_label:
         body.append(f'<text x="{pad_l}" y="{pad_t - 4}" style="font-size:10px;'
                     f'fill:{theme.FAINT}">{esc(y_label)}</text>')
-    return svg(width, height, "".join(body))
+    # data-chart：供前端十字准线 + 多序列合并提示（零依赖 JSON）
+    import json as _json
+    meta = _json.dumps({"labels": list(labels)[:200],
+                        "series": [{"name": s["name"], "values": list(s["values"])[:200]}
+                                   for s in series],
+                        "plot": [pad_l, pad_t, plot_w, plot_h]}, ensure_ascii=False)
+    return svg(width, height, "".join(body)).replace(
+        "<svg ", f"<svg data-chart='{esc(meta)}' ", 1)
 
 
 # ========== 横向条形（分类对比）==========
@@ -119,7 +129,9 @@ def bar_chart(items: Sequence[tuple[str, float]], *, width: int = 720,
                     f'{esc(label[:22])}</text>')
         body.append(f'<rect x="{label_w}" y="{y + 3}" width="{bar_w}" height="12" rx="6" '
                     f'fill="{theme.BORDER}" opacity="0.5"/>')
-        body.append(f'<rect x="{label_w}" y="{y + 3}" width="{w:.1f}" height="12" rx="6" fill="{c}"/>')
+        body.append(f'<rect x="{label_w}" y="{y + 3}" width="{w:.1f}" height="12" rx="6" fill="{c}" '
+                    f'data-tip="{esc(label)}: {esc(value_fmt(value))}" '
+                    f'data-drill-entity="{esc(label)}" class="bar"/>')
         body.append(f'<text x="{label_w + bar_w + 8}" y="{y + 13}" '
                     f'style="font-size:11px;fill:{theme.MUTED};font-weight:600">'
                     f'{esc(value_fmt(value))}</text>')
@@ -148,7 +160,7 @@ def percent_bar(parts: Sequence[tuple[str, float, str]], *, width: int = 720,
             continue
         pct = max(0.0, float(value)) / total
         body.append(f'<rect x="{x:.1f}" y="0" width="{max(0.5, w):.1f}" height="{height}" '
-                    f'fill="{color}"/>')
+                    f'fill="{color}" data-tip="{esc(name)}: {fmt_num(value)}（{pct:.0%}）" class="seg"/>')
         if w > 34:  # 太窄不放字
             body.append(f'<text x="{x + w / 2:.1f}" y="{height / 2 + 4:.1f}" '
                         f'text-anchor="middle" style="font-size:10.5px;fill:'
@@ -180,13 +192,14 @@ def stacked_bar(rows: Sequence[tuple[str, list[tuple[str, float, str]]]], *,
     for i, (_, parts) in enumerate(rows):
         x = pad_l + gap * i + (gap - bar_w) / 2
         y_cursor = pad_t + plot_h
-        for _, value, color in parts:
+        for nm, value, color in parts:
             h = plot_h * max(0.0, float(value)) / y_max
             if h <= 0:
                 continue
             y_cursor -= h
             body.append(f'<rect x="{x:.1f}" y="{y_cursor:.1f}" width="{bar_w:.1f}" '
-                        f'height="{h:.1f}" fill="{color}"/>')
+                        f'height="{h:.1f}" fill="{color}" class="seg" '
+                        f'data-tip="{esc(nm)}: {fmt_num(value)}"/>')
     body.append(axis_labels([r[0] for r in rows], pad_l, pad_t + plot_h, plot_w))
     names = [nm for nm, _, _ in rows[0][1]] if rows and rows[0][1] else []
     if names:
@@ -215,7 +228,8 @@ def funnel(steps: Sequence[tuple[str, float]], *, width: int = 720,
         y = 6 + i * (band_h + 6)
         color = theme.series_color(i)
         body.append(f'<rect x="{x:.1f}" y="{y:.1f}" width="{w:.1f}" height="{band_h:.1f}" '
-                    f'rx="6" fill="{color}" opacity="0.86"/>')
+                    f'rx="6" fill="{color}" opacity="0.86" class="seg" '
+                    f'data-tip="{esc(label)}: {fmt_num(value)}（占首步 {ratio:.0%}）"/>')
         body.append(f'<text x="{x + w / 2:.1f}" y="{y + band_h / 2 + 4:.1f}" text-anchor="middle" '
                     f'style="font-size:11px;fill:oklch(100% 0 0)">{fmt_num(value)}</text>')
         body.append(f'<text x="{width - 186}" y="{y + band_h / 2 + 4:.1f}" '
@@ -257,7 +271,8 @@ def heatmap(rows: Sequence[str], cols: Sequence[str], matrix: Sequence[Sequence[
             opacity = 0.12 + 0.88 * v
             body.append(f'<rect x="{row_w + cell_w * j + 1:.1f}" y="{y:.1f}" '
                         f'width="{cell_w - 2:.1f}" height="{cell_h - 4}" rx="4" '
-                        f'fill="{theme.ACCENT}" opacity="{opacity:.2f}"/>')
+                        f'fill="{theme.ACCENT}" opacity="{opacity:.2f}" class="cell" '
+                        f'data-tip="{esc(str(r))} × {esc(str(c))}: {v:.2f}"/>')
     return svg(width, height, "".join(body))
 
 
@@ -293,7 +308,9 @@ def scatter(points: Sequence[tuple[float, float, str]], *, x_label: str = "",
         cy = pad_t + plot_h - plot_h * min(1.0, y / y_max)
         color = theme.OK if ((x >= xm) == (good_quadrant in ("tr", "br")) and
                              (y >= ym) == (good_quadrant in ("tl", "tr"))) else theme.ACCENT
-        body.append(f'<circle cx="{cx:.1f}" cy="{cy:.1f}" r="4.5" fill="{color}" opacity="0.85">'
+        body.append(f'<circle cx="{cx:.1f}" cy="{cy:.1f}" r="4.5" fill="{color}" opacity="0.85" '
+                    f'class="pt" data-drill-entity="{esc(label)}" '
+                    f'data-tip="{esc(label)} · {esc(x_label)}={fmt_num(x)} · {esc(y_label)}={fmt_num(y)}">'
                     f'<title>{esc(label)}（{fmt_num(x)}, {fmt_num(y)}）</title></circle>')
     if x_label:
         body.append(f'<text x="{pad_l + plot_w / 2:.1f}" y="{height - 4}" text-anchor="middle" '

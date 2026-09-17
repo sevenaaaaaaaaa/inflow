@@ -1,8 +1,10 @@
 {% extends "base.html" %}
 {% block title %} · {{ title }}{% endblock %}
+{% import "base.html" as base %}
 {% block content %}
 <h1>{{ title }}</h1>
 <p class="sub">流量为什么波动：来源 · 关键词 · 技术健康（近 {{ days }} 天）</p>
+{{ base.filter_bar(days) }}
 
 <div class="cards">
   {{ viz.kpi_card('GSC 点击', data.kpis.clicks | round | int, color='var(--accent)') | safe }}
@@ -14,10 +16,14 @@
 
 <h2>流量趋势（点击 / 会话）</h2>
 <div class="card">
-  {{ viz.line_chart([
-      {'name': 'GSC 点击', 'values': data.trend.clicks},
-      {'name': 'GA4 会话', 'values': data.trend.sessions},
-  ], data.trend.labels, y_label='数量') | safe }}
+  {% if data.trend.labels %}
+  {{ viz.datapanel('流量趋势（hover 看每日值）', ['时间', 'GSC 点击', 'GA4 会话'],
+      data.trend.labels | zip(data.trend.clicks, data.trend.sessions) | map('list') | list,
+      viz.line_chart([
+        {'name': 'GSC 点击', 'values': data.trend.clicks},
+        {'name': 'GA4 会话', 'values': data.trend.sessions},
+      ], data.trend.labels, y_label='数量'), csv_name='traffic-trend') | safe }}
+  {% else %}<div class="empty">暂无流量数据（接入 GSC/GA4 后生成）</div>{% endif %}
 </div>
 
 <h2>技术健康（CrUX 真实用户 CWV）</h2>
@@ -46,7 +52,11 @@
 <h2>关键词机会（曝光 × 排名；右上更优）</h2>
 <div class="card">
   {% if data.scatter %}
-  {{ viz.scatter(data.scatter, x_label='GSC 曝光量', y_label='平均排名（越小越前）') | safe }}
+  {{ viz.datapanel('关键词机会（点击散点下钻）', ['关键词', '曝光量', '排名'],
+      data.scatter | map('list') | list,
+      viz.scatter(data.scatter, x_label='GSC 曝光量', y_label='平均排名（越小越前）'),
+      csv_name='traffic-keywords', drill_metric='gsc_impressions',
+      subtitle='右上更优；点击查看明细') | safe }}
   {% else %}
   <div class="empty">暂无关键词机会数据 —— 创建 keyword 监控后生成</div>
   {% endif %}

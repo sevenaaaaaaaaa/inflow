@@ -76,7 +76,8 @@ async def overview(workspace_id: str, days: float = 7) -> dict:
 
 # ================= C2 舆情 =================
 
-async def sentiment(workspace_id: str, days: float = 7) -> dict:
+async def sentiment(workspace_id: str, days: float = 7,
+                    channel: str = "", entity: str = "") -> dict:
     async def build():
         store = await get_store()
         neg_series = await store.metric_series(workspace_id, "topic_negative_ratio",
@@ -88,6 +89,8 @@ async def sentiment(workspace_id: str, days: float = 7) -> dict:
         ], days=days * 4)
         topics = await store.metric_breakdown(workspace_id, "topic_negative_ratio",
                                               days=days * 4)
+        if entity:
+            topics = [t for t in topics if t["entity_id"] == entity]
         insights = [i for i in await store.list_insights(workspace_id, limit=300)
                     if "sentiment" in i.type or "negative" in i.type or i.type == "topic_digest"]
         alerts = [i for i in insights if i.type == "topic_negative_alert"]
@@ -124,12 +127,13 @@ async def sentiment(workspace_id: str, days: float = 7) -> dict:
             "alerts": alerts[:10],
             "words": sorted(word_freq.items(), key=lambda kv: -kv[1])[:25],
         }
-    return await cache.get_or_compute(_key("sentiment", workspace_id, days), build, TTL)
+    return await cache.get_or_compute(_key(f"sentiment:{channel}:{entity}", workspace_id, days), build, TTL)
 
 
 # ================= C3 流量 =================
 
-async def traffic(workspace_id: str, days: float = 14) -> dict:
+async def traffic(workspace_id: str, days: float = 14,
+                  channel: str = "", entity: str = "") -> dict:
     async def build():
         store = await get_store()
         clicks = await store.metric_series(workspace_id, "gsc_clicks", days=days)
@@ -171,7 +175,7 @@ async def traffic(workspace_id: str, days: float = 14) -> dict:
             "scatter": scatter[:60],
             "anomalies": anomalies[:10],
         }
-    return await cache.get_or_compute(_key("traffic", workspace_id, days), build, TTL)
+    return await cache.get_or_compute(_key(f"traffic:{channel}", workspace_id, days), build, TTL)
 
 
 # ================= C4 竞品 =================

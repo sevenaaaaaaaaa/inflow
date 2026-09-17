@@ -26,9 +26,22 @@ def _md_to_html_filter(md: str) -> str:
 templates.env.filters["md_to_html"] = _md_to_html_filter
 
 from ..viz import charts as _viz  # noqa: E402
-templates.env.globals["viz"] = _viz
+from ..viz import frame as _viz_frame  # noqa: E402
+
+
+class _VizNS:
+    """模板命名空间：charts.* + frame.datapanel（模板统一用 viz.xxx）"""
+
+    def __init__(self):
+        for name in dir(_viz):
+            if not name.startswith("_"):
+                setattr(self, name, getattr(_viz, name))
+        self.datapanel = _viz_frame.datapanel
+
+
+templates.env.globals["viz"] = _VizNS()
 # 模板常用过滤器（Jinja 无内置 zip）
-templates.env.filters["zip"] = lambda a, b: list(zip(a, b))
+templates.env.filters["zip"] = lambda *seqs: [list(t) for t in zip(*seqs)]
 
 router = APIRouter(prefix="/console", include_in_schema=False)
 
@@ -205,7 +218,8 @@ COCKPIT_PAGES = {
 
 @router.get("/cockpit/{name}", response_class=HTMLResponse)
 async def cockpit_page(request: Request, name: str, workspace_id: str = Query(""),
-                       days: float = Query(0)):
+                       days: float = Query(0), entity: str = Query(""),
+                       channel: str = Query("")):
     """驾驶舱统一入口（9 舱，TTL 缓存聚合）"""
     if name not in COCKPIT_PAGES:
         return RedirectResponse("/console")
@@ -213,23 +227,31 @@ async def cockpit_page(request: Request, name: str, workspace_id: str = Query(""
         workspace_id = await _default_workspace()
     from .cockpit import COCKPITS
     fn = COCKPITS[name]
-    data = await (fn(workspace_id) if days <= 0 else fn(workspace_id, days))
+    if days <= 0:
+        data = await fn(workspace_id)
+    elif name in ("sentiment", "traffic"):
+        data = await fn(workspace_id, days, channel=channel, entity=entity)
+    else:
+        data = await fn(workspace_id, days)
     template, nav, title = COCKPIT_PAGES[name]
     return templates.TemplateResponse(request, template, _ctx(
         request, nav, workspace_id, data=data, title=title, days=days or 14,
+        entity=entity, channel=channel,
     ))
 
 
 @router.get("/sentiment", response_class=HTMLResponse)
 async def sentiment_page(request: Request, workspace_id: str = Query(""),
-                         days: float = Query(14)):
+                         days: float = Query(14), entity: str = Query(""),
+                         channel: str = Query("")):
     """舆情驾驶舱（G-3）：情绪分布 + 负面预警 + 主体热力"""
     if not workspace_id:
         workspace_id = await _default_workspace()
     from .cockpit import COCKPITS
-    data = await COCKPITS["sentiment"](workspace_id, days)
+    data = await COCKPITS["sentiment"](workspace_id, days, channel=channel, entity=entity)
     return templates.TemplateResponse(request, "sentiment.html", _ctx(
         request, "sentiment", workspace_id, data=data, title="舆情驾驶舱", days=days,
+        entity=entity, channel=channel,
     ))
 
 

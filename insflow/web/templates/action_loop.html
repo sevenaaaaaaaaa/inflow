@@ -16,20 +16,24 @@
 <div class="card">
   {% set v = data.verdicts %}
   {% set eff = v.get('effective', 0) %}{% set neu = v.get('neutral', 0) %}{% set harm = v.get('harmful', 0) %}
-  {{ viz.percent_bar([
+  {{ viz.datapanel('验证结论构成', ['结论', '数量'],
+      [('有效', eff), ('中性', neu), ('有害', harm)],
+      viz.percent_bar([
       ('有效', eff, 'var(--ok)'),
       ('中性', neu, 'var(--muted)'),
       ('有害', harm, 'var(--danger)'),
-  ]) | safe }}
+  ]), csv_name='loop-verdicts') | safe }}
 </div>
 
 <h2>模型命中率（按模型聚合洞察命中率）</h2>
 <div class="card">
   {% if data.effectiveness %}
-  {{ viz.bar_chart(
-      data.effectiveness | map(attribute='model_id') | zip(data.effectiveness | map(attribute='hit_rate')) | list,
-      value_fmt=viz.fmt_pct, colors=['var(--ok)', 'var(--accent)', 'var(--warn)']
-  ) | safe }}
+  {{ viz.datapanel('模型命中率', ['模型', '命中率'],
+      data.effectiveness | map(attribute='model_id') | zip(data.effectiveness | map(attribute='hit_rate')) | map('list') | list,
+      viz.bar_chart(
+        data.effectiveness | map(attribute='model_id') | zip(data.effectiveness | map(attribute='hit_rate')) | list,
+        value_fmt=viz.fmt_pct, colors=['var(--ok)', 'var(--accent)', 'var(--warn)']),
+      csv_name='loop-hitrate') | safe }}
   {% else %}
   <div class="empty">暂无验证数据 —— 动作完成并过 14 天窗口后自动产出</div>
   {% endif %}

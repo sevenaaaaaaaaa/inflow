@@ -478,6 +478,42 @@ class TemplateApplyRequest(BaseModel):
     template_id: str
 
 
+@app.get("/api/v1/charts/drill")
+async def chart_drill(workspace_id: str = Query(...), metric: str = Query(""),
+                      entity_id: str = Query(""), hours: int = Query(720),
+                      limit: int = Query(60)):
+    """图表下钻：某主体某指标的时间序列 + 关联洞察（P0 交互）"""
+    from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+    import json as _json
+    store = await get_store()
+    since = (_dt.now(_tz.utc) - _td(hours=hours)).isoformat()
+
+    rows: list[dict] = []
+    if metric:
+        params: list = [workspace_id, metric, since]
+        where = "workspace_id = ? AND metric = ? AND ts >= ?"
+        if entity_id:
+            where += " AND entity_id = ?"
+            params.append(entity_id)
+        raw = await store._fetchall(
+            f"SELECT ts, value, dim_json, monitor_id FROM metrics WHERE {where} "
+            f"ORDER BY ts DESC LIMIT ?", tuple([*params, limit]))
+        rows = [{"ts": r["ts"], "value": r["value"], "dim": _json.loads(r["dim_json"] or "{}"),
+                 "monitor_id": r["monitor_id"]} for r in raw]
+
+    insights = []
+    if entity_id:
+        all_ins = await store.list_insights(workspace_id, limit=200)
+        for i in all_ins:
+            blob = (i.title + " " + i.summary + " " + _json.dumps(i.evidence_json or [],
+                                                                  ensure_ascii=False))
+            if entity_id in blob:
+                insights.append({"id": i.id, "type": i.type, "title": i.title,
+                                 "severity": i.severity.value,
+                                 "created_at": i.created_at.isoformat()})
+    return {"metric": metric, "entity_id": entity_id, "rows": rows, "insights": insights[:20]}
+
+
 @app.get("/api/v1/templates")
 async def list_templates():
     """列出可用的行业模板包"""
