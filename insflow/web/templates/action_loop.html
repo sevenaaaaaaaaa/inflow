@@ -44,7 +44,7 @@
     <td><code>{{ a.action_type }}</code></td>
     <td><code>{{ a.insight_id }}</code></td>
     <td><span class="badge b-gray">{{ a.state.value }}</span></td>
-    <td>{{ (a.verify_window_until or '')[:16].replace('T', ' ') }}</td>
+    <td>{{ a.verify_window_until.strftime('%Y-%m-%d %H:%M') if a.verify_window_until else '—' }}</td>
   </tr>
   {% endfor %}
 </table>
