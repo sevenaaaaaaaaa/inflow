@@ -509,12 +509,6 @@ async def cockpit_page(request: Request, name: str, workspace_id: str = Query(""
     if allow and entity and entity not in allow:
         return templates.TemplateResponse(request, "403.html", _ctx(
             request, nav, workspace_id, title="无权限"), status_code=403)
-    geo_dataset = None
-    if name == "traffic" and ws_row is not None:
-        from ..engine.geo import list_datasets, load_dataset
-        names = list_datasets(_settings)
-        if names:
-            geo_dataset = await load_dataset(workspace_id, sorted(names)[0])
     kw: dict = {}
     if name in ("traffic", "sentiment"):
         if allow:
@@ -531,10 +525,24 @@ async def cockpit_page(request: Request, name: str, workspace_id: str = Query(""
         data = await fn(workspace_id, days, channel=channel, entity=entity, **kw)
     else:
         data = await fn(workspace_id, days)
+    # 地图数据集选择：按维度值匹配度挑（内置 world / 用户导入），命中 0 则回退网格地图
+    geo_dataset, geo_dataset_name = None, ""
+    if name == "traffic":
+        from ..engine.geo import list_datasets, load_dataset, pick_dataset
+        names = list_datasets(_settings)
+        if names:
+            loaded = {}
+            for ds_name in names:
+                loaded[ds_name] = await load_dataset(workspace_id, ds_name)
+            geo_dataset_name, geo_dataset = pick_dataset(
+                names, loaded, [k for k, _ in (data.get("geo") or [])])
+            if geo_dataset is None:
+                geo_dataset_name = ""
     template, nav, title = COCKPIT_PAGES[name]
     return templates.TemplateResponse(request, template, _ctx(
         request, nav, workspace_id, data=data, title=title, days=days or 14,
         entity=entity, channel=channel, geo_dataset=geo_dataset,
+        geo_dataset_name=geo_dataset_name, geo_dim=(data.get("geo_dim") or "province"),
     ))
 
 
@@ -557,6 +565,37 @@ async def sentiment_page(request: Request, workspace_id: str = Query(""),
         request, "sentiment", workspace_id, data=data, title="舆情驾驶舱", days=days,
         entity=entity, channel=channel,
     ))
+
+
+@router.get("/m", response_class=HTMLResponse)
+async def mobile_view(request: Request, workspace_id: str = Query("")):
+    """移动端只读快照（PWA 离线可用的最小页面）"""
+    if not workspace_id:
+        workspace_id = await _default_workspace()
+    store = await get_store()
+    totals = await store.metric_totals(
+        workspace_id, ["ga4_sessions", "gsc_clicks", "ga4_conversions"], days=7)
+    kpis = []
+    labels = {"ga4_sessions": "会话（7 天）", "gsc_clicks": "点击（7 天）",
+              "ga4_conversions": "转化（7 天）"}
+    for metric in ("ga4_sessions", "gsc_clicks", "ga4_conversions"):
+        value = (totals.get(metric) or {}).get("value", 0)
+        series = await store.metric_series(workspace_id, metric, days=7)
+        kpis.append({
+            "label": labels[metric], "display": f"{value:,.0f}",
+            "spark_note": ("近 7 天 " + "·".join(
+                f"{p['bucket'][-5:]}:{p['value']:,.0f}" for p in series[-3:])
+                if series else "暂无数据"),
+        })
+    insights = await store.list_insights(workspace_id, limit=5)
+    snapshot = {"at": __import__("datetime").datetime.now(
+        __import__("datetime").timezone.utc).isoformat(),
+        "workspace_id": workspace_id, "kpis": kpis,
+        "insights": [{"title": i.title[:60], "severity": i.severity.value,
+                      "summary": i.summary[:110]} for i in insights]}
+    return templates.TemplateResponse(request, "m.html", _ctx(
+        request, "dashboard", workspace_id, kpis=kpis, insights=insights,
+        snapshot=snapshot, offline_note=""))
 
 
 @router.get("/audit", response_class=HTMLResponse)
@@ -642,9 +681,14 @@ async def manifest():
     """PWA 清单（可"添加到主屏幕"；私有化内网同样可用）"""
     return JSONResponse({
         "name": "Insight Flow 增长情报", "short_name": "insFlow",
-        "start_url": f"{os.environ.get('INSFLOW_BASE_PATH', '')}/console",
+        "start_url": f"{os.environ.get('INSFLOW_BASE_PATH', '')}/console/m",
         "display": "standalone", "background_color": "#0f1115", "theme_color": "#2563eb",
         "description": "全域增长情报与洞察→动作→验证闭环",
+        "shortcuts": [
+            {"name": "数据监测", "url": f"{os.environ.get('INSFLOW_BASE_PATH', '')}/console/monitors"},
+            {"name": "洞察流", "url": f"{os.environ.get('INSFLOW_BASE_PATH', '')}/console/insights"},
+            {"name": "行动验证", "url": f"{os.environ.get('INSFLOW_BASE_PATH', '')}/console/cockpit/action-loop"},
+        ],
         "icons": [{"src": "/console/icon.svg", "sizes": "any",
                    "type": "image/svg+xml", "purpose": "any"}],
     }, media_type="application/manifest+json")
@@ -667,19 +711,30 @@ async def service_worker():
     """Service Worker：离线外壳（文档页 network-first，静态图缓存）"""
     from fastapi.responses import Response
     js = r"""
-const CACHE = 'insflow-shell-v1';
+const CACHE = 'insflow-shell-v2';
+const SNAPSHOT = 'insflow-m-snapshot-v1';
 self.addEventListener('install', e => { self.skipWaiting(); });
 self.addEventListener('activate', e => {
   e.waitUntil(caches.keys().then(ks => Promise.all(
-    ks.filter(k => k !== CACHE).map(k => caches.delete(k)))).then(() => self.clients.claim()));
+    ks.filter(k => k !== CACHE && k !== SNAPSHOT).map(k => caches.delete(k))))
+    .then(() => self.clients.claim()));
 });
 self.addEventListener('fetch', e => {
   const req = e.request;
   if (req.method !== 'GET') return;
   const url = new URL(req.url);
+  // 移动端快照：网络优先，失败回落缓存（离线可看上次数据）
+  if (url.pathname.endsWith('/console/m')) {
+    e.respondWith(fetch(req).then(res => {
+      const copy = res.clone();
+      caches.open(SNAPSHOT).then(c => c.put(req, copy));
+      return res;
+    }).catch(() => caches.open(SNAPSHOT).then(c => c.match(req))));
+    return;
+  }
   const cacheable = /[.](svg|png|webmanifest|css|js)$/.test(url.pathname) ||
                     url.pathname.endsWith('/icon.svg');
-  if (!cacheable) return;              // 文档/接口一律走网络（避免陈旧看板）
+  if (!cacheable) return;              // 其它文档/接口一律走网络（避免陈旧看板）
   e.respondWith(caches.open(CACHE).then(c => c.match(req).then(hit =>
     hit || fetch(req).then(res => { c.put(req, res.clone()); return res; }))));
 });
@@ -785,6 +840,7 @@ async def explore_page(request: Request, workspace_id: str = Query(""),
     scatter_points: list[tuple[float, float, str]] = []
     waterfall_items: list[tuple[str, float]] = []
     candlesticks: list[tuple[str, float, float, float, float]] = []
+    candlestick_true = False
     entity_options: list[str] = []
     vars_ = template_vars(request)
     if metric:
@@ -851,24 +907,33 @@ async def explore_page(request: Request, workspace_id: str = Query(""),
                                                    dim_filters={dim: key}, limit=200)
                 if rows_k:
                     box_groups.append((key, [r["value"] for r in rows_k]))
-        # 散点：值 × 排名（越靠左上越值得关注）
+        # 散点：值 × 排名；实体数很多时用全量实体聚合（可触发 GPU 渲染路径）
         if chart_type == "scatter":
-            scatter_points = [(float(v), float(i + 1), str(k))
-                              for i, (k, v) in enumerate(dim_values[:40])]
+            breakdown = await store.metric_breakdown(workspace_id, metric, days=days,
+                                                    limit=20000)
+            if len(breakdown) >= 40:
+                scatter_points = [(float(r["value"]), float(i + 1), str(r["entity_id"]))
+                                  for i, r in enumerate(
+                                      sorted(breakdown, key=lambda x: -x["value"]))]
+            else:
+                scatter_points = [(float(v), float(i + 1), str(k))
+                                  for i, (k, v) in enumerate(dim_values[:40])]
         # 瀑布：相邻维度差值归因（维度按值降序 → 差值）
         if chart_type == "waterfall":
             prev = 0.0
             for k, v in dim_values[:10]:
                 waterfall_items.append((k, float(v) - prev))
                 prev = float(v)
-        # K 线：按时间桶做「开高低收」（无 OHLC 源时用桶内首/末/极值，标注为近似）
+        # K 线：真实 OHLC（桶内首/高/低/末，来自逐条观测；无观测则退化为单点）
         if chart_type == "candlestick":
-            for i, p0 in enumerate(chart["rows"][:60]):
-                v = float(p0["value"])
-                prev = float(chart["rows"][i - 1]["value"]) if i else v
-                lo = min(prev, v)
-                hi = max(prev, v)
-                candlesticks.append((str(p0["bucket"]), prev, hi, lo, v))
+            ohlc = await store.metric_ohlc(workspace_id, metric, days=days,
+                                           bucket="day", entity_id=entity or None,
+                                           dim_filters=df if df else None)
+            for r in ohlc:
+                candlesticks.append((str(r["bucket"]), float(r["open"]),
+                                     float(r["high"]), float(r["low"]),
+                                     float(r["close"])))
+            candlestick_true = bool(ohlc) and any(r["n"] > 1 for r in ohlc)
     return templates.TemplateResponse(request, "explore.html", _ctx(
         request, "explore", workspace_id,
         catalog=catalog[:60], chart=chart, pivot=pivot, metric=metric, entity=entity,
@@ -876,6 +941,7 @@ async def explore_page(request: Request, workspace_id: str = Query(""),
         dim=dim, dim2=dim2, dim_values=dim_values, vars_=vars_,
         box_groups=box_groups, scatter_points=scatter_points,
         waterfall_items=waterfall_items, candlesticks=candlesticks,
+        candlestick_true=candlestick_true,
         dim_keys=await store.dim_keys(workspace_id, metric),
         defs=await store.list_metric_defs(workspace_id),
         calc=calc, window=window, calc_error=calc_error, lineage=chart.get("lineage")

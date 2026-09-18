@@ -70,14 +70,14 @@
   {% if data.geo and geo_dataset %}
   {{ viz.datapanel('会话来源地域（精确边界 GeoJSON）', ['地域', '会话数'],
       data.geo | map(attribute=0) | zip(data.geo | map(attribute=1)) | map('list') | list,
-      viz.choropleth(geo_dataset, data.geo, unit=' 会话', filter_dim='province',
+      viz.choropleth(geo_dataset, data.geo, unit=' 会话', filter_dim=geo_dim or 'province',
                      label='会话数（数据集：' ~ (geo_dataset.features | length) ~ ' 个区域）'),
       csv_name='traffic-geo-boundary') | safe }}
   {% elif data.geo %}
   {{ viz.datapanel('会话来源地域', ['地域', '会话数'],
       data.geo | map(attribute=0) | zip(data.geo | map(attribute=1)) | map('list') | list,
       viz.tile_map(data.geo, scope=data.geo_scope or 'china', unit=' 会话',
-                   filter_dim='province',
+                   filter_dim=geo_dim or 'province',
                    label='会话数（近似地理网格，非精确边界；导入 GeoJSON 后可切换精确边界）'),
       csv_name='traffic-geo') | safe }}
   {% else %}

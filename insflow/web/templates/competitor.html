@@ -10,6 +10,20 @@
   {{ viz.kpi_card('关键词缺口', data.kpis.gaps, color='var(--danger)') | safe }}
 </div>
 
+<h2>竞品价格波动（真实 OHLC）</h2>
+<div class="card">
+  {% if data.price_ohlc %}
+    {% for domain, bars in data.price_ohlc.items() %}
+    {{ viz.datapanel(domain ~ ' · 价格 K 线', ['日期', '开', '高', '低', '收'],
+        bars | map('list') | list,
+        viz.candlestick(bars, label='开=当日首采 · 高/低=当日极值 · 收=当日末采'),
+        csv_name='price-' ~ domain, subtitle='来自定价页采样（非估算）') | safe }}
+    {% endfor %}
+  {% else %}
+  <div class="empty">暂无价格采样 —— 上架 competitor 定价页监控后自动出现</div>
+  {% endif %}
+</div>
+
 <h2>关键词缺口（搜索量排序）</h2>
 <div class="card">
   {% if data.gaps %}

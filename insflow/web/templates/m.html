@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+{% block title %} · 移动端{% endblock %}
+{% block content %}
+<h1 style="margin-bottom:4px">移动端快照</h1>
+<p class="sub">只读速览：KPI + 最新洞察。完整看板请点「完整控制台」。离线时显示上次快照。</p>
+
+<div class="toolbar" style="gap:8px;flex-wrap:wrap;margin-bottom:10px">
+  <button id="m-install" hidden onclick="ifInstall()" style="min-height:44px">安装到主屏</button>
+  <a class="dp-btn" href="/console/cockpit/traffic" style="min-height:44px;line-height:28px">流量</a>
+  <a class="dp-btn" href="/console/sentiment" style="min-height:44px;line-height:28px">舆情</a>
+  <a class="dp-btn" href="/console/insights" style="min-height:44px;line-height:28px">洞察</a>
+  <a class="dp-btn" href="/console/cockpit/action-loop" style="min-height:44px;line-height:28px">验证</a>
+  <span id="m-conn" class="sub"></span>
+</div>
+
+<div class="cards" id="m-kpis">
+  {% for k in kpis %}
+  <div class="card kpi">
+    <div class="num" style="font-size:22px">{{ k.display }}</div>
+    <div class="label">{{ k.label }}</div>
+    <div class="sub">{{ k.spark_note }}</div>
+  </div>
+  {% endfor %}
+</div>
+
+<h2 style="margin-top:14px">最新洞察</h2>
+{% for i in insights %}
+<div class="card" style="margin-bottom:8px">
+  <div style="display:flex;justify-content:space-between;gap:8px;align-items:start">
+    <b style="font-size:13.5px">{{ i.title[:60] }}</b>
+    <span class="badge b-{{ i.severity.value }}">{{ i.severity.value }}</span>
+  </div>
+  <div class="sub" style="margin-top:4px">{{ i.summary[:110] }}</div>
+  <div class="sub" style="margin-top:4px">{{ i.created_at.strftime('%m-%d %H:%M') }}</div>
+</div>
+{% else %}
+<div class="empty">暂无洞察</div>
+{% endfor %}
+
+<p class="sub" style="margin-top:16px">
+  说明：原生应用商店 App 不在本项目范围（零构建链约束）；移动端以 PWA 交付——
+  可「添加到主屏」、离线看上次快照、支持深色模式与 44px 触控目标。{{ offline_note }}
+</p>
+<script>
+window.__ifMobileSnapshot = {{ snapshot | tojson }};
+document.addEventListener('DOMContentLoaded', function(){
+  var el = document.getElementById('m-conn');
+  function paint(){ if(el) el.textContent = navigator.onLine ? '' : '离线（显示上次快照）'; }
+  paint(); window.addEventListener('online', paint); window.addEventListener('offline', paint);
+});
+</script>
+{% endblock %}

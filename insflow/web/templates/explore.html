@@ -112,10 +112,13 @@ function exSet(k, v){
           label='每日 ' ~ chart.metric ~ '（周为列，周一为行首）'),
       csv_name='explore-calendar') | safe }}
 {% elif chart_type == 'candlestick' and candlesticks %}
-  {{ viz.datapanel(chart.metric ~ ' · K 线（近似 OHLC）', ['时间', '开', '高', '低', '收'],
-      candlesticks | map('list') | list,
-      viz.candlestick(candlesticks, label='相邻桶近似开高低收（非真实 OHLC 源）'),
-      csv_name='explore-candlestick') | safe }}
+  {{ viz.datapanel(chart.metric ~ ' · K 线（' ~ ('真实 OHLC' if candlestick_true else '单点观测') ~ '）',
+      ['时间', '开', '高', '低', '收'], candlesticks | map('list') | list,
+      viz.candlestick(candlesticks,
+                      label=('真实 OHLC：桶内首/高/低/末' if candlestick_true
+                             else '该指标每日仅一次观测 → 开=收、高=低（需多次采样才是真 OHLC）')),
+      csv_name='explore-candlestick',
+      subtitle='开=桶内首值 · 高/低=桶内极值 · 收=桶内末值') | safe }}
 {% elif chart_type == 'box' and box_groups %}
   {{ viz.datapanel(chart.metric ~ ' · 各 ' ~ dim ~ ' 分布（箱线）', ['维度', '样本数'],
       box_groups | map(attribute=0) | zip(box_groups | map(attribute=1) | map('length')) | map('list') | list,

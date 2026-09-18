@@ -569,3 +569,292 @@ class TestScimAndWatermark:
                        params={"workspace_id": "test-ws"}).json()["logs"]
         assert any(x["action"] == "access.export_xlsx" for x in logs)
         assert any(x["action"] == "access.export_csv" for x in logs)
+
+
+class TestBuiltinWorldMap:
+    """内置世界边界（Natural Earth 110m，公有领域）+ 自动选图"""
+
+    def test_builtin_topojson_decodes(self):
+        from insflow.engine.geo import bounds_of, builtin_dataset
+        ds = builtin_dataset()
+        assert ds and ds["builtin"] and ds["count"] > 150
+        labels = {f["label"] for f in ds["features"]}
+        assert "China" in labels and "United States of America" in labels
+        assert "Antarctica" not in labels                    # 默认剔除
+        min_lon, min_lat, max_lon, max_lat = bounds_of(ds["features"])
+        assert -181 <= min_lon <= -170 and 179 <= max_lon <= 181   # 经度已折返
+        # 去掉南极洲后纬度范围仍在南半球边缘（如法属南部领地），但不再压到 -90
+        assert -100 < min_lat < -50 and 70 < max_lat < 90
+
+    def test_builtin_is_compact(self):
+        from insflow.engine.geo import builtin_dataset
+        from insflow.viz import charts as c
+        svg = c.choropleth(builtin_dataset(), [("China", 10)])
+        assert len(svg) < 260_000                     # 抽稀+降精度后应有界
+
+    def test_parse_topojson_direct(self):
+        from insflow.engine.geo import GeoError, parse_topojson
+        doc = {"type": "Topology", "transform": {"scale": [1, 1], "translate": [0, 0]},
+               "arcs": [[[0, 0], [10, 0], [0, 10], [-10, 0], [0, -10]]],
+               "objects": {"countries": {"type": "GeometryCollection", "geometries": [
+                   {"type": "Polygon", "arcs": [[0]], "properties": {"name": "方块"}}]}}}
+        parsed = parse_topojson(doc)
+        assert parsed["count"] == 1 and parsed["features"][0]["label"] == "方块"
+        assert parsed["features"][0]["geometry"]["type"] == "Polygon"
+        with pytest.raises(GeoError):
+            parse_topojson({"type": "FeatureCollection"})
+
+    def test_alias_matching_picks_dataset(self):
+        from insflow.engine.geo import builtin_dataset, match_score, pick_dataset
+        ds = builtin_dataset()
+        assert match_score(ds, ["美国", "中国", "德国"]) == 3    # 中文别名
+        assert match_score(ds, ["广东", "北京"]) == 0            # 省份不匹配国家图
+        name, picked = pick_dataset({}, {"world": ds}, ["美国"])
+        assert name == "world" and picked is ds
+        assert pick_dataset({}, {"world": ds}, ["广东"]) == ("", None)
+
+    def test_list_datasets_includes_builtin(self):
+        from insflow.engine.geo import list_datasets
+        ds = list_datasets({"geo_datasets": {"mine": {"source": "upload"}}})
+        assert "world" in ds and ds["world"]["builtin"] is True
+        assert "mine" in ds
+
+
+class TestTrueOhlc:
+    def test_ohlc_from_multiple_samples(self, env):
+        import asyncio
+
+        async def _run():
+            store = env["store"]
+            samples = [("2026-09-10T01:00:00+00:00", 100.0),
+                       ("2026-09-10T09:00:00+00:00", 130.0),
+                       ("2026-09-10T21:00:00+00:00", 90.0)]
+            for i, (ts, v) in enumerate(samples):
+                await store._execute(
+                    """INSERT INTO metrics (id, workspace_id, entity_type, entity_id,
+                       metric, value, dim_json, ts) VALUES (?, 'test-ws', 'competitor',
+                       'c1', 'competitor_price_ohlc', ?, '{}', ?)""",
+                    (f"o{i}", v, ts))
+            await store._db.commit()
+            return await store.metric_ohlc("test-ws", "competitor_price_ohlc", days=3650,
+                                           entity_id="c1")
+
+        rows = asyncio.get_event_loop().run_until_complete(_run())
+        assert len(rows) == 1
+        bar = rows[0]
+        assert (bar["open"], bar["high"], bar["low"], bar["close"]) == (100.0, 130.0,
+                                                                       90.0, 90.0)
+        assert bar["n"] == 3 and bar["first_ts"] < bar["last_ts"]
+
+    def test_ohlc_buckets_and_single_sample(self, env):
+        import asyncio
+
+        async def _run():
+            store = env["store"]
+            for day, v in (("11", 10.0), ("12", 12.0), ("12", 8.0)):
+                await store._execute(
+                    """INSERT INTO metrics (id, workspace_id, entity_type, entity_id,
+                       metric, value, dim_json, ts) VALUES (?, 'test-ws', 'site', 'x',
+                       'price', ?, '{}', ?)""",
+                    (f"p{day}{v}", v, f"2026-09-{day}T05:00:00+00:00"))
+            await store._db.commit()
+            return await store.metric_ohlc("test-ws", "price", days=3650)
+
+        bars = asyncio.get_event_loop().run_until_complete(_run())
+        assert [b["bucket"] for b in bars] == ["2026-09-11", "2026-09-12"]
+        assert bars[1]["open"] == 12.0 and bars[1]["close"] == 8.0
+        assert bars[1]["high"] == 12.0 and bars[1]["low"] == 8.0
+
+    def test_demo_price_ohlc_and_cockpit(self, env):
+        import asyncio
+        from fastapi.testclient import TestClient
+        from insflow.engine.demo import DemoSeeder
+        from insflow.server.app import app
+
+        asyncio.get_event_loop().run_until_complete(
+            DemoSeeder("test-ws", days=12).seed())
+        cli = TestClient(app)
+        page = cli.get("/console/cockpit/competitor", params={
+            "workspace_id": "test-ws", "days": 12})
+        assert page.status_code == 200
+        assert "竞品价格波动" in page.text and 'class="k"' in page.text
+        ex = cli.get("/console/explore", params={
+            "workspace_id": "test-ws", "metric": "competitor_price_ohlc",
+            "days": 12, "chart": "candlestick"})
+        assert ex.status_code == 200 and "真实 OHLC" in ex.text
+
+
+class TestScatterSamplingAndGL:
+    def test_large_scatter_is_sampled_for_transport(self):
+        import html
+        import json
+        import re
+        big = c.scatter([(i, i % 50, f"p{i}") for i in range(100_000)])
+        meta = json.loads(html.unescape(re.search(r"data-chart='([^']+)'", big).group(1)))
+        assert meta["kind"] == "scatter"
+        assert len(meta["points"]) == 20_000 and meta["sampled"] is True
+        assert meta["sampled_from"] == 100_000
+        assert "抽样" in big and 'role="img"' in big
+
+    def test_small_scatter_not_sampled(self):
+        import html
+        import json
+        import re
+        small = c.scatter([(i, i, f"p{i}") for i in range(1200)],
+                          canvas_threshold=800, max_points=20000)
+        meta = json.loads(html.unescape(re.search(r"data-chart='([^']+)'", small).group(1)))
+        assert meta["sampled"] is False and len(meta["points"]) == 1200
+
+    def test_gl_renderer_hooks_present(self):
+        base = open("insflow/web/templates/base.html", encoding="utf-8").read()
+        for token in ("ifDrawGL", "ifShouldGL", "ifGetGL", "ifProgram",
+                      "VERTEX_SHADER", "FRAGMENT_SHADER", "gl.POINTS", "gl.LINES",
+                      "preserveDrawingBuffer", "data-renderer", "'webgl'"):
+            assert token in base, token
+        assert "threshold_points: 8000" in base and "threshold_line: 40000" in base
+
+
+class TestMobileAndPwa:
+    def test_mobile_page(self, env):
+        import asyncio
+        from fastapi.testclient import TestClient
+        from insflow.engine.demo import DemoSeeder
+        from insflow.server.app import app
+
+        asyncio.get_event_loop().run_until_complete(
+            DemoSeeder("test-ws", days=7).seed())
+        page = TestClient(app).get("/console/m", params={"workspace_id": "test-ws"})
+        assert page.status_code == 200
+        assert "移动端快照" in page.text and "card kpi" in page.text
+        assert "__ifMobileSnapshot" in page.text          # 离线兜底用快照
+        assert "ifInstall" in page.text                   # 安装引导
+        assert "原生应用商店 App 不在本项目范围" in page.text
+
+    def test_manifest_and_sw_mobile(self):
+        from fastapi.testclient import TestClient
+        from insflow.server.app import app
+        cli = TestClient(app)
+        m = cli.get("/console/manifest.webmanifest").json()
+        assert m["start_url"].endswith("/console/m")
+        assert len(m["shortcuts"]) >= 3
+        sw = cli.get("/console/sw.js").text
+        assert "insflow-m-snapshot" in sw and "/console/m" in sw
+        assert "network" not in sw.split("snapshot")[0][-200:] or "fetch(req)" in sw
+        assert "shell-v2" in sw
+
+
+class TestWebglBehavior:
+    """WebGL 渲染器行为验证（提取线上同源 JS，在 Node 里跑 mock GL）
+
+    无浏览器依赖：用 mock 的 WebGL 上下文断言「GPU 路径被调用 / 无 GL 时回退 2D」。
+    Node 不可用时跳过（CI 无 node 也不阻塞）。
+    """
+
+    def _node(self):
+        import shutil
+        return shutil.which("node")
+
+    def test_gl_path_and_fallback(self, tmp_path):
+        import shutil
+        import subprocess
+        node = self._node()
+        if not node:
+            pytest.skip("未安装 node")
+        src = open("insflow/web/templates/base.html", encoding="utf-8").read()
+        start = src.index("var IFGL =")
+        end = src.index("function ifDrawChart(")
+        block = src[start:end]
+        harness = """
+var calls = {drawArrays: [], clear: 0};
+function mockGL(){ return {
+  canvas:{width:1440,height:440},
+  VERTEX_SHADER:1,FRAGMENT_SHADER:2,ARRAY_BUFFER:3,STATIC_DRAW:4,COMPILE_STATUS:5,
+  LINK_STATUS:6,POINTS:7,LINES:8,COLOR_BUFFER_BIT:9,
+  clearColor(){}, clear(){calls.clear++;}, viewport(){},
+  createShader(){return {};}, shaderSource(){}, compileShader(){},
+  getShaderParameter(){return true;}, createProgram(){return {};}, attachShader(){},
+  linkProgram(){}, getProgramParameter(){return true;}, useProgram(){},
+  getAttribLocation(){return 0;}, enableVertexAttribArray(){}, vertexAttribPointer(){},
+  createBuffer(){return {};}, bindBuffer(){}, bufferData(){}, deleteBuffer(){},
+  drawArrays(mode, first, count){calls.drawArrays.push([mode, count]);},
+  getUniformLocation(){return null;} }; }
+var document = {documentElement:{}};
+var getComputedStyle = function(){ return {getPropertyValue:function(){ return 'var(--accent)'; }}; };
+var window = {};
+__BLOCK__
+var meta = {kind:'scatter', x_max:100, y_max:100, plot:[44,14,660,180], points:[]};
+for (var i=0;i<9000;i++) meta.points.push([i%100,(i*7)%100,'p'+i]);
+console.log('shouldGL=' + ifShouldGL(meta));
+console.log('fallback=' + ifDrawGL({width:10,height:10,getContext(){return null;}}, meta, 720, 220));
+var ok = ifDrawGL({width:1440,height:440,getContext(){return mockGL();}}, meta, 720, 220);
+console.log('drawGL=' + ok + ' points=' + JSON.stringify(calls.drawArrays) + ' clear=' + calls.clear);
+console.log('small=' + ifShouldGL({kind:'scatter', points:new Array(100).fill([0,0,''])}));
+""".replace("__BLOCK__", block)
+        f = tmp_path / "gl.js"
+        f.write_text(harness, encoding="utf-8")
+        out = subprocess.run([node, str(f)], capture_output=True, text=True, timeout=60)
+        assert out.returncode == 0, out.stderr[-500:]
+        # 注意：'drawGL=true points=…' 里含空格，先按前缀切分再单独比对
+        lines = dict(l.split("=", 1) for l in out.stdout.strip().splitlines())
+        draw = lines.pop("drawGL", "")
+        assert lines["shouldGL"] == "true"
+        assert lines["fallback"] == "false"          # 无 GL → 回退 2D
+        assert draw.startswith("true")               # GPU 路径成功
+        assert "[[7,9000]]" in draw                  # POINTS × 9000
+        assert "clear=1" in draw
+        assert lines["small"] == "false"
+
+
+class TestGeoDimSelection:
+    """地域维度自动识别：province → country → region（此前硬编码 province，
+    导致国家维度数据永远不出现）"""
+
+    def _seed(self, env, workspace_id: str, dim: str, rows: list):
+        import asyncio
+
+        async def _run():
+            store = env["store"]
+            await store.create_workspace(Workspace(id=workspace_id, name=workspace_id))
+            for i, (key, value) in enumerate(rows):
+                await store._execute(
+                    """INSERT INTO metrics (id, workspace_id, entity_type, entity_id,
+                       metric, value, dim_json, ts) VALUES (?, ?, 'site', 'main',
+                       'ga4_sessions', ?, ?, '2026-09-10T00:00:00+00:00')""",
+                    (f"{workspace_id}-{i}", workspace_id, value,
+                     json.dumps({dim: key}, ensure_ascii=False)))
+            await store._db.commit()
+        asyncio.get_event_loop().run_until_complete(_run())
+
+    def test_country_dim_uses_builtin_world_map(self, env):
+        import asyncio
+        from fastapi.testclient import TestClient
+        from insflow.server.app import app
+
+        self._seed(env, "geo-country", "country",
+                   [("United States of America", 40), ("China", 30), ("Germany", 12)])
+        r = TestClient(app).get("/console/cockpit/traffic",
+                                params={"workspace_id": "geo-country", "days": 30})
+        assert r.status_code == 200
+        assert 'class="geo"' in r.text                      # 内置世界图
+        assert 'data-cf="country:China"' in r.text           # 联动维度正确
+        assert 'class="cell"' not in r.text
+
+    def test_province_dim_prefers_grid_over_world(self, env):
+        from fastapi.testclient import TestClient
+        from insflow.server.app import app
+        self._seed(env, "geo-province", "province",
+                   [("广东", 20), ("北京", 10)])
+        r = TestClient(app).get("/console/cockpit/traffic",
+                                params={"workspace_id": "geo-province", "days": 30})
+        assert r.status_code == 200
+        assert 'class="cell"' in r.text                      # 网格地图（世界图不匹配省份）
+        assert 'class="geo"' not in r.text
+
+    def test_region_dim_fallback(self, env):
+        from fastapi.testclient import TestClient
+        from insflow.server.app import app
+        self._seed(env, "geo-region", "region", [("APAC", 5), ("EMEA", 3)])
+        r = TestClient(app).get("/console/cockpit/traffic",
+                                params={"workspace_id": "geo-region", "days": 30})
+        assert r.status_code == 200
+        assert 'class="cell"' in r.text                      # 无匹配数据集 → 网格

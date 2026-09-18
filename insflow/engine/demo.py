@@ -149,6 +149,29 @@ class DemoSeeder:
                                    entity=domain, entity_type="competitor",
                                    dim={"changed": price != new_price, "old_price": price,
                                         "new_price": new_price})
+        # 竞品价格「日内多次采样」→ 真实 OHLC（开高低收来自实际观测，不是相邻桶凑数）
+        for domain, base_price, drop_at in (("competitor-b.com", 149.0, 8),
+                                            ("competitor-a.com", 99.0, -1)):
+            for i in range(d):
+                day = d - i
+                price = base_price
+                if drop_at >= 0 and day <= drop_at:
+                    price = 119.0
+                for hour, jitter in ((1, 0.0), (9, 1.5), (15, -1.0), (21, 0.5)):
+                    await self._ins_metric(
+                        store, "competitor_price_ohlc",
+                        round(price + (jitter if price == base_price else jitter / 3), 2),
+                        (self.now - timedelta(days=day)).replace(
+                            hour=hour, minute=0, second=0, microsecond=0).isoformat(),
+                        entity=domain, entity_type="competitor",
+                        dim={"source": "pricing_page", "hour": hour})
+        # 大规模关键词数据（9k 行）：供即席探索散点验证 GPU/Canvas 大数据量路径
+        for i in range(9000):
+            await self._ins_metric(
+                store, "kw_impressions",
+                int(20 + (i % 97) * 13 + RNG.uniform(0, 40)), self._ts(d - 1),
+                entity=f"kw-{i:05d}", entity_type="keyword",
+                dim={"keyword": f"kw-{i:05d}", "rank": round(1 + (i % 60) * 1.5, 1)})
         # CrUX（最新一次）
         for metric, value in (("crux_lcp", 2.1), ("crux_inp", 180),
                               ("crux_cls", 0.08), ("crux_ttfb", 0.6)):

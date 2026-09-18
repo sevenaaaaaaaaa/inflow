@@ -214,13 +214,7 @@ async def traffic(workspace_id: str, days: float = 14,
             "cwv": {m["metric"]: float(m["value"]) for m in cwv},
             "scatter": scatter[:60],
             "anomalies": anomalies[:10],
-            "geo": [(r["key"], r["value"]) for r in await store.metric_dim_breakdown(
-                workspace_id, "ga4_sessions", "province", days=days, limit=40,
-                dim_filters=df)],
-            "geo_scope": _geo_scope(workspace_id, [r["key"] for r in
-                                                   await store.metric_dim_breakdown(
-                                                       workspace_id, "ga4_sessions",
-                                                       "province", days=days, limit=5)]),
+            **await _geo_block(store, workspace_id, days, df),
             "box": await _channel_box(store, workspace_id, days, dim_filters=df),
             "cf": df,
         }
@@ -228,6 +222,20 @@ async def traffic(workspace_id: str, days: float = 14,
         _key(f"traffic:{channel}:{sorted((dim_filters or {}).items())}"
              f":{_auth_sig(policy, entity_allow)}", workspace_id, days),
         build, TTL)
+
+
+async def _geo_block(store, workspace_id: str, days: float,
+                     dim_filters: dict) -> dict:
+    """地域分布：按 province → country → region 依次尝试（数据决定了维度名）"""
+    for dim in ("province", "country", "region", "city"):
+        rows = await store.metric_dim_breakdown(workspace_id, "ga4_sessions", dim,
+                                               days=days, limit=40,
+                                               dim_filters=dim_filters)
+        if rows:
+            return {"geo": [(r["key"], r["value"]) for r in rows],
+                    "geo_dim": dim,
+                    "geo_scope": _geo_scope(workspace_id, [r["key"] for r in rows[:5]])}
+    return {"geo": [], "geo_dim": "province", "geo_scope": "china"}
 
 
 def _geo_scope(workspace_id: str, keys: list[str]) -> str:
@@ -291,8 +299,27 @@ async def competitor(workspace_id: str, days: float = 14) -> dict:
             "timeline": [{"ts": i.created_at.isoformat(), "title": i.title,
                           "severity": i.severity.value, "meta": i.type}
                          for i in recent[:15]],
+            # 价格 K 线：真实 OHLC（逐日多次采样：开=当日首采、高/低=极值、收=末采）
+            "price_ohlc": await _price_ohlc(store, workspace_id, days),
         }
     return await cache.get_or_compute(_key("competitor", workspace_id, days), build, TTL)
+
+
+async def _price_ohlc(store, workspace_id: str, days: float) -> dict:
+    """各竞品价格的真实 OHLC 序列（供 K 线；无采样则返回空）"""
+    out: dict[str, list] = {}
+    rows = await store._fetchall(
+        """SELECT DISTINCT entity_id FROM metrics
+           WHERE workspace_id = ? AND metric = 'competitor_price_ohlc'""",
+        (workspace_id,))
+    for r in rows[:5]:
+        domain = str(r["entity_id"])
+        series = await store.metric_ohlc(workspace_id, "competitor_price_ohlc",
+                                         days=days, bucket="day", entity_id=domain)
+        if series:
+            out[domain] = [(s["bucket"], float(s["open"]), float(s["high"]),
+                            float(s["low"]), float(s["close"])) for s in series]
+    return out
 
 
 # ================= C5 旅程 & RFM =================

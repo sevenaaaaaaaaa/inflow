@@ -498,6 +498,22 @@ async function ifLayoutHistory(){
   }catch(e){}
 })();
 
+/* ── PWA 安装引导（移动端把"添加到主屏"做成显式按钮）── */
+var IFINSTALL = {evt: null};
+window.addEventListener('beforeinstallprompt', function(e){
+  e.preventDefault();
+  IFINSTALL.evt = e;
+  var btn = document.getElementById('m-install');
+  if (btn) btn.hidden = false;
+});
+async function ifInstall(){
+  if (!IFINSTALL.evt) { toast('浏览器未提供安装入口（iOS 请用「分享 → 添加到主屏」）', 'warn'); return; }
+  IFINSTALL.evt.prompt();
+  var res = await IFINSTALL.evt.userChoice;
+  IFINSTALL.evt = null;
+  toast(res && res.outcome === 'accepted' ? '已添加到主屏' : '已取消');
+}
+
 /* ── Cross-filter（跨图联动）：点条形/格子/箱体 → 按维度筛选全屏 ── */
 function ifCrossFilter(dim, value){
   var u = new URL(location.href);
@@ -749,6 +765,96 @@ function ifDrawHeatmap(g, meta, W){
     g.globalAlpha = 1;
   });
 }
+/* ══ WebGL 渲染（零依赖手写 GL）：大数据量散点/折线走 GPU ══
+   阈值：散点 > 8000 或折线总点 > 40000 且 WebGL 可用；否则保持 2D Canvas。
+   着色器只做正交投影 + 属性色，不引入任何库；上下文创建失败即回退。 */
+var IFGL = { prog: null, gl: null, threshold_points: 8000, threshold_line: 40000 };
+function ifGLEnabled(){ return !!IFGL.threshold_points; }
+function ifGetGL(canvas){
+  if (IFGL.gl && IFGL.gl.canvas === canvas) return IFGL.gl;
+  var gl = null;
+  try { gl = canvas.getContext('webgl', {antialias: true, alpha: false,
+                                        preserveDrawingBuffer: true}); } catch(e){}
+  if (!gl) return null;
+  gl.clearColor(1,1,1,0);
+  IFGL.gl = gl; IFGL.prog = null;
+  return gl;
+}
+function ifCompile(gl, type, src){
+  var sh = gl.createShader(type);
+  gl.shaderSource(sh, src); gl.compileShader(sh);
+  return gl.getShaderParameter(sh, gl.COMPILE_STATUS) ? sh : null;
+}
+function ifProgram(gl){
+  if (IFGL.prog) return IFGL.prog;
+  var vs = ifCompile(gl, gl.VERTEX_SHADER,
+    'attribute vec2 a_p; attribute vec3 a_c; varying vec3 v_c;' +
+    'void main(){ v_c = a_c; gl_Position = vec4(a_p, 0.0, 1.0); }');
+  var fs = ifCompile(gl, gl.FRAGMENT_SHADER,
+    'precision mediump float; varying vec3 v_c;' +
+    'void main(){ gl_FragColor = vec4(v_c, 1.0); }');
+  if (!vs || !fs) return null;
+  var p = gl.createProgram();
+  gl.attachShader(p, vs); gl.attachShader(p, fs); gl.linkProgram(p);
+  if (!gl.getProgramParameter(p, gl.LINK_STATUS)) return null;
+  IFGL.prog = p;
+  return p;
+}
+function ifHexRGB(hex){
+  var h = String(hex || '#2563eb').trim();
+  if (h.charAt(0) !== '#' || (h.length !== 7 && h.length !== 4)) return [0.15,0.4,0.9];
+  if (h.length === 4) h = '#' + h[1]+h[1]+h[2]+h[2]+h[3]+h[3];
+  return [parseInt(h.substr(1,2),16)/255, parseInt(h.substr(3,2),16)/255,
+          parseInt(h.substr(5,2),16)/255];
+}
+function ifGLDraw(gl, points, colors, mode, size){
+  var prog = ifProgram(gl); if (!prog) return false;
+  gl.useProgram(prog);
+  var buf = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(points), gl.STATIC_DRAW);
+  var a_p = gl.getAttribLocation(prog, 'a_p');
+  gl.enableVertexAttribArray(a_p);
+  gl.vertexAttribPointer(a_p, 2, gl.FLOAT, false, 0, 0);
+  var buf2 = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, buf2);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(colors), gl.STATIC_DRAW);
+  var a_c = gl.getAttribLocation(prog, 'a_c');
+  gl.enableVertexAttribArray(a_c);
+  gl.vertexAttribPointer(a_c, 3, gl.FLOAT, false, 0, 0);
+  if (mode === 'points') gl.drawArrays(gl.POINTS, 0, points.length / 2);
+  else gl.drawArrays(gl.LINES, 0, points.length / 2);
+  gl.deleteBuffer(buf); gl.deleteBuffer(buf2);
+  return true;
+}
+function ifDrawGL(canvas, meta, W, H){
+  var gl = ifGetGL(canvas); if (!gl) return false;
+  var cs = getComputedStyle(document.documentElement);
+  var bg = cs.getPropertyValue('--bg') || '#fff';
+  var c = ifHexRGB(bg.trim());
+  gl.viewport(0, 0, canvas.width, canvas.height);
+  gl.clearColor(c[0], c[1], c[2], 1);
+  gl.clear(gl.COLOR_BUFFER_BIT);
+  var pad = meta.plot || [44, 14, 660, 180];
+  if (meta.kind === 'scatter'){
+    var pts = meta.points || [], coords = [], colors = [];
+    var col = ifHexRGB((cs.getPropertyValue('--accent') || '').trim());
+    pts.forEach(function(p){
+      var x0 = pad[0] + pad[2] * Math.min(1, p[0] / (meta.x_max || 1));
+      var y0 = pad[1] + pad[3] - pad[3] * Math.min(1, p[1] / (meta.y_max || 1));
+      coords.push((x0 / 720) * 2 - 1, 1 - (y0 / canvas.height) * 2);
+      colors.push(col[0], col[1], col[2]);
+    });
+    return ifGLDraw(gl, coords, colors, 'points');
+  }
+  return false;
+}
+function ifShouldGL(meta){
+  if (!ifGLEnabled()) return false;
+  if (meta.kind === 'scatter') return (meta.points || []).length > IFGL.threshold_points;
+  var n = 0; (meta.series || []).forEach(function(s){ n += (s.values || []).length; });
+  return meta.kind !== 'heatmap' && n > IFGL.threshold_line;
+}
 function ifDrawChart(canvas, meta, win, progress){
   var dpr = window.devicePixelRatio || 1;
   var W = canvas.clientWidth || canvas.width, H = canvas.height;
@@ -759,6 +865,11 @@ function ifDrawChart(canvas, meta, win, progress){
   var cs = getComputedStyle(document.documentElement);
   var colBorder = cs.getPropertyValue('--border') || '#ddd';
   var colFaint = cs.getPropertyValue('--faint') || '#999';
+  if (ifShouldGL(meta) && ifDrawGL(canvas, meta, W, H)){
+    canvas.setAttribute('data-renderer', 'webgl');
+    return;                                   // GPU 路径：散点/超大折线
+  }
+  canvas.setAttribute('data-renderer', '2d');
   if (meta.kind === 'scatter'){ ifDrawScatter(g, meta, W, H); return; }
   if (meta.kind === 'heatmap'){ ifDrawHeatmap(g, meta, W); return; }
   var labels = meta.labels || [], series = meta.series || [];

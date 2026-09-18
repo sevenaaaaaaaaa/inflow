@@ -638,7 +638,7 @@ def scatter(points: Sequence[tuple[float, float, str]], *, x_label: str = "",
             y_label: str = "", width: int = 720, height: int = 300,
             x_mid: float | None = None, y_mid: float | None = None,
             good_quadrant: str = "tr", canvas_threshold: int = 800,
-            chart_id: str = "") -> str:
+            chart_id: str = "", max_points: int = 20000) -> str:
     """散点（如关键词机会：搜索量 × 排名/竞争力），支持四象限标注"""
     pts = [(float(x or 0), float(y or 0), str(l)) for x, y, l in points]
     if not pts:
@@ -649,10 +649,17 @@ def scatter(points: Sequence[tuple[float, float, str]], *, x_label: str = "",
     y_max = nice_max(max(p[1] for p in pts) or 1)
     xm = x_mid if x_mid is not None else x_max / 2
     ym = y_mid if y_mid is not None else y_max / 2
-    # 大数据量 → Canvas（散点 > 800 个时 SVG 节点会明显拖慢）
+    # 大数据量 → Canvas/WebGL（散点 > 800 个时 SVG 节点会明显拖慢）
     if len(pts) > canvas_threshold:
         import json as _json
+        total_pts = len(pts)
+        sampled = False
+        if total_pts > max_points:          # 等步长抽样：保留分布形态，控制传输体积
+            stride = (total_pts + max_points - 1) // max_points
+            pts = pts[::stride]
+            sampled = True
         meta = {"kind": "scatter", "points": [[round(x, 4), round(y, 4), l] for x, y, l in pts],
+                "sampled": sampled, "sampled_from": total_pts,
                 "x_max": x_max, "y_max": y_max, "x_mid": xm, "y_mid": ym,
                 "x_label": x_label, "y_label": y_label, "plot": [pad_l, pad_t, plot_w, plot_h],
                 "good_quadrant": good_quadrant, "anim": True}
@@ -661,7 +668,8 @@ def scatter(points: Sequence[tuple[float, float, str]], *, x_label: str = "",
                 f'<canvas width="{width}" height="{height}" '
                 f"data-chart='{esc(_json.dumps(meta, ensure_ascii=False))}' "
                 f'role="img" aria-label="{esc(x_label or "散点")} × {esc(y_label or "指标")}'
-                f'：{len(pts)} 个点（Canvas 渲染）" '
+                f'：{total_pts} 个点（GPU/Canvas 渲染'
+                + (f"，等步长抽样至 {len(pts)} 点" if sampled else "") + '）" '
                 f'style="width:100%;height:{height}px"></canvas></div>')
     body = [y_grid(y_max, pad_l, pad_t, plot_w, plot_h)]
 

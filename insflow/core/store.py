@@ -909,6 +909,51 @@ class Store:
         return [{"bucket": r["bucket"], "value": float(r["v"] or 0), "n": r["n"]}
                 for r in rows]
 
+    async def metric_ohlc(self, workspace_id: str, metric: str, days: float = 90,
+                          bucket: str = "day", entity_id: str | None = None,
+                          dim_filters: dict | None = None,
+                          limit: int = 20000) -> list[dict]:
+        """真实 OHLC：按时间桶取桶内「首/最高/最低/末」（外加样本数）
+
+        用途：价格监控、排名波动、任何有日内多次采样的指标——不是用相邻桶凑数。
+        实现：单次按 ts 排序查询 + Python 归并（MySQL 5.7 无窗口函数，逐驱动写两套更脆）。
+        """
+        from datetime import timedelta
+        since = (datetime.now(UTC) - timedelta(days=days)).isoformat()
+        fmt = self._bucket_fmt(days) if bucket == "auto" else {
+            "hour": "%Y-%m-%d %H:00", "day": "%Y-%m-%d", "week": "%Y-%W",
+            "month": "%Y-%m"}.get(bucket, "%Y-%m-%d")
+        bucket_expr = (self._backend.dialect.bucket("ts", fmt) if self._backend
+                       else f"strftime('{fmt}', ts)")
+        where = "workspace_id = ? AND metric = ? AND ts >= ?"
+        params: list = [workspace_id, metric, since]
+        if entity_id:
+            where += " AND entity_id = ?"
+            params.append(entity_id)
+        dim_sql, dim_params = self._dim_where(dim_filters)
+        where += dim_sql
+        params.extend(dim_params)
+        rows = await self._fetchall(
+            f"""SELECT {bucket_expr} AS bucket, ts, value FROM metrics
+                WHERE {where} ORDER BY ts ASC LIMIT ?""",
+            tuple([*params, max(100, min(limit, 50000))]))
+        out: dict[str, dict] = {}
+        order: list[str] = []
+        for r in rows:
+            b = str(r["bucket"])
+            v = float(r["value"] or 0)
+            if b not in out:
+                out[b] = {"bucket": b, "open": v, "high": v, "low": v, "close": v,
+                          "n": 0, "first_ts": str(r["ts"]), "last_ts": str(r["ts"])}
+                order.append(b)
+            e = out[b]
+            e["high"] = max(e["high"], v)
+            e["low"] = min(e["low"], v)
+            e["close"] = v                      # 已按 ts 升序 → 最后覆盖即为收盘
+            e["last_ts"] = str(r["ts"])
+            e["n"] += 1
+        return [out[b] for b in order]
+
     async def metric_total(self, workspace_id: str, metric: str, days: float = 7,
                            agg: str = "sum", entity_id: str | None = None,
                            dim_filters: dict | None = None,
