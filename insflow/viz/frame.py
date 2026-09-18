@@ -22,10 +22,38 @@ def _csv_data_uri(columns: list[str], rows: list[list], stem: str) -> str:
     return f"data:text/csv;charset=utf-8,{payload}"
 
 
+def _numeric_columns(columns: list[str], rows: list[list]) -> set[int]:
+    """整列可数值化（≥80% 且非空）→ 该列右对齐并启用等宽数字"""
+    numeric: set[int] = set()
+    for idx in range(len(columns)):
+        values = [row[idx] for row in rows[:200]
+                  if idx < len(row) and row[idx] not in (None, "")]
+        if not values:
+            continue
+        ok = 0
+        for v in values:
+            try:
+                float(str(v).replace(",", "").replace("%", ""))
+                ok += 1
+            except (TypeError, ValueError):
+                continue
+        if ok / len(values) >= 0.8:
+            numeric.add(idx)
+    return numeric
+
+
 def _table_html(columns: list[str], rows: list[list], caption: str = "") -> str:
-    head = "".join(f'<th scope="col">{html.escape(str(c))}</th>' for c in columns)
+    """无障碍数据表：scope=col + caption + 数字列右对齐（屏幕阅读器可读）"""
+    numeric = _numeric_columns(columns, rows)
+
+    def _cls(i: int) -> str:
+        return ' class="num"' if i in numeric else ""
+
+    head = "".join(f'<th scope="col"{_cls(i)}>{html.escape(str(c))}</th>'
+                   for i, c in enumerate(columns))
     body = "".join(
-        "<tr>" + "".join(f"<td>{html.escape(str(v))}</td>" for v in row) + "</tr>"
+        "<tr>" + "".join(f"<td{_cls(i)}>{html.escape(str(v))}</td>"
+                         for i, v in enumerate(row)) + "</tr>"
         for row in rows
     )
     cap = f'<caption class="sr-only">{html.escape(caption)}</caption>' if caption else ""

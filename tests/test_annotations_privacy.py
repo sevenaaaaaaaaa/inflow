@@ -567,6 +567,9 @@ class TestStaticAssetsAndPerf:
         assert page.status_code == 200
         assert "/console/static/app.js?v=" in page.text
         assert "/console/static/app.css?v=" in page.text
+        # 版本号必须是内容哈希（改文件即失效缓存；用应用版本号会导致升级后前端仍旧）
+        from insflow.web.routes import ASSET_VERSION
+        assert f"app.js?v={ASSET_VERSION}" in page.text
         # 页面只保留极小内联脚本（主题初始化），不再内联 45KB
         assert page.text.count("ifToggleSeries") == 0        # 已移到外链
         assert len(page.content) < 40_000                    # 基线页 <40KB（原 ~70KB）

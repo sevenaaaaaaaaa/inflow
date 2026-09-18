@@ -18,6 +18,20 @@ from ..core.store import get_store
 templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 
 
+def _asset_version() -> str:
+    """静态资源版本号 = app.js + app.css 的内容哈希（改一处即全站失效缓存）"""
+    import hashlib
+    h = hashlib.sha256()
+    for name in ("static_app.js", "static_app.css"):
+        path = Path(__file__).parent / name
+        if path.exists():
+            h.update(path.read_bytes())
+    return h.hexdigest()[:10]
+
+
+ASSET_VERSION = _asset_version()
+
+
 def _md_to_html_filter(md: str) -> str:
     """复用白标渲染器的极简 MD→HTML（零构建链）"""
     from ..engine.white_label import WhiteLabelRenderer
@@ -303,6 +317,14 @@ NAV_AREA = {
     "action-loop": "loop",
     "competitor": "growth",
     "journey": "growth",
+    "maturity": "growth",
+    "alerts": "settings",
+    "members": "settings",
+    "assets": "settings",
+    "audit": "settings",
+    "integrations": "ecosystem",
+    "evolution": "ecosystem",
+    "snapshots": "report",
 }
 
 
@@ -360,6 +382,7 @@ def _ctx(request: Request, nav: str, workspace_id: str, **extra) -> dict:
         "version": __version__,
         "workspace_id": workspace_id,
         "base_path": os.environ.get("INSFLOW_BASE_PATH", "").rstrip("/"),
+        "asset_v": ASSET_VERSION,
         # base.html 会被子模板 import，那里没有 request，故在此预计算
         "cf_active": list(cross_filters(request).items()),
         "live_metrics": LIVE_METRICS.get(nav, []),

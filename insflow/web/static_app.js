@@ -164,7 +164,78 @@ async function ifLayoutHistory(){
   }catch(e){}
 })();
 
+/* ── 顶栏「更多」下拉（低频操作收纳，带文字标签） ── */
+function ifToggleMore(ev){
+  if(ev) ev.stopPropagation();
+  var pop = document.getElementById('if-more');
+  if(!pop) return;
+  var open = pop.hidden;
+  document.querySelectorAll('.more-pop').forEach(function(p){ p.hidden = true; });
+  pop.hidden = !open;
+  var btn = pop.parentNode.querySelector('.icon-btn');
+  if(btn) btn.setAttribute('aria-expanded', String(!pop.hidden));
+}
+document.addEventListener('click', function(e){
+  if(e.target.closest('.more-menu')) return;
+  document.querySelectorAll('.more-pop').forEach(function(p){ p.hidden = true; });
+});
+
+/* ── 交互打磨 v2：抽屉可达性 / toast 关闭 / 顶栏阴影 ── */
+function ifCloseDrawer(){
+  var d = document.getElementById('if-drawer');
+  if(d) d.classList.remove('on');
+}
+document.addEventListener('keydown', function(e){
+  if(e.key === 'Escape') ifCloseDrawer();
+});
+document.addEventListener('click', function(e){
+  var d = document.getElementById('if-drawer');
+  if(!d || !d.classList.contains('on')) return;
+  // 点击抽屉外部区域关闭（抽屉内容自身不关）
+  if(!e.target.closest('#if-drawer') && !e.target.closest('[data-keep-drawer]')) ifCloseDrawer();
+}, true);
+window.addEventListener('scroll', function(){
+  document.body.classList.toggle('scrolled', window.scrollY > 4);
+}, { passive: true });
+/* toast：最多堆 4 条、可点击关闭、按类型给 title 提示 */
+(function(){
+  var box = document.getElementById('toast');
+  if(!box) return;
+  new MutationObserver(function(){
+    while(box.children.length > 4) box.removeChild(box.firstChild);
+    Array.prototype.forEach.call(box.children, function(el){
+      if(el.__ifBound) return;
+      el.__ifBound = true;
+      el.setAttribute('role', 'status');
+      el.style.cursor = 'pointer';
+      el.title = '点击关闭';
+      el.addEventListener('click', function(){ el.remove(); });
+    });
+  }).observe(box, { childList: true });
+})();
+
 /* ── 全局问数（⌘K）：NL → Agent 问数（无 LLM 也可用规则解析）── */
+function ifDecorateDrawer(){
+  var d = document.getElementById('if-drawer');
+  if(!d || d.querySelector('.dr-close')) return;
+  var h3 = d.querySelector('h3');
+  if(h3){
+    var wrap = document.createElement('div');
+    wrap.className = 'dr-head';
+    h3.parentNode.insertBefore(wrap, h3);
+    wrap.appendChild(h3);
+    var btn = document.createElement('button');
+    btn.className = 'dr-close';
+    btn.type = 'button';
+    btn.setAttribute('aria-label', '关闭');
+    btn.textContent = '✕';
+    btn.onclick = ifCloseDrawer;
+    wrap.appendChild(btn);
+    wrap.style.position = 'relative';
+  }
+}
+new MutationObserver(ifDecorateDrawer).observe(document.body, { childList: true, subtree: true });
+
 function ifAsk(){
   var d = document.getElementById('if-drawer');
   if(!d){ d = document.createElement('div'); d.id='if-drawer'; document.body.appendChild(d); }

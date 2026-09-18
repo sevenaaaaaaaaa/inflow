@@ -288,7 +288,8 @@ def line_chart(series: list[dict], labels: Sequence[str], *, width: int = 720,
     ann_html = []
     if annotations:
         total_slots = max(1, len(labels) - 1)
-        for ann in annotations:
+        for ann in list(annotations)[:6]:          # 标注过多会互相压字
+
             pos = ann.get("pos")
             if pos is None and ann.get("ts") and labels:
                 idx = _nearest_label_index(str(ann["ts"]), list(labels))
@@ -307,9 +308,13 @@ def line_chart(series: list[dict], labels: Sequence[str], *, width: int = 720,
                 f'stroke="{color}" stroke-width="1.2" stroke-dasharray="4 3" opacity="0.75"/>')
             ann_html.append(f'<circle cx="{x:.1f}" cy="{pad_t + 4}" r="3.2" fill="{color}"/>')
             if label:
+                # 右侧空间不足时标签左置并右对齐，避免被图表边界裁掉
+                near_right = x > pad_l + plot_w - 70
+                tx = f"{x - 4:.1f}" if near_right else f"{x + 4:.1f}"
+                anchor = ' text-anchor="end"' if near_right else ""
                 ann_html.append(
-                    f'<text x="{x + 4:.1f}" y="{pad_t + 12}" class="ann" '
-                    f'style="font-size:9.5px;fill:{color}">{esc(label[:14])}</text>')
+                    f'<text x="{tx}" y="{pad_t + 12}" class="ann"{anchor} '
+                    f'style="font-size:9.5px;fill:{color}">{esc(label[:12])}</text>')
 
     # 大数据量 → Canvas（前端绘制，避免 SVG 节点爆炸）
     if total_points > canvas_threshold:

@@ -4,7 +4,7 @@
 :root{
   --bg:oklch(96.5% .016 85); --bg-soft:oklch(94% .02 85);
   --surface:oklch(100% 0 0 / .62); --surface-strong:oklch(100% 0 0 / .88);
-  --fg:oklch(22% .02 70); --muted:oklch(46% .016 70); --faint:oklch(51% .014 75);
+  --fg:oklch(22% .02 70); --muted:oklch(46% .016 70); --faint:oklch(47% .014 75);
   --border:oklch(86% .014 80); --border-strong:oklch(76% .02 80);
   --hover:oklch(22% .02 70 / .055); --hover-strong:oklch(22% .02 70 / .11);
   --accent:oklch(52% .17 258); --accent-strong:oklch(46% .17 258); --accent-soft:oklch(52% .17 258/.12); --on-accent:oklch(100% 0 0);
@@ -66,6 +66,7 @@ h1,h2,h3,p{margin:0}
 
 /* ── 侧栏 ── */
 #sidebar{position:fixed; top:calc(var(--chrome-h) + 14px); left:14px; bottom:14px; width:var(--sb-w); z-index:50;
+  display:flex; flex-direction:column;
   padding:12px 10px; border-radius:var(--r-lg); background:var(--glass); -webkit-backdrop-filter:blur(24px) saturate(170%); backdrop-filter:blur(24px) saturate(170%);
   border:1px solid var(--border); box-shadow:var(--shadow-sm); overflow:auto}
 .sb-title{font-size:var(--fs-xs); font-weight:700; letter-spacing:.08em; text-transform:uppercase; color:var(--faint); padding:6px 10px 8px}
@@ -74,7 +75,8 @@ h1,h2,h3,p{margin:0}
 .sb-link{display:flex; align-items:center; gap:9px; padding:9px 11px; border-radius:var(--r-sm); font-size:var(--fs-lg); color:var(--fg); font-weight:500}
 .sb-link:hover{background:var(--hover); text-decoration:none}
 .sb-link.on{background:var(--accent); color:var(--on-accent)}
-.sb-foot{margin-top:14px; padding-top:10px; border-top:1px solid var(--border); font-size:var(--fs-sm); color:var(--faint); padding-left:10px}
+.sb-foot{margin-top:auto; padding:10px 10px 2px; border-top:1px solid var(--border);
+  font-size:var(--fs-sm); color:var(--faint); flex-shrink:0}
 
 /* ── 主区 ── */
 main{margin:calc(var(--chrome-h) + 24px) 24px 40px calc(var(--sb-w) + 42px); max-width:var(--main-max)}
@@ -189,3 +191,153 @@ main button:not([class]){display:inline-flex; align-items:center; gap:6px; paddi
 main button:not([class]):hover{background:var(--accent-strong)}
 main button.secondary{display:inline-flex; align-items:center; gap:6px; padding:8px 15px; border-radius:var(--r-sm); background:var(--surface-strong); color:var(--fg); border:1px solid var(--border); font-size:var(--fs-lg); font-weight:600}
 main button.secondary:hover{background:var(--hover)}
+
+/* ══════════════ UI 打磨 v2（排版 / 对齐 / 交互 / 入口）══════════════
+   审计问题：裸 h1/h2 无样式（与 .page/.sec 不一致、且 margin:0 导致小节贴在一起）、
+   裸 button 无样式（新页面按钮像纯文字）、数字未等宽（表格跳列）、
+   文本类按钮/输入框缺 hover/active/disabled 状态、表格数字列左对齐。 */
+
+/* 1) 标题层级：裸标签与类名统一（老页面无需改模板） */
+h1{font-size:var(--fs-3xl); font-weight:800; letter-spacing:-.02em; margin:0 0 6px}
+h2{font-size:var(--fs-xl); font-weight:700; margin:26px 0 12px; letter-spacing:-.01em}
+h3{font-size:var(--fs-2xl); font-weight:700; margin:18px 0 8px}
+h1.page{font-size:var(--fs-3xl); margin-bottom:6px}
+h2.sec{font-size:var(--fs-xl); margin:26px 0 12px}
+.page-head{display:flex; align-items:flex-end; justify-content:space-between; gap:16px;
+  flex-wrap:wrap; margin-bottom:4px}
+.page-head .sub{margin-bottom:20px}
+.crumbs{font-size:var(--fs-sm); color:var(--faint); margin:0 0 8px; display:flex; gap:6px; align-items:center}
+.crumbs a{color:var(--faint)}
+.crumbs .sep{opacity:.6}
+
+/* 2) 数字等宽（表格/KPI/指标不全都在跳列） */
+.card .num,.dp-table td,.dp-table th,table td,table th,.kpi .num{
+  font-variant-numeric:tabular-nums; font-feature-settings:"tnum" 1}
+
+/* 3) 数值列右对齐（frame 自动给数字列加 .num） */
+th.num,td.num{text-align:right; font-variant-numeric:tabular-nums}
+
+/* 4) 裸按钮：默认次要按钮观感（.btn/.dp-btn/.icon-btn 会覆盖） */
+button{border:1px solid var(--border); background:var(--surface-strong);
+  padding:8px 14px; border-radius:var(--r-sm); font-weight:600; font-size:var(--fs-lg);
+  transition:background .18s var(--ease-spring), border-color .18s, transform .06s}
+button:hover{background:var(--hover)}
+button:active{transform:translateY(1px)}
+button:disabled{opacity:.55; cursor:not-allowed; transform:none}
+.btn:active{transform:translateY(1px)}
+.btn:disabled{opacity:.55; cursor:not-allowed}
+.icon-btn,.dp-btn,.main-tab{border-width:0}
+.icon-btn{border-width:1px}
+.dp-btn{padding:4px 9px; font-size:var(--fs-sm); border:1px solid var(--border);
+  border-radius:8px; background:var(--surface-strong); color:var(--muted); font-weight:600}
+.dp-btn:hover{background:var(--hover); color:var(--fg)}
+.dp-btn.dp-on{background:var(--accent-soft); color:var(--accent-strong); border-color:transparent}
+
+/* 5) 表单：补 textarea / placeholder / 数字框；label 统一 */
+textarea{font:inherit; color:inherit; padding:10px 12px; border:1px solid var(--border);
+  border-radius:var(--r-sm); background:var(--surface-strong); outline:none; resize:vertical;
+  transition:border-color .2s, box-shadow .2s}
+textarea:focus{border-color:var(--accent); box-shadow:0 0 0 3px var(--accent-soft)}
+input::placeholder,textarea::placeholder{color:var(--faint)}
+input[type="number"]{max-width:160px}
+label{font-size:var(--fs-sm); color:var(--muted); font-weight:600}
+input:disabled,select:disabled,textarea:disabled{opacity:.6; cursor:not-allowed}
+
+/* 6) 表格：斑马纹 + 首列强调 + 横向滚动容器（宽表不顶破布局） */
+tbody tr:nth-child(even) td{background:var(--surface-strong)}
+tbody tr:hover td{background:var(--hover)}
+.tablewrap{overflow-x:auto; border-radius:var(--r-md)}
+.card > table{display:table; width:100%; margin:0}
+
+/* 7) KPI 卡对齐：等高、数值与标签两端对齐、长标签不撑破 */
+.card.kpi{display:flex; flex-direction:column; justify-content:space-between; min-height:100px}
+.card.kpi .label{overflow-wrap:anywhere}
+
+/* 8) 面板头对齐：标题左、工具右、窄屏换行；批注按钮与标题基线对齐 */
+.dp-head{flex-wrap:wrap; row-gap:6px}
+.dp-title{display:inline-flex; align-items:baseline; gap:4px; flex-wrap:wrap}
+.dp-tools{flex-wrap:wrap; row-gap:6px}
+
+/* 9) 空状态：图标位 + 明确 CTA 间距 */
+.empty{display:flex; flex-direction:column; align-items:center; gap:10px}
+.empty a,.empty .btn{margin-top:2px}
+
+/* 10) 抽屉（下钻/批注/问数）：ESC 与遮罩提示、滚动、标题吸顶 */
+#if-drawer{max-height:78vh; overflow:auto}
+#if-drawer .dr-head{position:sticky; top:0; background:var(--glass-bright);
+  backdrop-filter:blur(18px); padding-bottom:6px; margin-bottom:6px; z-index:2}
+#if-drawer .dr-close{position:absolute; right:12px; top:10px; width:28px; height:28px;
+  display:grid; place-items:center; border-radius:8px; border:1px solid var(--border);
+  background:var(--surface-strong)}
+
+/* 11) 顶栏快捷键提示与滚动阴影 */
+.kbd{font-family:var(--font-mono); font-size:var(--fs-xs); border:1px solid var(--border);
+  border-bottom-width:2px; border-radius:6px; padding:1px 5px; color:var(--muted)}
+#chrome{transition:box-shadow .2s}
+body.scrolled #chrome{box-shadow:var(--shadow-sm)}
+
+/* 12) 打印：隐藏导航与工具，只留内容（报告/快照打印更干净） */
+@media print{
+  #chrome,#sidebar,#if-drawer,#toast,#if-live,.dp-tools,.toolbar,.if-filter{display:none !important}
+  main{margin:0; max-width:none}
+  body{background:#fff}
+  .card{box-shadow:none; border-color:#ddd}
+}
+
+/* 13) 极窄手机屏（≤360px）：单列 */
+@media(max-width:520px){
+  /* 520px 以下仍保持两列（数值短），只有极窄屏才单列 */
+  .cards{grid-template-columns:repeat(2,minmax(0,1fr)) !important}
+  .page-head{align-items:flex-start}
+  h1{font-size:21px}
+}
+
+/* 14) 侧栏导航打磨：活跃轨道、分组吸顶、间距节奏 */
+#sidebar{padding:14px 10px 10px}
+.sb-title{position:sticky; top:-14px; z-index:1; background:transparent;
+  padding:8px 12px 8px; margin-top:2px}
+.sb-panel .sb-title:not(:first-child){border-top:1px solid var(--border); margin-top:8px}
+.sb-link{position:relative}
+.sb-link.on{box-shadow:var(--shadow-sm)}
+.sb-link.on::before{content:""; position:absolute; left:-10px; top:8px; bottom:8px;
+  width:3px; border-radius:0 3px 3px 0; background:var(--accent)}
+.sb-link.on:hover{background:var(--accent)}
+.sb-foot{display:flex; justify-content:space-between; align-items:center; gap:6px}
+
+/* 15) 顶栏「更多」下拉：低频操作收纳（带文字标签） */
+.more-menu{position:relative}
+.more-pop{position:absolute; right:0; top:calc(100% + 8px); min-width:196px; z-index:80;
+  background:var(--glass-bright); backdrop-filter:blur(20px) saturate(160%);
+  border:1px solid var(--border); border-radius:var(--r-sm); box-shadow:var(--shadow);
+  padding:6px; display:flex; flex-direction:column; gap:2px}
+.more-pop[hidden]{display:none}
+.more-item{display:flex; align-items:center; gap:8px; padding:8px 10px; border:0;
+  background:none; border-radius:8px; font-size:var(--fs-lg); font-weight:500; text-align:left}
+.more-item:hover{background:var(--hover)}
+@media(max-width:640px){ .more-pop{right:-6px; min-width:180px} }
+
+/* 16) 移动端：宽表横向滚动（不再逐字换行）、顶栏不挤压、操作图标紧凑 */
+@media(max-width:640px){
+  /* KPI 两列（移动端更省滚动；≤360px 再降为单列） */
+  .cards{grid-template-columns:repeat(2,minmax(0,1fr)) !important; gap:10px}
+  .card{padding:14px}
+  .card.kpi{min-height:84px}
+  .card .num{font-size:22px}
+  .if-filter{row-gap:6px}
+  .main-tabs{min-width:0}
+  .brand small{display:none}
+  .chrome-actions{gap:4px}
+  .icon-btn{width:32px;height:32px}
+  .more-pop{right:-4px}
+  table{display:block; overflow-x:auto; -webkit-overflow-scrolling:touch;
+        border-radius:var(--r-sm)}
+  th,td{white-space:nowrap}
+  th{position:sticky; top:0; z-index:1}
+  table thead{display:table-header-group}
+  table tbody{display:table-row-group}
+  .crumbs{font-size:var(--fs-xs)}
+}
+
+@media(max-width:360px){
+  .cards{grid-template-columns:1fr !important}
+}

@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{% block title %}{% endblock %} | Insight Flow 情报台</title>
 <script>try{var t=localStorage.getItem('if_theme');if(t==='dark')document.documentElement.setAttribute('data-theme','dark');}catch(e){}</script>
-<link rel="stylesheet" href="/console/static/app.css?v={{ version }}">
+<link rel="stylesheet" href="/console/static/app.css?v={{ asset_v }}">
 </head>
 <body data-ws="{{ workspace_id }}" data-base-path="{{ base_path }}" data-live-metrics="{{ (live_metrics or []) | join(',') }}">
 <div id="if-live" hidden class="card" style="padding:10px 14px;margin-bottom:12px">
@@ -116,11 +116,15 @@ function ifSetFilter(k, v){
   <div class="chrome-actions">
     <button class="icon-btn" onclick="ifAsk()" title="问数（⌘K / Ctrl+K）：指标趋势 / 数据质量 / 渠道归因 / 动作增量">🔎</button>
     <button class="icon-btn" onclick="toggleAutoRefresh()" id="auto-btn" title="自动刷新（延迟 60s 起、每 120s 一次、最多 20 次、页面隐藏暂停）">⟳</button>
-    <button class="icon-btn" data-cap="export" onclick="ifExportPageXlsx()" title="导出整页 Excel（多表工作簿）">⤓</button>
-    <button class="icon-btn" data-cap="export" onclick="ifEmbed()" title="嵌入/分享此面板（只读 iframe）">⧉</button>
-    <button class="icon-btn" onclick="ifLayoutHistory()" title="布局历史版本（可回溯）">↺</button>
-    <button class="icon-btn" id="if-live-btn" onclick="ifToggleLive()"
-            title="实时流（SSE）：指标快照每 5s 推送，页面隐藏自动暂停">⚡</button>
+    <div class="more-menu" data-keep-drawer>
+      <button class="icon-btn" onclick="ifToggleMore(event)" title="更多操作（导出/嵌入/布局/实时）" aria-haspopup="true" aria-expanded="false">⋯</button>
+      <div class="more-pop" id="if-more" hidden>
+        <button class="more-item" data-cap="export" onclick="ifExportPageXlsx()">⤓ 导出整页 Excel</button>
+        <button class="more-item" data-cap="export" onclick="ifEmbed()">⧉ 嵌入 / 分享面板</button>
+        <button class="more-item" onclick="ifLayoutHistory()">↺ 布局历史版本</button>
+        <button class="more-item" id="if-live-btn" onclick="ifToggleLive()">⚡ 实时流（SSE）</button>
+      </div>
+    </div>
     <span class="if-online" id="if-online" hidden></span>
     <button class="icon-btn" onclick="toggleTheme()" title="切换明暗主题">◐</button>
     <button class="icon-btn" onclick="document.body.classList.toggle('sb-open')" title="侧栏">☰</button>
@@ -139,10 +143,25 @@ function ifSetFilter(k, v){
   <div class="sb-foot">工作区 <code>{{ workspace_id or '—' }}</code></div>
 </aside>
 
-<main>{% block content %}{% endblock %}</main>
+<main>
+  <div class="crumbs">
+    {% set ns = namespace(label='') %}
+    {% for key, g in groups.items() %}{% if area == key %}
+      {% for nav_key, url, label in g.links %}{% if nav == nav_key %}
+        {% set ns.label = label %}
+      {% endif %}{% endfor %}
+    {% endif %}{% endfor %}
+    {% if ns.label %}
+    <span>{{ groups[area].label if area in groups else '' }}</span>
+    <span class="sep">/</span>
+    <span style="color:var(--muted)">{{ ns.label }}</span>
+    {% endif %}
+  </div>
+  {% block content %}{% endblock %}
+</main>
 
-<div id="toast"></div>
-<script src="/console/static/app.js?v={{ version }}"></script>
+<div id="toast" role="status" aria-live="polite"></div>
+<script src="/console/static/app.js?v={{ asset_v }}"></script>
 {% block script %}{% endblock %}
 </body>
 </html>
