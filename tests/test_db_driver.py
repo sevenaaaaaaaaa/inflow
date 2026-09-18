@@ -115,6 +115,8 @@ class TestMySQLSchema:
 
     def test_engine_and_charset(self):
         for stmt in MYSQL_MIGRATIONS:
+            if stmt.strip().upper().startswith("ALTER"):
+                continue          # ALTER 语句没有 ENGINE/CHARSET 子句
             assert "ENGINE=InnoDB" in stmt and "utf8mb4" in stmt
 
     def test_no_sqlite_only_syntax(self):

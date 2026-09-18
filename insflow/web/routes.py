@@ -434,6 +434,21 @@ async def report_visual(request: Request, category: str, filename: str,
         html = await ReportRenderer(workspace_id).render(category, filename)
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
+    # 报告查看：水印 + 访问审计（企业合规）
+    from ..engine.watermark import ACTIONS, actor_of, company_of, stamp
+    actor = actor_of(request)
+    mark = stamp(actor, await company_of(workspace_id))
+    html = html.replace("</body>",
+                        f'<div style="padding:10px 16px;font-size:11px;color:#888">'
+                        f'{mark}</div></body>') if "</body>" in html else \
+        html + f'<div style="font-size:11px;color:#888">{mark}</div>'
+    try:
+        store = await get_store()
+        await store.record_admin(workspace_id, ACTIONS["report"], actor=actor,
+                                 target_type="report", target_id=filename,
+                                 detail={"category": category})
+    except Exception:
+        pass
     return HTMLResponse(html)
 
 
@@ -752,6 +767,7 @@ async def explore_page(request: Request, workspace_id: str = Query(""),
                        days: float = Query(30), agg: str = Query("sum"),
                        chart_type: str = Query("line", alias="chart"),
                        dim: str = Query("province"), dim2: str = Query("channel"),
+                       calc: str = Query("none"), window: int = Query(7),
                        granularity: str = Query("auto")):
     """即席探索：指标 × 维度透视 × 图表类型 × 聚合（URL 可分享）
 
@@ -767,6 +783,8 @@ async def explore_page(request: Request, workspace_id: str = Query(""),
     dim_values: list[tuple[str, float]] = []
     box_groups: list[tuple[str, list[float]]] = []
     scatter_points: list[tuple[float, float, str]] = []
+    waterfall_items: list[tuple[str, float]] = []
+    candlesticks: list[tuple[str, float, float, float, float]] = []
     entity_options: list[str] = []
     vars_ = template_vars(request)
     if metric:
@@ -779,17 +797,47 @@ async def explore_page(request: Request, workspace_id: str = Query(""),
         _pol_settings = (ws_pol.settings_json if ws_pol else {}) or {}
         policy = _policy_ctx(request, _pol_settings)
         allow = _role_ctx(request, _pol_settings)[1]
-        series = await store.metric_series(workspace_id, metric, days=days, agg=agg,
-                                           entity_id=entity or None, limit=200,
-                                           dim_filters=df if df else None,
-                                           entity_allow=allow or None,
-                                           policy=policy)
+        from ..engine.semantics import SemanticError, calc_series, resolve_metric
+        defs_map = {d["name"]: d for d in await store.list_metric_defs(workspace_id)}
+        calc_used, calc_error = "none", ""
+        if metric in defs_map and (defs_map[metric].get("expr") or "").strip():
+            # 派生指标：按口径表达式解析（血缘可追溯）
+            try:
+                resolved = await resolve_metric(workspace_id, metric, days=days, agg=agg)
+                series = [{"bucket": p["bucket"], "value": p["value"], "n": 1}
+                          for p in resolved["series"]]
+            except SemanticError as e:
+                calc_error = str(e)
+                series = []
+        else:
+            series = await store.metric_series(workspace_id, metric, days=days, agg=agg,
+                                               entity_id=entity or None, limit=200,
+                                               dim_filters=df if df else None,
+                                               entity_allow=allow or None,
+                                               policy=policy)
+        if calc and calc != "none" and series:
+            from ..engine.semantics import table_calc
+            raw = [p["value"] for p in series]
+            try:
+                table_calc(raw, calc, window=window)   # 校验
+                transformed = table_calc(raw, calc, window=window)
+                series = [{"bucket": p["bucket"], "value": v, "n": p["n"]}
+                          for p, v in zip(series, transformed)]
+                calc_used = calc
+            except SemanticError as e:
+                calc_error = str(e)
         rows = [{"bucket": p["bucket"], "value": p["value"], "n": p["n"]} for p in series]
         chart = {"metric": metric, "entity": entity, "agg": agg, "days": days,
                  "labels": [p["bucket"] for p in series],
                  "y_values": [p["value"] for p in series],
                  "rows": rows, "total": sum(p["value"] for p in series),
-                 "type": chart_type}
+                 "type": chart_type, "calc": calc_used,
+                 "is_derived": metric in defs_map and bool(
+                     (defs_map[metric].get("expr") or "").strip()),
+                 "lineage": None}
+        if chart["is_derived"]:
+            from ..engine.semantics import lineage as _lin
+            chart["lineage"] = await _lin(workspace_id, metric)
         dim_rows = await store.metric_dim_breakdown(workspace_id, metric, dim,
                                                     days=days, limit=24)
         dim_values = [(str(r["key"]), float(r["value"])) for r in dim_rows]
@@ -807,14 +855,31 @@ async def explore_page(request: Request, workspace_id: str = Query(""),
         if chart_type == "scatter":
             scatter_points = [(float(v), float(i + 1), str(k))
                               for i, (k, v) in enumerate(dim_values[:40])]
+        # 瀑布：相邻维度差值归因（维度按值降序 → 差值）
+        if chart_type == "waterfall":
+            prev = 0.0
+            for k, v in dim_values[:10]:
+                waterfall_items.append((k, float(v) - prev))
+                prev = float(v)
+        # K 线：按时间桶做「开高低收」（无 OHLC 源时用桶内首/末/极值，标注为近似）
+        if chart_type == "candlestick":
+            for i, p0 in enumerate(chart["rows"][:60]):
+                v = float(p0["value"])
+                prev = float(chart["rows"][i - 1]["value"]) if i else v
+                lo = min(prev, v)
+                hi = max(prev, v)
+                candlesticks.append((str(p0["bucket"]), prev, hi, lo, v))
     return templates.TemplateResponse(request, "explore.html", _ctx(
         request, "explore", workspace_id,
         catalog=catalog[:60], chart=chart, pivot=pivot, metric=metric, entity=entity,
         days=days, agg=agg, entity_options=entity_options, chart_type=chart_type,
         dim=dim, dim2=dim2, dim_values=dim_values, vars_=vars_,
         box_groups=box_groups, scatter_points=scatter_points,
+        waterfall_items=waterfall_items, candlesticks=candlesticks,
         dim_keys=await store.dim_keys(workspace_id, metric),
         defs=await store.list_metric_defs(workspace_id),
+        calc=calc, window=window, calc_error=calc_error, lineage=chart.get("lineage")
+        if chart else None,
     ))
 
 

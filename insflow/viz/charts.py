@@ -1064,3 +1064,229 @@ def choropleth(dataset: dict, values: Sequence[tuple[str, float]], *, width: int
     aria = (f"边界地图（{len(feats)} 个区域，{matched} 个有数据）："
             + "；".join(f"{k} {fmt_num(v)}" for k, v in top))
     return svg(width, height, "".join(body), aria=aria)
+
+
+# ========== 瀑布图（增减归因）==========
+
+def waterfall(items: Sequence[tuple[str, float]], *, width: int = 720, height: int = 260,
+              start: float = 0.0, unit: str = "", label: str = "") -> str:
+    """瀑布图：把总变化拆成各因子贡献（正绿负红，末位为合计）"""
+    rows = [(str(k), float(v or 0)) for k, v in items]
+    if not rows:
+        return placeholder(width, height)
+    pad_l, pad_r, pad_t, pad_b = 44, 12, 18, 34
+    plot_w, plot_h = width - pad_l - pad_r, height - pad_t - pad_b
+    running = float(start)
+    bars = []
+    for name, delta in rows:
+        bars.append((name, running, delta))
+        running += delta
+    lo = min([b[1] for b in bars] + [b[1] + b[2] for b in bars] + [0.0, running])
+    hi = max([b[1] for b in bars] + [b[1] + b[2] for b in bars] + [0.0, running])
+    span = (hi - lo) or 1.0
+    body, step = [], plot_w / (len(bars) + 1)
+
+    def Y(v: float) -> float:
+        return pad_t + plot_h - (v - lo) / span * plot_h
+
+    for tick in range(5):
+        v = lo + span * tick / 4
+        y = Y(v)
+        body.append(f'<line x1="{pad_l}" y1="{y:.1f}" x2="{pad_l + plot_w}" y2="{y:.1f}" '
+                    f'stroke="{theme.BORDER}" opacity="0.45"/>')
+        body.append(f'<text x="{pad_l - 6}" y="{y + 3:.1f}" text-anchor="end" '
+                    f'style="font-size:9.5px;fill:{theme.FAINT}">{fmt_num(v)}</text>')
+    for i, (name, base, delta) in enumerate(bars):
+        cx = pad_l + step * (i + 0.5)
+        y0, y1 = Y(base), Y(base + delta)
+        top, h = min(y0, y1), max(1.0, abs(y1 - y0))
+        color = theme.OK if delta >= 0 else theme.DANGER
+        bw = min(52.0, step * 0.6)
+        body.append(f'<rect x="{cx - bw / 2:.1f}" y="{top:.1f}" width="{bw:.1f}" '
+                    f'height="{h:.1f}" rx="3" fill="{color}" opacity="0.85" '
+                    f'data-tip="{esc(name)}：{delta:+,.4g}{esc(unit)}" '
+                    f'class="wf" tabindex="0"/>')
+        body.append(f'<text x="{cx:.1f}" y="{pad_t + plot_h + 14:.1f}" text-anchor="middle" '
+                    f'style="font-size:10px;fill:{theme.MUTED}">{esc(name[:8])}</text>')
+        if i < len(bars) - 1:
+            body.append(f'<line x1="{cx + bw / 2:.1f}" y1="{Y(base + delta):.1f}" '
+                        f'x2="{cx + step - bw / 2:.1f}" y2="{Y(base + delta):.1f}" '
+                        f'stroke="{theme.FAINT}" stroke-dasharray="3 3"/>')
+    # 合计柱
+    cx = pad_l + step * (len(bars) + 0.5)
+    bw = min(52.0, step * 0.6)
+    y0, y1 = Y(0), Y(running)
+    body.append(f'<rect x="{cx - bw / 2:.1f}" y="{min(y0, y1):.1f}" width="{bw:.1f}" '
+                f'height="{max(1.0, abs(y1 - y0)):.1f}" rx="3" fill="{theme.ACCENT}" '
+                f'data-tip="合计：{running:+,.4g}{esc(unit)}" class="wf" tabindex="0"/>')
+    body.append(f'<text x="{cx:.1f}" y="{pad_t + plot_h + 14:.1f}" text-anchor="middle" '
+                f'style="font-size:10px;fill:{theme.MUTED}">合计</text>')
+    if label:
+        body.append(f'<text x="{pad_l}" y="12" style="font-size:10.5px;'
+                    f'fill:{theme.MUTED}">{esc(label)}</text>')
+    aria = (f"瀑布图：起点 {fmt_num(start)}，"
+            + "；".join(f"{k} {v:+,.4g}" for k, v in rows[:6])
+            + f"，合计 {fmt_num(running)}{unit}")
+    return svg(width, height, "".join(body), aria=aria)
+
+
+# ========== 树图（构成占比，squarified）==========
+
+def treemap(items: Sequence[tuple[str, float]], *, width: int = 720, height: int = 320,
+            unit: str = "", filter_dim: str = "") -> str:
+    """树图（squarified 简化版）：面积表示占比，适合渠道/来源构成"""
+    rows = sorted(((str(k), float(v or 0)) for k, v in items if float(v or 0) > 0),
+                  key=lambda t: -t[1])
+    if not rows:
+        return placeholder(width, height)
+    total = sum(v for _, v in rows) or 1.0
+    body: list[str] = []
+    x = y = 0.0
+    w, h = float(width), float(height)
+
+    def place(idx: int, x0: float, y0: float, w0: float, h0: float) -> None:
+        """递归二分：横向或纵向切一刀，保证长宽比不至于极端"""
+        if idx >= len(rows) or w0 <= 0 or h0 <= 0:
+            return
+        if idx == len(rows) - 1:
+            name, v = rows[idx]
+            rect(x0, y0, w0, h0, name, v)
+            return
+        rest = sum(v for _, v in rows[idx:])
+        take = rows[idx][1]
+        frac = take / rest if rest else 1.0
+        if w0 >= h0:                       # 竖切
+            cut = w0 * frac
+            rect(x0, y0, cut, h0, rows[idx][0], take)
+            place(idx + 1, x0 + cut, y0, w0 - cut, h0)
+        else:                              # 横切
+            cut = h0 * frac
+            rect(x0, y0, w0, cut, rows[idx][0], take)
+            place(idx + 1, x0, y0 + cut, w0, h0 - cut)
+
+    def rect(x0: float, y0: float, w0: float, h0: float, name: str, v: float) -> None:
+        pct = v / total
+        color = theme.series_color(len(body) % 8)
+        cf = (f' data-cf="{esc(filter_dim)}:{esc(name)}" data-cf-label="{esc(name)}"'
+              if filter_dim else "")
+        body.append(f'<rect x="{x0 + 1:.1f}" y="{y0 + 1:.1f}" width="{max(0.0, w0 - 2):.1f}" '
+                    f'height="{max(0.0, h0 - 2):.1f}" rx="4" fill="{color}" '
+                    f'opacity="{0.35 + 0.55 * pct:.2f}"{cf} '
+                    f'data-tip="{esc(name)}：{fmt_num(v)}{esc(unit)}（{pct:.1%}）" class="tm"/>')
+        if w0 > 58 and h0 > 26:
+            body.append(f'<text x="{x0 + 8:.1f}" y="{y0 + 18:.1f}" '
+                        f'style="font-size:11px;fill:var(--on-accent);font-weight:600">'
+                        f'{esc(name[:12])}</text>')
+            body.append(f'<text x="{x0 + 8:.1f}" y="{y0 + 32:.1f}" '
+                        f'style="font-size:10px;fill:var(--on-accent);opacity:.85">'
+                        f'{fmt_num(v)} · {pct:.0%}</text>')
+
+    place(0, x, y, w, h)
+    aria = ("树图：" + "；".join(f"{k} {fmt_num(v)}（{v / total:.0%}）"
+                                for k, v in rows[:6]))
+    return svg(width, height, "".join(body), aria=aria)
+
+
+# ========== 日历热力（按天，周为列）==========
+
+def calendar_heatmap(values: Sequence[tuple[str, float]], *, width: int = 720,
+                     cell: int = 14, label: str = "", unit: str = "") -> str:
+    """日历热力（GitHub 风格）：values=[(YYYY-MM-DD, 值)]，周为列、周一为行首"""
+    from datetime import date as _date
+    from datetime import datetime as _dt
+    data: dict[str, float] = {}
+    for k, v in values:
+        key = str(k)[:10]
+        data[key] = float(v or 0)
+    if not data:
+        return placeholder(width, 160)
+    days = sorted(data)
+    try:
+        start = _dt.fromisoformat(days[0]).date()
+        end = _dt.fromisoformat(days[-1]).date()
+    except ValueError:
+        return placeholder(width, 160)
+    weeks = ((end - start).days // 7) + 2
+    height = 7 * cell + 30
+    vmax = max(data.values()) or 1
+    body = []
+    from datetime import timedelta as _td
+    d = start - _td(days=start.weekday())
+    col = 0
+    while d <= end:
+        for row in range(7):
+            day = d + _td(days=row)
+            if day < start or day > end:
+                continue
+            v = data.get(day.isoformat())
+            x, y = 28 + col * (cell + 2), 18 + row * (cell + 2)
+            if v is None:
+                fill, op = theme.BORDER, 0.35
+            else:
+                fill, op = theme.ACCENT, 0.15 + 0.85 * min(1.0, v / vmax)
+            body.append(f'<rect x="{x}" y="{y}" width="{cell}" height="{cell}" rx="3" '
+                        f'fill="{fill}" opacity="{op:.2f}" class="cell" '
+                        f'data-tip="{day.isoformat()}：'
+                        f'{fmt_num(v) if v is not None else "无数据"}{esc(unit)}"/>')
+        d += _td(days=7)
+        col += 1
+    for row, name in enumerate(("一", "三", "五", "日")):
+        r = (0, 2, 4, 6)[row]
+        body.append(f'<text x="4" y="{18 + r * (cell + 2) + cell - 3}" '
+                    f'style="font-size:9px;fill:{theme.FAINT}">{name}</text>')
+    if label:
+        body.append(f'<text x="28" y="12" style="font-size:10.5px;'
+                    f'fill:{theme.MUTED}">{esc(label)}</text>')
+    aria = (f"日历热力（{len(data)} 天）：最高 "
+            f"{fmt_num(max(data.values()))}{unit}")
+    return svg(min(width, 28 + weeks * (cell + 2)), height, "".join(body), aria=aria)
+
+
+# ========== K 线（开高低收）==========
+
+def candlestick(bars: Sequence[tuple[str, float, float, float, float]], *,
+                width: int = 720, height: int = 280, label: str = "") -> str:
+    """K 线：bars=[(时间, 开, 高, 低, 收)]；用于价格/竞品定价区间监控"""
+    rows = [(str(t), float(o), float(h), float(l), float(c)) for t, o, h, l, c in bars]
+    if not rows:
+        return placeholder(width, height)
+    pad_l, pad_r, pad_t, pad_b = 52, 12, 16, 28
+    plot_w, plot_h = width - pad_l - pad_r, height - pad_t - pad_b
+    lo = min(r[3] for r in rows)
+    hi = max(r[2] for r in rows)
+    span = (hi - lo) or 1.0
+    step = plot_w / len(rows)
+    bw = min(10.0, step * 0.6)
+    body = []
+    for tick in range(5):
+        v = lo + span * tick / 4
+        y = pad_t + plot_h - (v - lo) / span * plot_h
+        body.append(f'<line x1="{pad_l}" y1="{y:.1f}" x2="{pad_l + plot_w}" y2="{y:.1f}" '
+                    f'stroke="{theme.BORDER}" opacity="0.45"/>')
+        body.append(f'<text x="{pad_l - 6}" y="{y + 3:.1f}" text-anchor="end" '
+                    f'style="font-size:9.5px;fill:{theme.FAINT}">{fmt_num(v)}</text>')
+    for i, (t, o, h, l, c) in enumerate(rows):
+        cx = pad_l + step * (i + 0.5)
+        up = c >= o
+        color = theme.OK if up else theme.DANGER
+
+        def Y(v: float) -> float:
+            return pad_t + plot_h - (v - lo) / span * plot_h
+
+        body.append(f'<line x1="{cx:.1f}" y1="{Y(h):.1f}" x2="{cx:.1f}" y2="{Y(l):.1f}" '
+                    f'stroke="{color}" stroke-width="1"/>')
+        top, bottom = Y(max(o, c)), Y(min(o, c))
+        body.append(f'<rect x="{cx - bw / 2:.1f}" y="{top:.1f}" width="{bw:.1f}" '
+                    f'height="{max(1.0, bottom - top):.1f}" fill="{color}" class="k" '
+                    f'data-tip="{esc(t)} 开{fmt_num(o)} 高{fmt_num(h)} '
+                    f'低{fmt_num(l)} 收{fmt_num(c)}" tabindex="0"/>')
+        if i % max(1, len(rows) // 8) == 0:
+            body.append(f'<text x="{cx:.1f}" y="{pad_t + plot_h + 14:.1f}" '
+                        f'text-anchor="middle" style="font-size:9.5px;fill:{theme.FAINT}">'
+                        f'{esc(t[:8])}</text>')
+    if label:
+        body.append(f'<text x="{pad_l}" y="11" style="font-size:10.5px;'
+                    f'fill:{theme.MUTED}">{esc(label)}</text>')
+    aria = (f"K 线：{len(rows)} 根，区间 {fmt_num(lo)} ~ {fmt_num(hi)}，"
+            f"最新收 {fmt_num(rows[-1][4])}")
+    return svg(width, height, "".join(body), aria=aria)

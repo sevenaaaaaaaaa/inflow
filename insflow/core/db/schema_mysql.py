@@ -295,5 +295,11 @@ MYSQL_MIGRATIONS = [
         KEY idx_admin_audit_ws_time (workspace_id, created_at)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
     """,
+    """
+    ALTER TABLE users ADD COLUMN external_id VARCHAR(191) NOT NULL DEFAULT ''
+    """,
+    """
+    ALTER TABLE users ADD COLUMN active INT NOT NULL DEFAULT 1
+    """,
 
 ]

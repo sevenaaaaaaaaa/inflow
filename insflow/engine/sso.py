@@ -10,6 +10,9 @@
   INSFLOW_OIDC_CLIENT_SECRET
   INSFLOW_OIDC_SCOPES          默认 "openid email profile"
   INSFLOW_OIDC_DEFAULT_ROLE    新用户默认角色，默认 analyst
+  INSFLOW_OIDC_GROUP_ROLE_MAP  IdP 组 → 角色映射，JSON，例：
+                               {"growth": "analyst", "ops-leads": "admin"}
+                               命中多个组时取"权限更高"的那个（owner > admin > analyst > viewer）
 
 安全：
 - state 随机 + Cookie 校验（CSRF 防护），5 分钟过期
@@ -21,6 +24,7 @@ import base64
 import hashlib
 import json
 import os
+import re
 import secrets
 import time
 from urllib.parse import urlencode
@@ -31,6 +35,37 @@ _discovery_cache: dict[str, tuple[float, dict]] = {}
 
 class SsoError(Exception):
     pass
+
+
+ROLE_RANK = {"owner": 4, "admin": 3, "analyst": 2, "viewer": 1}
+
+
+def group_role_map() -> dict:
+    """IdP 组 → 角色（环境变量 JSON 或工作区设置，后者由调用方合并）"""
+    raw = os.environ.get("INSFLOW_OIDC_GROUP_ROLE_MAP", "")
+    if not raw:
+        return {}
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        return {}
+    out = {}
+    for group, role in (data or {}).items():
+        if str(role).lower() in ROLE_RANK:
+            out[str(group)] = str(role).lower()
+    return out
+
+
+def role_from_groups(groups: list[str], settings: dict | None = None) -> str:
+    """按 IdP 组定角色：多组命中取权限更高者；无命中回默认角色"""
+    mapping = {**group_role_map(),
+               **((settings or {}).get("oidc_group_role_map") or {})}
+    best = ""
+    for g in groups or []:
+        role = str(mapping.get(str(g)) or "").lower()
+        if role in ROLE_RANK and (not best or ROLE_RANK[role] > ROLE_RANK[best]):
+            best = role
+    return best or os.environ.get("INSFLOW_OIDC_DEFAULT_ROLE", "analyst")
 
 
 def config() -> dict:
@@ -131,11 +166,17 @@ async def fetch_userinfo(access_token: str) -> dict:
         raise SsoError("userinfo 未返回 email（无法绑定账号）")
     if info.get("email_verified") is False:
         raise SsoError("邮箱未验证，拒绝登录")
+    raw_groups = info.get("groups") or info.get("roles") or []
+    if isinstance(raw_groups, str):
+        raw_groups = [g for g in re.split(r"[,\s]+", raw_groups) if g]
+    groups = [str(g) for g in raw_groups][:50]
     return {
         "email": email,
         "name": str(info.get("name") or info.get("preferred_username") or email),
         "subject": str(info.get("sub") or ""),
-        "role": config()["default_role"],
+        # 角色优先由 IdP 组映射决定（企业里角色应随组织调整）
+        "role": role_from_groups(groups),
+        "groups": groups,
         "raw": info,
     }
 
@@ -149,9 +190,15 @@ async def upsert_user(workspace_id: str, userinfo: dict) -> dict:
         "SELECT id, email, name, role, workspace_id FROM users WHERE email = ?",
         (userinfo["email"],))
     if row:
+        role = userinfo.get("role") or row["role"]
+        if userinfo.get("groups") and role != row["role"]:
+            # IdP 组调整 → 同步角色（只升不降由企业策略决定；这里按映射结果如实同步）
+            await store._execute("UPDATE users SET role = ? WHERE id = ?",
+                                 (role, row["id"]))
+            await store._db.commit()
         return {"user_id": row["id"], "email": row["email"],
-                "workspace_id": row["workspace_id"], "role": row["role"],
-                "created": False}
+                "workspace_id": row["workspace_id"], "role": role,
+                "created": False, "groups": userinfo.get("groups", [])}
     mgr = AccountManager(workspace_id)
     created = await mgr.register(userinfo["email"],
                                  secrets.token_urlsafe(24) + "Aa1!",

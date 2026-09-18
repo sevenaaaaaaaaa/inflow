@@ -320,3 +320,252 @@ class TestSchedulerHandlers:
         for job in ("alerts.hourly", "digest.daily", "alerts.flush", "rollup.daily",
                     "token.audit"):
             assert job in src
+
+
+class TestSemanticsLayer:
+    """语义层：计算字段（派生指标）+ 表计算 + 血缘"""
+
+    def test_expression_safe_eval(self):
+        from insflow.engine.semantics import SemanticError, evaluate, refs, tokenize
+        assert evaluate("ga4_conversions / ga4_sessions * 100",
+                        {"ga4_conversions": 21, "ga4_sessions": 1000}) == 2.1
+        assert evaluate("-3 + (10)", {}) == 7.0
+        assert evaluate("1 / 0", {}) == 0.0            # 除零安全
+        assert refs("a / b * 100") == ["a", "b"]
+        # 无 eval：函数调用/属性访问都进不了计算
+        for bad in ["os.system('rm -rf /')", "__import__('os')", "a; b"]:
+            with pytest.raises(SemanticError):
+                evaluate(bad, {"a": 1})
+        assert [v for k, v in tokenize("a+b")] == ["a", "+", "b"]
+
+    def test_table_calcs(self):
+        from insflow.engine.semantics import SemanticError, table_calc
+        assert table_calc([10, 12, 9], "mom") == [0.0, 0.2, -0.25]
+        assert table_calc([1, 2, 3], "cum") == [1.0, 3.0, 6.0]
+        assert table_calc([5, 7, 6], "diff") == [0.0, 2.0, -1.0]
+        assert table_calc([1, 2, 3, 4], "rolling", window=2) == [1.0, 1.5, 2.5, 3.5]
+        assert table_calc([1, 3], "share") == [0.25, 0.75]
+        assert table_calc([1, 2], "none") == [1.0, 2.0]
+        with pytest.raises(SemanticError):
+            table_calc([1, 2], "bogus")
+
+    def test_resolve_derived_and_lineage(self, env):
+        import asyncio
+        from insflow.engine.demo import DemoSeeder
+        from insflow.engine.semantics import resolve_metric
+
+        async def _run():
+            store = env["store"]
+            await DemoSeeder("test-ws", days=30).seed()
+            await store.upsert_metric_def("test-ws", "conversion_rate",
+                                         label="转化率",
+                                         expr="ga4_conversions / ga4_sessions * 100",
+                                         unit="%", owner="growth")
+            resolved = await resolve_metric("test-ws", "conversion_rate", days=30)
+            nested = await store.upsert_metric_def(
+                "test-ws", "cr_doubled", expr="conversion_rate * 2", unit="%")
+            doubled = await resolve_metric("test-ws", "cr_doubled", days=30)
+            return resolved, doubled, nested
+
+        resolved, doubled, nested = asyncio.get_event_loop().run_until_complete(_run())
+        assert resolved["kind"] == "derived" and len(resolved["series"]) > 5
+        assert 0 < resolved["value"] < 100                 # 比率量级合理
+        deps = {d["metric"] for d in resolved["lineage"]["depends_on"]}
+        assert deps == {"ga4_conversions", "ga4_sessions"}
+        assert doubled["kind"] == "derived"                # 派生套派生
+        assert any(d["metric"] == "conversion_rate"
+                   for d in doubled["lineage"]["depends_on"])
+        assert nested["version"] == 1
+
+    def test_cycle_detection(self, env):
+        import asyncio
+        from insflow.engine.semantics import SemanticError, resolve_metric
+
+        async def _run():
+            store = env["store"]
+            await store.upsert_metric_def("test-ws", "a", expr="b + 1")
+            await store.upsert_metric_def("test-ws", "b", expr="a + 1")
+            try:
+                await resolve_metric("test-ws", "a", days=7)
+                return None
+            except SemanticError as e:
+                return str(e)
+
+        msg = asyncio.get_event_loop().run_until_complete(_run())
+        assert msg and "循环依赖" in msg
+
+    def test_def_api_validates_expr_and_explore_renders(self, env):
+        import asyncio
+        from fastapi.testclient import TestClient
+        from insflow.engine.demo import DemoSeeder
+        from insflow.server.app import app
+
+        asyncio.get_event_loop().run_until_complete(
+            DemoSeeder("test-ws", days=30).seed())
+        cli = TestClient(app)
+        assert cli.post("/api/v1/metrics/defs", json={
+            "workspace_id": "test-ws", "name": "bad", "expr": "a +"}).status_code == 400
+        assert cli.post("/api/v1/metrics/defs", json={
+            "workspace_id": "test-ws", "name": "cvr", "label": "转化率",
+            "expr": "ga4_conversions / ga4_sessions * 100", "unit": "%"}).status_code == 200
+        r = cli.post("/api/v1/semantics/resolve", json={
+            "workspace_id": "test-ws", "metric": "cvr", "days": 30})
+        assert r.status_code == 200 and r.json()["kind"] == "derived"
+        assert cli.post("/api/v1/semantics/calc", json={
+            "workspace_id": "test-ws", "metric": "ga4_sessions", "mode": "mom",
+            "days": 30}).json()["values"]
+        assert cli.post("/api/v1/semantics/calc", json={
+            "workspace_id": "test-ws", "metric": "ga4_sessions",
+            "mode": "bogus"}).status_code == 400
+        lineage = cli.get("/api/v1/semantics/lineage", params={
+            "workspace_id": "test-ws", "metric": "cvr"}).json()
+        assert lineage["kind"] == "derived" and lineage["depends_on"]
+        page = cli.get("/console/explore", params={
+            "workspace_id": "test-ws", "metric": "cvr", "days": 30})
+        assert page.status_code == 200
+        assert "派生指标" in page.text and "血缘" in page.text
+        calc_page = cli.get("/console/explore", params={
+            "workspace_id": "test-ws", "metric": "ga4_sessions", "calc": "cum",
+            "days": 30})
+        assert calc_page.status_code == 200 and "表计算" in calc_page.text
+
+
+class TestNewCharts:
+    def test_waterfall_treemap_calendar_candlestick(self):
+        wf = c.waterfall([("涨价", 120), ("流失", -45)], start=1000, unit=" 元")
+        assert "瀑布图" in wf and wf.count('class="wf"') == 3      # 2 因子 + 合计
+        tm = c.treemap([("search", 380), ("social", 220)], filter_dim="channel")
+        assert tm.count('class="tm"') == 2 and 'data-cf="channel:search"' in tm
+        assert "树图" in tm
+        cal = c.calendar_heatmap([("2026-09-%02d" % d, d % 7) for d in range(1, 29)])
+        assert "日历热力" in cal and cal.count('class="cell"') >= 28
+        k = c.candlestick([("09-01", 10, 12, 9, 11), ("09-02", 11, 13, 10, 12)])
+        assert "K 线" in k and k.count('class="k"') == 2
+        for svg in (wf, tm, cal, k):
+            assert 'role="img"' in svg and "aria-label" in svg and "data-tip" in svg
+
+    def test_empty_inputs_are_placeholders(self):
+        assert "暂无数据" in c.waterfall([])
+        assert "暂无数据" in c.treemap([])
+        assert "暂无数据" in c.calendar_heatmap([])
+        assert "暂无数据" in c.candlestick([])
+
+    def test_explore_page_exposes_new_types(self, env):
+        import asyncio
+        from fastapi.testclient import TestClient
+        from insflow.engine.demo import DemoSeeder
+        from insflow.server.app import app
+
+        asyncio.get_event_loop().run_until_complete(
+            DemoSeeder("test-ws", days=30).seed())
+        cli = TestClient(app)
+        for ct, marker in (("treemap", 'class="tm"'), ("waterfall", 'class="wf"'),
+                           ("calendar", 'class="cell"'), ("candlestick", 'class="k"')):
+            r = cli.get("/console/explore", params={
+                "workspace_id": "test-ws", "metric": "ga4_sessions",
+                "days": 30, "chart": ct})
+            assert r.status_code == 200, ct
+            assert marker in r.text, ct
+
+
+class TestScimAndWatermark:
+    def test_scim_flow(self, env, monkeypatch):
+        import asyncio
+        from fastapi.testclient import TestClient
+        from insflow.server.app import app
+        monkeypatch.setenv("INSFLOW_SCIM_TOKEN", "tok-1")
+        cli = TestClient(app)
+        H = {"Authorization": "Bearer tok-1"}
+        assert cli.get("/scim/v2/Users", params={
+            "workspace_id": "test-ws"}).status_code == 401          # fail-closed
+        assert cli.get("/scim/v2/Users", params={"workspace_id": "test-ws"},
+                       headers={"Authorization": "Bearer nope"}).status_code == 401
+        cfg = cli.get("/scim/v2/ServiceProviderConfig").json()
+        assert cfg["patch"]["supported"] is True
+        r = cli.post("/scim/v2/Users?workspace_id=test-ws", headers=H, json={
+            "userName": "scim@test.com", "name": {"formatted": "SCIM"},
+            "role": "analyst"})
+        assert r.status_code == 200
+        uid, body = r.json()["id"], r.json()
+        assert body["role"] == "analyst" and body["active"] is True
+        # 幂等（IdP 重试）
+        again = cli.post("/scim/v2/Users?workspace_id=test-ws", headers=H,
+                         json={"userName": "scim@test.com"})
+        assert again.json()["id"] == uid
+        # 不会因为 SCIM 而新建工作区
+        async def _count():
+            return len(await env["store"].list_workspaces())
+        assert asyncio.get_event_loop().run_until_complete(_count()) == 1
+        assert cli.get("/scim/v2/Users", params={
+            "workspace_id": "test-ws", "filter": 'userName eq "scim@test.com"'},
+            headers=H).json()["totalResults"] == 1
+        assert cli.get("/scim/v2/Users", params={
+            "workspace_id": "test-ws", "filter": 'x co "y"'}, headers=H).status_code == 400
+        patched = cli.patch(f"/scim/v2/Users/{uid}?workspace_id=test-ws", headers=H,
+                            json={"Operations": [{"op": "replace", "path": "active",
+                                                  "value": False}]}).json()
+        assert patched["active"] is False
+        assert cli.patch(f"/scim/v2/Users/{uid}?workspace_id=test-ws", headers=H,
+                         json={"Operations": [{"path": "role",
+                                               "value": "root"}]}).status_code == 400
+        assert cli.delete(f"/scim/v2/Users/{uid}?workspace_id=test-ws",
+                          headers=H).status_code == 204
+        groups = cli.get("/scim/v2/Groups", params={"workspace_id": "test-ws"},
+                         headers=H).json()["Resources"]
+        assert {g["displayName"] for g in groups} == {"owner", "admin", "analyst",
+                                                     "viewer"}
+        logs = cli.get("/api/v1/audit/admin",
+                       params={"workspace_id": "test-ws"}).json()["logs"]
+        assert any(x["action"].startswith("scim.") for x in logs)
+
+    def test_group_role_mapping(self, monkeypatch):
+        import os
+        from insflow.engine.sso import group_role_map, role_from_groups
+        monkeypatch.setenv("INSFLOW_OIDC_GROUP_ROLE_MAP",
+                           '{"growth":"analyst","ops-leads":"admin","bad":"root"}')
+        assert group_role_map() == {"growth": "analyst", "ops-leads": "admin"}
+        assert role_from_groups([]) == "analyst"                  # 默认
+        assert role_from_groups(["ops-leads"]) == "admin"
+        assert role_from_groups(["growth", "ops-leads"]) == "admin"   # 取更高
+        assert role_from_groups(["growth"],
+                                {"oidc_group_role_map": {"growth": "viewer"}}) == "viewer"
+        os.environ.pop("INSFLOW_OIDC_GROUP_ROLE_MAP", None)
+
+    def test_watermark_and_access_audit(self, env, monkeypatch):
+        import asyncio
+        import io as _io
+        import zipfile
+        from fastapi.testclient import TestClient
+        from insflow.engine.demo import DemoSeeder
+        from insflow.engine.watermark import (csv_with_watermark, header,
+                                              xlsx_watermark_sheet)
+        from insflow.server.app import app
+
+        assert "导出水印" in csv_with_watermark("a,b\n1,2\n", "u@x.com", "某公司")
+        assert xlsx_watermark_sheet("u@x.com", "某公司")[0] == "导出信息"
+        assert "%E5%AF%BC%E5%87%BA" in header("u@x.com", "某公司")["X-Export-Watermark"]
+        asyncio.get_event_loop().run_until_complete(
+            DemoSeeder("test-ws", days=10).seed())
+
+        async def _brand():
+            store = env["store"]
+            ws = await store.get_workspace("test-ws")
+            settings = dict(ws.settings_json or {})
+            settings["branding"] = {"company": "某公司"}
+            ws.settings_json = settings
+            await store.update_workspace(ws)
+        asyncio.get_event_loop().run_until_complete(_brand())
+        cli = TestClient(app)
+        x = cli.get("/api/v1/export/xlsx", params={
+            "workspace_id": "test-ws", "panel": "cockpit:traffic", "days": 10})
+        assert x.status_code == 200
+        assert x.headers.get("x-export-watermark")
+        wb = zipfile.ZipFile(_io.BytesIO(x.content)).read("xl/workbook.xml").decode()
+        assert "导出信息" in wb
+        csv = cli.get("/api/v1/audit/admin", params={
+            "workspace_id": "test-ws", "format": "csv"})
+        assert csv.text.startswith("# 导出水印")
+        logs = cli.get("/api/v1/audit/admin",
+                       params={"workspace_id": "test-ws"}).json()["logs"]
+        assert any(x["action"] == "access.export_xlsx" for x in logs)
+        assert any(x["action"] == "access.export_csv" for x in logs)

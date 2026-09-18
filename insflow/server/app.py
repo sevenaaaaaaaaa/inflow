@@ -688,6 +688,183 @@ async def list_dims(workspace_id: str = Query(...), metric: str = Query("")):
     return {"dims": await (await get_store()).dim_keys(workspace_id, metric)}
 
 
+@app.post("/api/v1/semantics/resolve")
+async def semantics_resolve(payload: dict):
+    """解析指标（基础或派生口径）→ 值 + 序列 + 血缘"""
+    from ..engine.semantics import SemanticError, resolve_metric
+    ws = str(payload.get("workspace_id") or "")
+    name = str(payload.get("metric") or "")
+    if not ws or not name:
+        raise HTTPException(status_code=400, detail="需要 workspace_id 与 metric")
+    try:
+        return await resolve_metric(ws, name, days=float(payload.get("days") or 30),
+                                    agg=str(payload.get("agg") or "sum"))
+    except SemanticError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get("/api/v1/semantics/lineage")
+async def semantics_lineage(workspace_id: str = Query(...), metric: str = Query(...)):
+    """指标血缘（这个数从哪来：派生口径 → 引用指标 → 明细）"""
+    from ..engine.semantics import lineage
+    return await lineage(workspace_id, metric)
+
+
+@app.post("/api/v1/semantics/calc")
+async def semantics_calc(payload: dict):
+    """表计算（时空变换）：mom/yoy/cum/rolling/share/diff/pct_change"""
+    from ..engine.semantics import SemanticError, calc_series
+    ws = str(payload.get("workspace_id") or "")
+    metric = str(payload.get("metric") or "")
+    if not ws or not metric:
+        raise HTTPException(status_code=400, detail="需要 workspace_id 与 metric")
+    try:
+        return await calc_series(ws, metric, mode=str(payload.get("mode") or "mom"),
+                                 window=int(payload.get("window") or 7),
+                                 days=float(payload.get("days") or 30),
+                                 season=int(payload.get("season") or 12))
+    except SemanticError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+# ========== SCIM 2.0（企业用户同步） ==========
+
+def _scim_auth(request: Request, settings: dict | None) -> None:
+    from ..engine.scim import ScimError, check_token
+    token = ""
+    auth = request.headers.get("authorization") or ""
+    if auth.lower().startswith("bearer "):
+        token = auth[7:].strip()
+    try:
+        check_token(token, settings)
+    except ScimError as e:
+        raise HTTPException(status_code=e.status, detail=e.detail)
+
+
+def _scim_ws(request: Request) -> tuple[str, dict]:
+    """SCIM 作用的工作区 + 设置（token 也可以配在 settings 里）"""
+    ws = request.query_params.get("workspace_id") or ""
+    if not ws:
+        raise HTTPException(status_code=400, detail="需要 workspace_id（作为 SCIM 作用域）")
+    return ws, {}
+
+
+@app.get("/scim/v2/ServiceProviderConfig")
+async def scim_config(workspace_id: str = Query("")):
+    from ..engine.scim import service_provider_config
+    return service_provider_config()
+
+
+@app.get("/scim/v2/Groups")
+async def scim_groups(request: Request, workspace_id: str = Query("")):
+    from ..engine.scim import list_groups
+    ws = workspace_id
+    ws_row = await (await get_store()).get_workspace(ws) if ws else None
+    _scim_auth(request, ws_row.settings_json if ws_row else {})
+    return await list_groups()
+
+
+@app.get("/scim/v2/Users")
+async def scim_list_users(request: Request, workspace_id: str = Query(...),
+                          filter: str = Query(""), startIndex: int = Query(1),
+                          count: int = Query(100)):
+    from ..engine.scim import ScimError, list_users
+    store = await get_store()
+    ws_row = await store.get_workspace(workspace_id)
+    _scim_auth(request, ws_row.settings_json if ws_row else {})
+    try:
+        return await list_users(workspace_id, filter_=filter, start=startIndex,
+                                count=count)
+    except ScimError as e:
+        raise HTTPException(status_code=e.status, detail=e.detail)
+
+
+@app.post("/scim/v2/Users")
+async def scim_create_user(request: Request, payload: dict,
+                           workspace_id: str = Query(...)):
+    from ..engine.scim import ScimError, create_user
+    store = await get_store()
+    ws_row = await store.get_workspace(workspace_id)
+    _scim_auth(request, ws_row.settings_json if ws_row else {})
+    try:
+        user = await create_user(workspace_id, payload)
+    except ScimError as e:
+        raise HTTPException(status_code=e.status, detail=e.detail)
+    created = bool(user.pop("x-created", True))
+    if created:                       # 幂等重试不重复留痕
+        await _audit_async(request, workspace_id, "scim.user_create",
+                           target_type="user", target_id=user.get("userName", ""),
+                           detail={"role": user.get("role"),
+                                   "active": user.get("active")})
+    return user
+
+
+@app.get("/scim/v2/Users/{user_id}")
+async def scim_get_user(request: Request, user_id: str, workspace_id: str = Query(...)):
+    from ..engine.scim import ScimError, get_user
+    store = await get_store()
+    ws_row = await store.get_workspace(workspace_id)
+    _scim_auth(request, ws_row.settings_json if ws_row else {})
+    try:
+        return await get_user(workspace_id, user_id)
+    except ScimError as e:
+        raise HTTPException(status_code=e.status, detail=e.detail)
+
+
+@app.patch("/scim/v2/Users/{user_id}")
+async def scim_patch_user(request: Request, user_id: str, payload: dict,
+                          workspace_id: str = Query(...)):
+    from ..engine.scim import ScimError, patch_user
+    store = await get_store()
+    ws_row = await store.get_workspace(workspace_id)
+    _scim_auth(request, ws_row.settings_json if ws_row else {})
+    try:
+        user = await patch_user(workspace_id, user_id, payload)
+    except ScimError as e:
+        raise HTTPException(status_code=e.status, detail=e.detail)
+    await _audit_async(request, workspace_id, "scim.user_patch",
+                       target_type="user", target_id=user_id,
+                       detail={"role": user.get("role"), "active": user.get("active")})
+    return user
+
+
+@app.put("/scim/v2/Users/{user_id}")
+async def scim_put_user(request: Request, user_id: str, payload: dict,
+                        workspace_id: str = Query(...)):
+    from ..engine.scim import ScimError, patch_user
+    store = await get_store()
+    ws_row = await store.get_workspace(workspace_id)
+    _scim_auth(request, ws_row.settings_json if ws_row else {})
+    ops = []
+    if "active" in payload:
+        ops.append({"path": "active", "value": payload["active"]})
+    role = payload.get("role") or (payload.get("urn:ietf:params:scim:schemas:"
+                                             "extension:enterprise:2.0:User") or {}).get("role")
+    if role:
+        ops.append({"path": "role", "value": role})
+    try:
+        return await patch_user(workspace_id, user_id, {"Operations": ops})
+    except ScimError as e:
+        raise HTTPException(status_code=e.status, detail=e.detail)
+
+
+@app.delete("/scim/v2/Users/{user_id}", status_code=204)
+async def scim_delete_user(request: Request, user_id: str,
+                           workspace_id: str = Query(...)):
+    from ..engine.scim import ScimError, delete_user
+    store = await get_store()
+    ws_row = await store.get_workspace(workspace_id)
+    _scim_auth(request, ws_row.settings_json if ws_row else {})
+    try:
+        await delete_user(workspace_id, user_id)
+    except ScimError as e:
+        raise HTTPException(status_code=e.status, detail=e.detail)
+    await _audit_async(request, workspace_id, "scim.user_deactivate",
+                       target_type="user", target_id=user_id)
+    from fastapi import Response
+    return Response(status_code=204)
+
+
 @app.post("/api/v1/explore/cube")
 async def explore_cube(request: Request, payload: dict):
     """自由组合透视：rows(1-2 维) × cols(0-1 维)，拖拽式探索后端"""
@@ -730,6 +907,14 @@ async def upsert_metric_def(request: Request, payload: dict):
     name = str(payload.get("name") or "").strip()
     if not ws or not name:
         raise HTTPException(status_code=400, detail="需要 workspace_id 与 name")
+    # 口径表达式先做语法校验（坏口径会让看板解析失败，必须在写入前拦住）
+    expr = str(payload.get("expr") or "").strip()
+    if expr:
+        from ..engine.semantics import SemanticError, evaluate
+        try:
+            evaluate(expr, {})
+        except SemanticError as e:
+            raise HTTPException(status_code=400, detail=f"口径表达式错误：{e}")
     return await store.upsert_metric_def(ws, name, **{
         k: payload.get(k) for k in ("label", "expr", "unit", "owner", "notes")
         if payload.get(k) is not None})
@@ -888,8 +1073,8 @@ async def whoami(request: Request):
 
 
 @app.get("/api/v1/export/xlsx")
-async def export_xlsx(workspace_id: str = Query(...), panel: str = Query(...),
-                      days: float = Query(30)):
+async def export_xlsx(request: Request, workspace_id: str = Query(...),
+                      panel: str = Query(...), days: float = Query(30)):
     """整页 Excel 导出：驾驶舱（或单指标）→ 多表工作簿
 
     把聚合结果按可读表拍平（KPI / 趋势 / 地域 / 渠道 …），交付给客户继续分析。
@@ -916,13 +1101,22 @@ async def export_xlsx(workspace_id: str = Query(...), panel: str = Query(...),
         stem = f"cockpit-{name}"
     else:
         raise HTTPException(status_code=400, detail="panel 形如 cockpit:traffic")
+    # 水印 + 访问审计（企业合规：谁导出了什么）
+    from ..engine.watermark import (ACTIONS, actor_of, company_of, header as wm_header,
+                                    xlsx_watermark_sheet)
+    actor = actor_of(request)
+    company = await company_of(workspace_id)
+    sheets.append(xlsx_watermark_sheet(actor, company))
     data_bytes = write_xlsx([(t, cols, rows) for t, cols, rows in sheets])
+    await _audit_async(request, workspace_id, ACTIONS["xlsx"], target_type="export",
+                       target_id=panel, detail={"rows": sum(len(r) for _, _, r in sheets)})
     return Response(
         content=data_bytes,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition":
                  f"attachment; filename={stem}-{time.strftime('%Y%m%d')}.xlsx; "
-                 f"filename*=UTF-8''{_quote(stem)}.xlsx"})
+                 f"filename*=UTF-8''{_quote(stem)}.xlsx",
+                 **wm_header(actor, company)})
 
 
 @app.get("/api/v1/charts/range")
@@ -1073,9 +1267,9 @@ async def list_geo_datasets(workspace_id: str = Query(...)):
 
 
 @app.get("/api/v1/audit/admin")
-async def admin_audit(workspace_id: str = Query(...), action: str = Query(""),
-                      actor: str = Query(""), limit: int = Query(200),
-                      format: str = Query("json")):
+async def admin_audit(request: Request, workspace_id: str = Query(...),
+                      action: str = Query(""), actor: str = Query(""),
+                      limit: int = Query(200), format: str = Query("json")):
     """管理动作审计（谁在何时改了什么）；format=csv 供合规归档"""
     rows = await (await get_store()).list_admin_audit(
         workspace_id, action=action, actor=actor, limit=limit)
@@ -1095,9 +1289,18 @@ async def admin_audit(workspace_id: str = Query(...), action: str = Query(""),
                              r.get("target_id"), r.get("ip"),
                              _json2.dumps(r.get("detail") or {},
                                           ensure_ascii=False)])
-        return Response(buf.getvalue(), media_type="text/csv; charset=utf-8",
+        from ..engine.watermark import (ACTIONS, actor_of, company_of, csv_with_watermark,
+                                        header as wm_header)
+        actor = actor_of(request)
+        company = await company_of(workspace_id)
+        await _audit_async(request, workspace_id, ACTIONS["csv"],
+                           target_type="export", target_id="admin-audit",
+                           detail={"rows": len(rows)})
+        return Response(csv_with_watermark(buf.getvalue(), actor, company),
+                        media_type="text/csv; charset=utf-8",
                         headers={"Content-Disposition":
-                                 "attachment; filename=admin-audit.csv"})
+                                 "attachment; filename=admin-audit.csv",
+                                 **wm_header(actor, company)})
     return {"logs": rows}
 
 

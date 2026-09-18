@@ -211,6 +211,8 @@ MIGRATIONS = [
         name TEXT NOT NULL DEFAULT '',
         role TEXT NOT NULL DEFAULT 'owner',
         workspace_id TEXT,
+        external_id TEXT NOT NULL DEFAULT '',
+        active INTEGER NOT NULL DEFAULT 1,
         created_at TEXT NOT NULL
     );
     """,
@@ -338,6 +340,13 @@ MIGRATIONS = [
     """,
 
 ]
+
+# V5: users 增加 SCIM 字段（external_id / active）——SQLite ALTER 幂等
+V5_USERS_COLUMNS = [
+    "ALTER TABLE users ADD COLUMN external_id TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE users ADD COLUMN active INTEGER NOT NULL DEFAULT 1",
+]
+
 
 # V3: metrics 幂等去重（R1-4）—— ALTER 语句需要幂等执行（检查列是否存在）
 V3_METRICS_DEDUPE_SQL = [
@@ -472,6 +481,14 @@ class Store:
                 col_name = statement.split("ADD COLUMN")[1].strip().split(" ")[0]
                 if col_name in cols:
                     continue
+            await self._execute(statement)
+        # V5：users 的 SCIM 字段（按列存在性跳过）
+        ucols = {row[1] for row in
+                 await (await self._execute("PRAGMA table_info(users)")).fetchall()}
+        for statement in V5_USERS_COLUMNS:
+            col_name = statement.split("ADD COLUMN")[1].strip().split(" ")[0]
+            if col_name in ucols:
+                continue
             await self._execute(statement)
         await self._db.commit()
 

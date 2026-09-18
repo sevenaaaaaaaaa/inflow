@@ -26,7 +26,7 @@
   </select>
   {% endif %}
   <label>图表</label>
-  {% for ct, lbl in [('line','趋势'),('bar','条形'),('box','箱线'),('scatter','散点'),('map','网格地图')] %}
+  {% for ct, lbl in [('line','趋势'),('bar','条形'),('box','箱线'),('scatter','散点'),('map','网格地图'),('treemap','树图'),('waterfall','瀑布'),('calendar','日历热力'),('candlestick','K线')] %}
   <a class="if-chip {{ 'on' if chart_type == ct }}" href="#" onclick="exSet('chart','{{ ct }}');return false">{{ lbl }}</a>
   {% endfor %}
   <label>时间</label>
@@ -36,6 +36,10 @@
   <label>聚合</label>
   {% for a, lbl in [('sum','求和'),('avg','均值'),('max','最大')] %}
   <a class="if-chip {{ 'on' if agg == a }}" href="#" onclick="exSet('agg','{{ a }}');return false">{{ lbl }}</a>
+  {% endfor %}
+  <label>表计算</label>
+  {% for c, lbl in [('none','原始'),('mom','环比'),('yoy','同比'),('cum','累计'),('rolling','滚动均值'),('share','占比'),('diff','差分'),('pct_change','变化率')] %}
+  <a class="if-chip {{ 'on' if calc == c }}" href="#" onclick="exSet('calc','{{ c }}');return false">{{ lbl }}</a>
   {% endfor %}
   {% for k, v in vars_.items() %}
   <span class="badge" style="background:var(--accent);color:var(--on-accent)">var.{{ k }} = {{ v }}</span>
@@ -50,7 +54,28 @@ function exSet(k, v){
 }
 </script>
 
+{% if calc_error %}
+<div class="card" style="border-color:var(--danger)">
+  <b>口径/表计算错误：</b>{{ calc_error }}
+</div>
+{% endif %}
 {% if chart %}
+{% if chart.is_derived %}
+<div class="card">
+  <b>派生指标</b> <span class="sub">按语义层口径计算</span>
+  <div style="margin-top:6px;font-size:12.5px">
+    口径：<code>{{ chart.lineage.expr if chart.lineage else '' }}</code>
+    {% if chart.lineage and chart.lineage.unit %}· 单位 {{ chart.lineage.unit }}{% endif %}
+    {% if chart.lineage and chart.lineage.owner %}· 责任人 {{ chart.lineage.owner }}{% endif %}
+    · v{{ chart.lineage.version if chart.lineage else 1 }}
+  </div>
+  <div class="sub" style="margin-top:6px">血缘：{{ chart.metric }}
+    {%- for dep in (chart.lineage.depends_on if chart.lineage else []) %}
+      ← {{ dep.metric }}{% if dep.kind == 'base' %}（明细）{% endif %}
+    {%- endfor %}
+  </div>
+</div>
+{% endif %}
 <div class="cards">
   {{ viz.kpi_card('指标', chart.metric, color='var(--accent)') | safe }}
   {{ viz.kpi_card('区间合计', chart.total | round | int, color='var(--accent)') | safe }}
@@ -69,6 +94,28 @@ function exSet(k, v){
       dim_values | map(attribute=0) | zip(dim_values | map(attribute=1)) | map('list') | list,
       viz.tile_map(dim_values, scope='china', label='网格地图（近似地理，非精确边界）',
                    filter_dim=dim), csv_name='explore-map') | safe }}
+{% elif chart_type == 'treemap' and dim_values %}
+  {{ viz.datapanel(chart.metric ~ ' · 构成（树图）', ['维度', '值'],
+      dim_values | map(attribute=0) | zip(dim_values | map(attribute=1)) | map('list') | list,
+      viz.treemap(dim_values, filter_dim=dim, unit=''),
+      csv_name='explore-treemap', subtitle='面积=占比；点区块可联动筛选') | safe }}
+{% elif chart_type == 'waterfall' and waterfall_items %}
+  {{ viz.datapanel(chart.metric ~ ' · 差值归因（瀑布）', ['维度', '变化'],
+      waterfall_items | map(attribute=0) | zip(waterfall_items | map(attribute=1)) | map('list') | list,
+      viz.waterfall(waterfall_items, label='相邻维度差值（降序排列，末位合计）'),
+      csv_name='explore-waterfall') | safe }}
+{% elif chart_type == 'calendar' %}
+  {{ viz.datapanel(chart.metric ~ ' · 日历热力', ['日期', '值'],
+      chart.rows | map(attribute='bucket') | zip(chart.rows | map(attribute='value')) | map('list') | list,
+      viz.calendar_heatmap(chart.rows | map(attribute='bucket') | zip(
+          chart.rows | map(attribute='value')) | map('list') | list,
+          label='每日 ' ~ chart.metric ~ '（周为列，周一为行首）'),
+      csv_name='explore-calendar') | safe }}
+{% elif chart_type == 'candlestick' and candlesticks %}
+  {{ viz.datapanel(chart.metric ~ ' · K 线（近似 OHLC）', ['时间', '开', '高', '低', '收'],
+      candlesticks | map('list') | list,
+      viz.candlestick(candlesticks, label='相邻桶近似开高低收（非真实 OHLC 源）'),
+      csv_name='explore-candlestick') | safe }}
 {% elif chart_type == 'box' and box_groups %}
   {{ viz.datapanel(chart.metric ~ ' · 各 ' ~ dim ~ ' 分布（箱线）', ['维度', '样本数'],
       box_groups | map(attribute=0) | zip(box_groups | map(attribute=1) | map('length')) | map('list') | list,
@@ -99,6 +146,22 @@ function exSet(k, v){
   {% else %}
   <div class="empty">该指标暂无可透视的维度数据（采集维度含 {{ dim }}/{{ dim2 }} 时自动出现）</div>
   {% endif %}
+</div>
+
+<h2>计算字段（派生指标 / 表计算）</h2>
+<div class="card">
+  <p class="sub">用已有指标四则运算定义新口径（如 <code>ga4_conversions / ga4_sessions * 100</code>），
+    保存后即可在指标下拉里像普通指标一样探索；表计算（环比/同比/累计/滚动/占比）对任意指标即时生效。</p>
+  <div class="toolbar" style="flex-wrap:wrap;gap:8px">
+    <input id="ex-def-name" placeholder="指标名（如 conversion_rate）" style="min-width:200px">
+    <input id="ex-def-expr" placeholder="口径表达式（指标名 + - * / 括号与数字）" style="min-width:320px">
+    <input id="ex-def-unit" placeholder="单位（如 %）" style="width:110px">
+    <input id="ex-def-owner" placeholder="责任人" style="width:130px">
+    <button onclick="exSaveCalcDef()">保存口径</button>
+    <button class="dp-btn" onclick="exCheckLineage()">查看血缘</button>
+    <span id="ex-def-status" class="sub"></span>
+  </div>
+  <div id="ex-def-out" class="sub" style="margin-top:8px"></div>
 </div>
 
 <h2>维度自由组合（拖拽）</h2>
@@ -193,6 +256,43 @@ function exClearCube(){
   ['rows','cols','val'].forEach(function(s){ document.getElementById('slot-' + s).innerHTML = ''; });
   document.getElementById('ex-cube-out').innerHTML = '';
 }
+async function exSaveCalcDef(){
+  var st = document.getElementById('ex-def-status');
+  var name = document.getElementById('ex-def-name').value.trim();
+  var expr = document.getElementById('ex-def-expr').value.trim();
+  if(!name || !expr){ st.textContent = '请填指标名与表达式'; return; }
+  st.textContent = '校验并保存中…';
+  var r = await fetch('/api/v1/metrics/defs', {method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({workspace_id:'{{ workspace_id }}', name:name, label:name,
+                          expr:expr, unit:document.getElementById('ex-def-unit').value,
+                          owner:document.getElementById('ex-def-owner').value})});
+  if(!r.ok){ var d = await r.json(); st.textContent = d.detail || '保存失败'; return; }
+  st.textContent = '已保存 ✓ 正在解析…';
+  var rr = await fetch('/api/v1/semantics/resolve', {method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({workspace_id:'{{ workspace_id }}', metric:name, days:30})});
+  var j = await rr.json();
+  st.textContent = rr.ok ? ('解析成功：当前值 ' + j.value) : ('口径解析失败：' + (j.detail||''));
+  if(rr.ok && j.series) window.location.href = '/console/explore?workspace_id={{ workspace_id }}&metric=' + encodeURIComponent(name) + '&days=30';
+}
+async function exCheckLineage(){
+  var out = document.getElementById('ex-def-out');
+  var name = document.getElementById('ex-def-name').value.trim() || '{{ metric }}';
+  if(!name){ out.textContent = '请填指标名'; return; }
+  var r = await fetch('/api/v1/semantics/lineage?workspace_id={{ workspace_id }}&metric=' + encodeURIComponent(name));
+  var j = await r.json();
+  function walk(n, depth){
+    var pad = '&nbsp;'.repeat(depth * 3);
+    var s = pad + '• ' + n.metric +
+      (n.kind === 'derived' ? ' <span class="sub">= ' + (n.expr||'') + '</span>' : ' <span class="sub">(明细)</span>') +
+      '<br>';
+    (n.depends_on || []).forEach(function(c){ s += walk(c, depth + 1); });
+    return s;
+  }
+  out.innerHTML = '<b>血缘：</b><br>' + walk(j, 0);
+}
+
 async function exRunCube(){
   var st = document.getElementById('ex-cube-status');
   if(!EXCUBE.metric){ st.textContent = '请把某个指标拖到「值」槽'; return; }
