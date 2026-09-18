@@ -339,6 +339,40 @@ MIGRATIONS = [
         ON admin_audit(workspace_id, created_at);
     """,
 
+    """
+    CREATE TABLE IF NOT EXISTS ingest_events (
+        id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL,
+        source TEXT NOT NULL,
+        event_id TEXT NOT NULL,
+        event_type TEXT NOT NULL DEFAULT '',
+        seen_at TEXT NOT NULL
+    );
+    """,
+    """
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_ingest_event_key
+        ON ingest_events(workspace_id, source, event_id);
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS action_dead_letters (
+        id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL,
+        action_id TEXT NOT NULL DEFAULT '',
+        action_type TEXT NOT NULL DEFAULT '',
+        target_ref TEXT NOT NULL DEFAULT '',
+        payload_json TEXT NOT NULL DEFAULT '{}',
+        error TEXT NOT NULL DEFAULT '',
+        attempts INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL,
+        replayed_at TEXT NOT NULL DEFAULT '',
+        replay_result TEXT NOT NULL DEFAULT ''
+    );
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_dead_letter_ws_time
+        ON action_dead_letters(workspace_id, created_at);
+    """,
+
 ]
 
 # V5: users 增加 SCIM 字段（external_id / active）——SQLite ALTER 幂等
@@ -1188,6 +1222,69 @@ class Store:
         return {"rows": rows, "cols": [col_dim or "时间"],
                 "row_labels": row_labels, "col_labels": col_labels, "matrix": matrix,
                 "dim_rows": rows, "dim_col": col_dim, "metric": metric, "agg": agg}
+
+    # ---- 入站事件幂等（跨系统契约：同一 event_id 只处理一次）----
+
+    async def mark_ingest_event(self, workspace_id: str, source: str,
+                                event_id: str, event_type: str = "") -> bool:
+        """登记入站事件；返回 True=首次（应处理），False=重复（应跳过）
+
+        唯一索引 + INSERT OR IGNORE 双保险：并发重复也不会双写
+        （MySQL 唯一键报错由 dialect 转 INSERT IGNORE）。
+        """
+        if not event_id:
+            return True                      # 对端没给 id：无法去重，按首次处理
+        cur = await self._execute(
+            """INSERT OR IGNORE INTO ingest_events
+               (id, workspace_id, source, event_id, event_type, seen_at)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (generate_id(), workspace_id, source[:48], event_id[:191],
+             event_type[:64], datetime.now(UTC).isoformat()))
+        await self._db.commit()
+        return bool(cur.rowcount)
+
+    # ---- 出站死信（跨系统可靠性：失败可重放）----
+
+    async def add_dead_letter(self, workspace_id: str, *, action_id: str = "",
+                              action_type: str = "", target_ref: str = "",
+                              payload: dict | None = None, error: str = "",
+                              attempts: int = 0) -> dict:
+        did = generate_id()
+        await self._execute(
+            """INSERT INTO action_dead_letters (id, workspace_id, action_id,
+               action_type, target_ref, payload_json, error, attempts, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (did, workspace_id, action_id, action_type[:64], target_ref[:255],
+             json.dumps(payload or {}, ensure_ascii=False, default=str),
+             error[:2000], int(attempts), datetime.now(UTC).isoformat()))
+        await self._db.commit()
+        return {"id": did, "action_id": action_id, "action_type": action_type}
+
+    async def list_dead_letters(self, workspace_id: str, *, limit: int = 100,
+                                only_pending: bool = True) -> list[dict]:
+        where = "workspace_id = ?"
+        if only_pending:
+            where += " AND replayed_at = ''"
+        rows = await self._fetchall(
+            f"""SELECT * FROM action_dead_letters WHERE {where}
+                ORDER BY created_at DESC LIMIT ?""", (workspace_id, min(limit, 500)))
+        out = []
+        for r in rows:
+            d = dict(r)
+            try:
+                d["payload"] = json.loads(d.get("payload_json") or "{}")
+            except Exception:
+                d["payload"] = {}
+            out.append(d)
+        return out
+
+    async def mark_dead_letter_replayed(self, workspace_id: str, letter_id: str,
+                                        result: str) -> None:
+        await self._execute(
+            """UPDATE action_dead_letters SET replayed_at = ?, replay_result = ?
+               WHERE workspace_id = ? AND id = ?""",
+            (datetime.now(UTC).isoformat(), result[:2000], workspace_id, letter_id))
+        await self._db.commit()
 
     # ---- 管理动作审计（合规：谁在何时改了什么）----
 

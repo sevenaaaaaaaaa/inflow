@@ -61,6 +61,16 @@ class IngestReceiver:
             return {"ok": False, "error": f"载荷解析失败: {e}"}
 
         event_type = payload.get("event") or payload.get("type") or ""
+        # 幂等：同一 (source, event_id) 只处理一次（对端重试/网络重放不会双写）
+        source = str(payload.get("source") or "openflow")
+        event_id = str(payload.get("event_id") or payload.get("id") or "")
+        from ..core.store import get_store
+        first = await (await get_store()).mark_ingest_event(
+            self.workspace_id, source, event_id, event_type)
+        if not first:
+            self.bus.emit("ingest.duplicate", {"event": event_type,
+                                              "event_id": event_id})
+            return {"ok": True, "duplicate": True, "event": event_type}
         self.bus.emit("ingest.received", {"event": event_type})
 
         handler = self._handlers().get(event_type)
@@ -76,8 +86,13 @@ class IngestReceiver:
             "content.failed": self._on_content_failed,
             # OpenFlow 钩子事件（零插件通道/官方插件共用 ingest）
             "cdp_event": self._on_generic_event,
+            "cdp.event": self._on_generic_event,
+            "cdp.lead": self._on_generic_event,
+            "cdp.contact": self._on_generic_event,
+            "cdp.order": self._on_generic_event,
             "lead": self._on_generic_event,
             "contact": self._on_generic_event,
+            "order": self._on_generic_event,
         }
 
     # ========== MFlow 发布回流 ==========
@@ -145,9 +160,67 @@ class IngestReceiver:
     # ========== OpenFlow 钩子事件（记录 + 旅程/漏斗数据底座）==========
 
     async def _on_generic_event(self, payload: dict) -> dict:
-        """OpenFlow cdp_event/lead/contact → 记录事件流（M3 旅程重建用）"""
-        self.bus.emit("external.event", {
-            "kind": payload.get("event") or payload.get("type"),
-            "data": payload,
-        })
-        return {"ok": True, "recorded": True}
+        """OpenFlow cdp_event/lead/contact/order → 归一化落库
+
+        此前只 `bus.emit`（事件流可见但模型吃不到）。现在按类型落位：
+        - 一律写 `journey_events`（identity/stage/event/props/source/ts）→ 旅程舱与 RFM 可用
+        - lead/contact → 一方指标 `first_party_leads`（按天计数）
+        - order → 一方指标 `order_count` / `order_revenue`（金额）
+        """
+        from ..core.store import get_store
+        store = await get_store()
+        event = str(payload.get("event") or payload.get("type") or "cdp.event")
+        data = payload.get("data") or payload.get("payload") or payload
+        identity = str(data.get("identity") or data.get("email") or data.get("member_email")
+                       or data.get("user_id") or "")
+        ts = str(data.get("ts") or data.get("occurred_at") or payload.get("occurred_at")
+                 or "") or None
+        stage = str(data.get("stage") or event.split(".")[-1])
+        wrote = {"journey_events": 0, "metrics": 0}
+        if identity:
+            await store.save_journey_event(
+                self.workspace_id, identity=identity, stage=stage, event=event,
+                props={k: v for k, v in data.items()
+                       if k not in ("identity", "email")},
+                source=str(payload.get("source") or "openflow"), ts=ts)
+            wrote["journey_events"] = 1
+        # 一方指标（金额/计数）：有明确语义才写，不猜
+        if event in ("lead", "cdp.lead", "contact", "cdp.contact"):
+            await self._first_party_metric(store, "first_party_leads", 1.0, data, ts)
+            wrote["metrics"] += 1
+        elif event in ("order", "cdp.order", "cdp.order_paid"):
+            amount = data.get("amount") or data.get("total") or data.get("revenue")
+            await self._first_party_metric(store, "order_count", 1.0, data, ts)
+            wrote["metrics"] += 1
+            if amount is not None:
+                try:
+                    await self._first_party_metric(store, "order_revenue",
+                                                   float(amount), data, ts)
+                    wrote["metrics"] += 1
+                except (TypeError, ValueError):
+                    pass
+        self.bus.emit("external.event", {"kind": event, "identity": identity,
+                                         "wrote": wrote})
+        return {"ok": True, "recorded": True, **wrote}
+
+    async def _first_party_metric(self, store, metric: str, value: float,
+                                  data: dict, ts: str | None) -> None:
+        """写入一方指标（幂等键含维度指纹，与采集侧一致）"""
+        import json as _json
+        from datetime import UTC
+        from datetime import datetime as _dt
+
+        from ..core.store import dim_window_key
+        when = ts or _dt.now(UTC).isoformat()
+        entity = str(data.get("source") or data.get("channel") or "openflow")
+        dim = {"channel": str(data.get("channel") or ""),
+               "campaign": str(data.get("campaign") or "")}
+        await store._execute(
+            """INSERT OR IGNORE INTO metrics (id, workspace_id, entity_type,
+               entity_id, metric, value, dim_json, ts, monitor_id, window_key)
+               VALUES (?, ?, 'first_party', ?, ?, ?, ?, ?, 'ingest', ?)""",
+            (f"ing{abs(hash((metric, when, entity))) % 10**12}", self.workspace_id,
+             entity, metric, float(value),
+             _json.dumps(dim, ensure_ascii=False), when,
+             dim_window_key(when, dim)))
+        await store._db.commit()

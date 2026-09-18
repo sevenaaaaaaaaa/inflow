@@ -97,13 +97,110 @@ class OpenFlowWebhookAdapter(ActionAdapter):
             result = await self.client.push_insight_to_cdp(insight_payload, connector_id)
             ok = bool(result.get("ok", False))
             ref = f"openflow:cdp:{ctx.insight_id}" if ok else ""
-            return ActionResult(ref, json.dumps(result, ensure_ascii=False)) if ok \
-                else ActionResult.fail(str(result.get("error", "openflow rejected")))
+            # 注意：ActionResult 是 dict 子类，必须用工厂方法（此前 ActionResult(a, b)
+            # 会抛 TypeError → 成功路径也表现为失败）
+            return (ActionResult.ok(ref, json.dumps(result, ensure_ascii=False)) if ok
+                    else ActionResult.fail(str(result.get("error", "openflow rejected"))))
         except Exception as e:
             return ActionResult.fail(f"{type(e).__name__}: {e}")
 
 
 # ========== webhook.generic ==========
+
+class OpenFlowAutomationAdapter(ActionAdapter):
+    """模型建议的自动化动作 → OpenFlow（画布/自动化触发）
+
+    背景：aarrr / ltv_cac / competitor_momentum / growth_models 四个模型都会产出
+    `openflow.automation`，但此前 ActionRouter 未注册该类型 → 派发即失败（断点）。
+    实现：经 OpenFlowClient.push_inbound 发送 `if.automation_request` 事件（零插件通道，
+    OpenFlow 侧由插件/自动化画布消费）；若配置了插件专用路由则优先走 `/api/plugin/...`。
+    """
+
+    @property
+    def action_type(self) -> str:
+        return "openflow.automation"
+
+    async def execute(self, action: dict, ctx: ActionContext) -> dict:
+        params = action.get("params_json") or {}
+        automation = str(params.get("automation") or params.get("workflow")
+                         or action.get("target_ref") or "default")
+        route = os.environ.get("OPENFLOW_PLUGIN_ROUTE", "").strip()
+        if route:
+            return await _OpenFlowPluginCall.call(
+                route, {"automation": automation, "action": action,
+                        "workspace_id": ctx.workspace_id},
+                action=action)
+        client = OpenFlowClient()
+        if not client.configured:
+            return ActionResult.fail(
+                "OpenFlow 未配置（需 OPENFLOW_BASE_URL + OPENFLOW_WEBHOOK_SECRET，"
+                "或设置 OPENFLOW_PLUGIN_ROUTE + OPENFLOW_PLUGIN_TOKEN）")
+        connector = (params.get("connector_id")
+                     or os.environ.get("OPENFLOW_AUTOMATION_CONNECTOR_ID", "")
+                     or os.environ.get("OPENFLOW_INBOUND_CONNECTOR_ID", ""))
+        if not connector:
+            return ActionResult.fail("缺少入站连接器（OPENFLOW_INBOUND_CONNECTOR_ID / params.connector_id）")
+        try:
+            res = await client.push_inbound(connector, {
+                "event": "if.automation_request",
+                "visitor_id": ctx.workspace_id,
+                "automation": automation,
+                "insight_id": ctx.insight_id,
+                "params": params,
+                "source_system": "insight-flow",
+            }, "cdp_event")
+        except Exception as e:                     # 明确失败，交给上层重试/死信
+            return ActionResult.fail(f"OpenFlow 自动化触发失败: {type(e).__name__}: {e}")
+        ok = bool(res.get("ok", True))
+        return (ActionResult.ok(f"openflow:automation:{automation}", str(res))
+                if ok else ActionResult.fail(f"OpenFlow 拒绝: {res}"))
+
+
+class _OpenFlowPluginCall:
+    """插件专用路由调用（HMAC 头 + 可选 Bearer）"""
+
+    @staticmethod
+    async def call(route: str, payload: dict, *, action: dict) -> dict:
+
+        from ..integrations.openflow.client import OpenFlowClient, sign_body
+        client = OpenFlowClient()
+        token = os.environ.get("OPENFLOW_PLUGIN_TOKEN", "")
+        if not client.base_url:
+            return ActionResult.fail("OPENFLOW_BASE_URL 未配置")
+        import httpx
+        url = f"{client.base_url}/api/plugin/insight-flow/{route.lstrip('/')}"
+        raw = json.dumps(payload, ensure_ascii=False, default=str).encode()
+        headers = {"Content-Type": "application/json"}
+        if client.secret:
+            headers["X-Insight-Flow-Signature"] = sign_body(raw, client.secret)
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as http:
+                resp = await http.post(url, content=raw, headers=headers)
+                resp.raise_for_status()
+                body = resp.json()
+        except Exception as e:
+            return ActionResult.fail(f"OpenFlow 插件路由失败: {type(e).__name__}: {e}")
+        return (ActionResult.ok(f"openflow:plugin:{route}", str(body))
+                if body.get("ok", True) else ActionResult.fail(f"OpenFlow 插件拒绝: {body}"))
+
+
+class OpenFlowPluginApiAdapter(ActionAdapter):
+    """通用插件 API 通道（docs/04 §4 的 openflow.plugin_api）"""
+
+    @property
+    def action_type(self) -> str:
+        return "openflow.plugin_api"
+
+    async def execute(self, action: dict, ctx: ActionContext) -> dict:
+        params = action.get("params_json") or {}
+        route = str(params.get("route") or action.get("target_ref") or "generic")
+        return await _OpenFlowPluginCall.call(route, {
+            "action": action, "workspace_id": ctx.workspace_id,
+            "insight_id": ctx.insight_id,
+        }, action=action)
+
 
 class GenericWebhookAdapter(ActionAdapter):
     """通用出站 Webhook（HMAC-SHA256 + X-IF-Signature + 时间戳防重放）
@@ -206,6 +303,8 @@ def get_action_router() -> ActionRouter:
         from .notify import EmailNotifyAdapter, FeishuNotifyAdapter, SlackNotifyAdapter
         _router = ActionRouter()
         _router.register(OpenFlowWebhookAdapter())
+        _router.register(OpenFlowAutomationAdapter())
+        _router.register(OpenFlowPluginApiAdapter())
         _router.register(GenericWebhookAdapter())
         _router.register(FeishuNotifyAdapter())
         _router.register(SlackNotifyAdapter())

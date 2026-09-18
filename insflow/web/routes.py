@@ -675,6 +675,20 @@ async def console_static(name: str, request: Request):
                              "Cache-Control": "public, max-age=86400, must-revalidate"})
 
 
+@router.get("/integrations", response_class=HTMLResponse)
+async def integrations_page(request: Request, workspace_id: str = Query("")):
+    """系统集成状态（OpenFlow / MFlow / 入站 / MCP 通道健康）"""
+    if not workspace_id:
+        workspace_id = await _default_workspace()
+    from ..engine.integrations_status import status as _st
+    store = await get_store()
+    return templates.TemplateResponse(request, "integrations.html", _ctx(
+        request, "integrations", workspace_id,
+        data=await _st(workspace_id),
+        letters=await store.list_dead_letters(workspace_id, limit=30),
+    ))
+
+
 @router.get("/alerts", response_class=HTMLResponse)
 async def alerts_page(request: Request, workspace_id: str = Query("")):
     """阈值告警规则 + 通知策略（此前只有 API/CLI，无页面入口）"""

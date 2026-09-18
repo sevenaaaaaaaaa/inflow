@@ -9,6 +9,7 @@ verify_window_until 到期（默认 14 天）→ feedback.evaluate 拉取对比
 → 写 feedback + 更新模型效果分 → 《验证报告》落盘
 """
 
+import contextlib
 from datetime import UTC, datetime, timedelta
 
 from ..core.entities import Action, ActionVerdict, Feedback, InsightStatus
@@ -95,6 +96,14 @@ class FeedbackTracker:
 
         if retries >= MAX_RETRIES:
             await store.update_action_state(action.id, "dead", result_json={**result, "retries": retries})
+            # 跨系统可靠性：进死信表，可人工/CLI 重放（此前只有状态没有可重放载荷）
+            with contextlib.suppress(Exception):
+                await store.add_dead_letter(
+                    action.workspace_id, action_id=action.id,
+                    action_type=action.action_type,
+                    target_ref=getattr(action, "target_ref", "") or "",
+                    payload=(current.model_dump() if current else action.model_dump()),
+                    error=error, attempts=retries)
             self.bus.emit("action.dead", {"action_id": action.id, "retries": retries})
         else:
             await store.update_action_state(action.id, "failed", result_json={**result, "retries": retries})

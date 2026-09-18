@@ -302,4 +302,32 @@ MYSQL_MIGRATIONS = [
     ALTER TABLE users ADD COLUMN active INT NOT NULL DEFAULT 1
     """,
 
+    """
+    CREATE TABLE IF NOT EXISTS ingest_events (
+        id VARCHAR(64) PRIMARY KEY,
+        workspace_id VARCHAR(64) NOT NULL,
+        source VARCHAR(48) NOT NULL,
+        event_id VARCHAR(191) NOT NULL,
+        event_type VARCHAR(64) NOT NULL DEFAULT '',
+        seen_at VARCHAR(40) NOT NULL,
+        UNIQUE KEY uq_ingest_event (workspace_id, source, event_id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS action_dead_letters (
+        id VARCHAR(64) PRIMARY KEY,
+        workspace_id VARCHAR(64) NOT NULL,
+        action_id VARCHAR(64) NOT NULL DEFAULT '',
+        action_type VARCHAR(64) NOT NULL DEFAULT '',
+        target_ref VARCHAR(255) NOT NULL DEFAULT '',
+        payload_json TEXT,
+        error TEXT,
+        attempts INT NOT NULL DEFAULT 0,
+        created_at VARCHAR(40) NOT NULL,
+        replayed_at VARCHAR(40) NOT NULL DEFAULT '',
+        replay_result TEXT,
+        KEY idx_dead_letter_ws_time (workspace_id, created_at)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    """,
+
 ]

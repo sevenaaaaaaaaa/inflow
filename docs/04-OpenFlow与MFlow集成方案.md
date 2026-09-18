@@ -220,3 +220,22 @@ IF 内置 MCP 客户端连接 OpenFlow `mcp-server.php`（HTTP 传输 + ApiKeyAu
 4. **OpenFlow ApiPolicy**：`api/*.php` 新端点默认 public。→ 只用插件路由（默认 admin 档），绝不新增公共端点。
 5. **发布铁律**：两个系统都有"人工授权后才对外"的文化。→ IF 动作只到"草稿/待批准"，外发动作在 OpenFlow 侧经审批门（moderate/high 风险停批）。
 6. **路径与端口**：MFlow 路径含空格、console 绑定 8088/自定义端口。→ 全部走环境变量（`MFLOW_BASE_URL`、`LOVART_LOCAL_DEV_ROOT`），位置运行时推导。
+
+---
+
+## 8. 现状核对（2026-09-18 复核，与本文档对照）
+
+> 本文档是**设计蓝图**；以下是按代码事实的落地情况（详见 `docs/12-系统互操作与自进化路线图.md`）。
+
+| 设计项 | 落地状态 |
+|---|---|
+| §2.1 MFlow source 插件 / §2.2 `mflow.create_content` / §2.3 发布回流 | ✅ 已实现（`actions/mflow_adapter.py`、`actions/ingest.py`） |
+| §3.1 OpenFlow 官方插件（钩子出站） | ✅ IF 侧接收端已就绪（`ingest` 支持 `cdp_event/lead/contact`），插件需在 OpenFlow 侧部署 |
+| §3.2 零插件通道 `openflow.webhook_insight` | ✅ 已实现（HMAC → `/api/webhook.php`） |
+| §3.3 连接器反向调用 `openflow.plugin_api` / `openflow.automation` | ✅ **已实现（P0，2026-09-18）**：`OpenFlowAutomationAdapter`（零插件通道 `if.automation_request`）与 `OpenFlowPluginApiAdapter`（`/api/plugin/insight-flow/*` + HMAC） |
+| §3.4 IF 作为 OpenFlow MCP 客户端（只读） | ✅ 已实现（6 只读工具白名单） |
+| §4 动作映射表（`openflow.plugin_api`） | ❌ 未实现 |
+| §5 MCP Server（stdio/HTTP）+ 生态 | ✅ 已实现（stdio + `/api/v1/mcp/tools`） |
+| CDP 事件落库（喂养 LTV/RFM/旅程） | ✅ **已落库（P0）**：`cdp.event/lead/contact/order` → `journey_events` + 一方指标（幂等去重） |
+| 出站重试/死信 | ✅ 动作层 retry×3 + `action_dead_letters` 死信表 + `/api/v1/actions/dead-letters/replay` + `insflow action replay` |
+| 契约测试（跨系统） | ✅ `tests/integration/`：真实 HTTP 假对端 + HMAC 校验，覆盖四条通道 + 签名失败 + 幂等 |

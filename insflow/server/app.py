@@ -57,6 +57,7 @@ app = FastAPI(
 
 # ========== API Key 认证（可选启用，M4）==========
 
+import json
 import os as _os
 import time
 
@@ -346,6 +347,65 @@ async def cleanup_snapshots_api(request: Request, payload: dict):
     if not ws:
         raise HTTPException(status_code=400, detail="需要 workspace_id")
     return cleanup(ws, keep_days=int(payload.get("keep_days") or 90))
+
+
+@app.get("/api/v1/integrations/status")
+async def integrations_status(workspace_id: str = Query(...)):
+    """系统互操作状态（通道配置/健康/动作统计/最近事件）"""
+    from ..engine.integrations_status import status
+    return await status(workspace_id)
+
+
+@app.get("/api/v1/actions/dead-letters")
+async def list_dead_letters(workspace_id: str = Query(...), all: bool = Query(False)):
+    """出站死信（跨系统失败可重放）"""
+    return {"letters": await (await get_store()).list_dead_letters(
+        workspace_id, only_pending=not all)}
+
+
+@app.post("/api/v1/actions/dead-letters/replay")
+async def replay_dead_letters(request: Request, payload: dict):
+    """重放死信（默认全部待重放；可指定 ids）"""
+    _guard(request, "action.write")
+    import json as _json_replay
+
+    from ..actions.router import ActionContext, get_action_router
+    ws = str(payload.get("workspace_id") or "")
+    if not ws:
+        raise HTTPException(status_code=400, detail="需要 workspace_id")
+    store = await get_store()
+    letters = await store.list_dead_letters(ws, limit=int(payload.get("limit") or 50))
+    wanted = set(payload.get("ids") or [])
+    if wanted:
+        letters = [x for x in letters if x["id"] in wanted]
+    router = get_action_router()
+    out = []
+    for letter in letters:
+        action_row = await store.get_action(letter["action_id"]) \
+            if letter.get("action_id") else None
+        if not action_row:
+            await store.mark_dead_letter_replayed(ws, letter["id"], "动作不存在，无法重放")
+            out.append({"id": letter["id"], "ok": False, "detail": "动作不存在"})
+            continue
+        # 重放前把状态推回 pending（状态机允许 dead→? 由 tracker 控制；这里直接重派发）
+        result = await router.dispatch({
+            "action_type": action_row.action_type,
+            "target_ref": getattr(action_row, "target_ref", ""),
+            "params_json": getattr(action_row, "params_json", {}) or {},
+            "title": getattr(action_row, "title", ""),
+            "summary": getattr(action_row, "summary", ""),
+            "severity": str(getattr(action_row, "severity", "medium")),
+        }, ActionContext(workspace_id=ws, insight_id=action_row.insight_id))
+        detail = _json_replay.dumps(result, ensure_ascii=False, default=str)[:1000]
+        await store.mark_dead_letter_replayed(ws, letter["id"], detail)
+        if result.get("ok"):
+            await store.update_action_state(action_row.id, "dispatched",
+                                            result_json={"replay": True, **result})
+        out.append({"id": letter["id"], "ok": bool(result.get("ok")), "detail": detail})
+    await _audit_async(request, ws, "action.dead_letter_replay", target_type="action",
+                       detail={"count": len(out),
+                               "ok": sum(1 for x in out if x["ok"])})
+    return {"replayed": len(out), "ok": sum(1 for x in out if x["ok"]), "results": out}
 
 
 @app.get("/api/v1/observability")
@@ -1943,17 +2003,30 @@ async def first_party_analyze(workspace_id: str, data: FirstPartyAnalysisRequest
 # ========== 入站事件（HMAC 验签）==========
 
 @app.post("/api/v1/ingest")
-async def ingest(request: Request):
+async def ingest(request: Request, workspace_id: str = Query("")):
     """入站事件接收（MFlow 发布回流 / OpenFlow 钩子，HMAC 验签）
 
     - MFlow: content.published → 关联洞察动作 → 验证状态机
-    - OpenFlow: cdp_event/lead/contact → 事件流记录
+    - OpenFlow: cdp_event/lead/contact/order → 旅程事件 + 一方指标（幂等去重）
+
+    注意：必须带 workspace_id（多租户下不可回落到 default，否则跨租户错写）。
     """
     from ..actions.ingest import IngestReceiver, extract_signature
 
     raw_body = await request.body()
     signature = extract_signature(request.headers)
-    receiver = IngestReceiver()
+    if not workspace_id:
+        try:                                   # 兼容把 workspace_id 放载荷里的对端
+            workspace_id = str(json.loads(raw_body.decode()).get("workspace_id") or "")
+        except Exception:
+            workspace_id = ""
+    if not workspace_id:
+        raise HTTPException(status_code=400,
+                            detail="需要 workspace_id（查询参数或载荷字段）")
+    store = await get_store()
+    if not await store.get_workspace(workspace_id):
+        raise HTTPException(status_code=404, detail="工作区不存在")
+    receiver = IngestReceiver(workspace_id)
     return await receiver.handle(raw_body, request.headers, signature)
 
 

@@ -554,6 +554,67 @@ def bench_cmd(monitors, insights, metrics, driver, keep):
     console.print(table)
 
 
+@main.group("action")
+def action_group():
+    """动作与死信（跨系统派发可靠性）"""
+    pass
+
+
+@action_group.command("dead-letters")
+@click.option("--workspace", "-w", required=True)
+@click.option("--all", "show_all", is_flag=True, help="含已重放")
+def action_dead_letters(workspace: str, show_all: bool):
+    """列出死信（失败动作的可重放载荷）"""
+    from .core.store import get_store
+    store = run_async(get_store())
+    letters = run_async(store.list_dead_letters(workspace, only_pending=not show_all))
+    console.print(f"[green]{len(letters)} 条[/]")
+    for letter in letters:
+        console.print(f"  - {letter['id'][:8]} {letter['action_type']:<24} "
+                      f"{letter['error'][:50]}"
+                      + (f"（已重放：{letter['replay_result'][:40]}）"
+                         if letter.get("replayed_at") else ""))
+
+
+@action_group.command("replay")
+@click.option("--workspace", "-w", required=True)
+@click.option("--id", "letter_id", default="", help="只重放指定死信")
+def action_replay(workspace: str, letter_id: str):
+    """重放死信（重新派发；成功则动作回到 dispatched）"""
+    from .actions.router import ActionContext, get_action_router
+    from .core.store import get_store
+
+    async def _run():
+        store = await get_store()
+        letters = await store.list_dead_letters(workspace, limit=50)
+        if letter_id:
+            letters = [x for x in letters if x["id"] == letter_id]
+        router = get_action_router()
+        ok = 0
+        for letter in letters:
+            row = await store.get_action(letter["action_id"]) if letter["action_id"] else None
+            if not row:
+                await store.mark_dead_letter_replayed(workspace, letter["id"], "动作不存在")
+                continue
+            res = await router.dispatch({
+                "action_type": row.action_type, "target_ref": row.target_ref,
+                "params_json": row.params_json or {}, "title": row.title,
+                "summary": row.summary, "severity": str(row.severity),
+            }, ActionContext(workspace_id=workspace, insight_id=row.insight_id))
+            await store.mark_dead_letter_replayed(
+                workspace, letter["id"],
+                json.dumps(res, ensure_ascii=False, default=str)[:1000])
+            if res.get("ok"):
+                await store.update_action_state(row.id, "dispatched",
+                                                result_json={"replay": True, **res})
+                ok += 1
+            console.print(f"  {'OK ' if res.get('ok') else 'FAIL'} {row.action_type} "
+                          f"{str(res)[:70]}")
+        return len(letters), ok
+    total, ok = run_async(_run())
+    console.print(f"[green]重放 {total} 条，成功 {ok} 条[/]")
+
+
 @main.group("skill")
 def skill_group():
     """Agent Skill 市场（扩展问答与分析方法）"""

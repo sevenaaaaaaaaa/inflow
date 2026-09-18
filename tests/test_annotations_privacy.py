@@ -675,3 +675,90 @@ class TestNoEntryFeaturesWired:
                          and re.search(rf"\b{stem}\b", t)]
             # 至少被 server/app.py 或 cli.py 引用（入口）或插件引用
             assert importers or stem in all_text, mod
+
+
+class TestP0Interop:
+    """P0 互操作：集成状态页 / 死信重放 / ingest 租户校验（docs/12）"""
+
+    def test_integrations_page_and_api(self, env, monkeypatch):
+        from fastapi.testclient import TestClient
+
+        from insflow.server.app import app
+        monkeypatch.setenv("OPENFLOW_BASE_URL", "https://of.example.com")
+        monkeypatch.setenv("OPENFLOW_WEBHOOK_SECRET", "s")
+        monkeypatch.setenv("OPENFLOW_INBOUND_CONNECTOR_ID", "c1")
+        cli = TestClient(app)
+        j = cli.get("/api/v1/integrations/status",
+                    params={"workspace_id": "test-ws"}).json()
+        keys = {c["key"]: c for c in j["channels"]}
+        assert keys["openflow.inbound"]["configured"] is True
+        assert keys["openflow.inbound"]["health"] == "ok"
+        assert "OPENFLOW_PLUGIN_ROUTE" in keys["openflow.plugin"]["missing_env"]
+        page = cli.get("/console/integrations", params={"workspace_id": "test-ws"})
+        assert page.status_code == 200 and "系统集成" in page.text
+        assert "通道" in page.text and "出站死信" in page.text
+
+    def test_dead_letter_flow_and_replay(self, env):
+        import asyncio
+
+        from fastapi.testclient import TestClient
+
+        from insflow.actions.feedback_tracker import FeedbackTracker
+        from insflow.core.entities import Action, Insight
+        from insflow.server.app import app
+
+        async def _run():
+            store = env["store"]
+            ins = await store.create_insight(Insight(workspace_id="test-ws", type="t",
+                                                    title="t", summary="s"))
+            act = await store.create_action(Action(
+                workspace_id="test-ws", insight_id=ins.id,
+                action_type="webhook.generic", target_ref="https://example.com/x",
+                state="dispatched"))
+            tracker = FeedbackTracker("test-ws")
+            for _ in range(3):
+                await tracker.mark_failed(await store.get_action(act.id), "boom")
+            return act.id
+
+        action_id = asyncio.get_event_loop().run_until_complete(_run())
+        cli = TestClient(app)
+        letters = cli.get("/api/v1/actions/dead-letters",
+                          params={"workspace_id": "test-ws"}).json()["letters"]
+        assert letters and letters[0]["action_id"] == action_id
+        out = cli.post("/api/v1/actions/dead-letters/replay",
+                       json={"workspace_id": "test-ws"}).json()
+        assert out["replayed"] == 1
+        # 重放已记录（成功或失败都要留痕）
+        after = cli.get("/api/v1/actions/dead-letters",
+                        params={"workspace_id": "test-ws", "all": True}).json()["letters"]
+        assert after[0]["replayed_at"]
+
+    def test_ingest_requires_valid_workspace(self, env, monkeypatch):
+        import hashlib
+        import hmac
+        import json as _json
+
+        from fastapi.testclient import TestClient
+
+        from insflow.server.app import app
+        monkeypatch.setenv("INSFLOW_INGEST_SECRET", "sec")
+        raw = _json.dumps({"event": "cdp.lead", "event_id": "x1"}).encode()
+        sig = hmac.new(b"sec", raw, hashlib.sha256).hexdigest()
+        cli = TestClient(app)
+        # 缺 workspace_id → 400（不可静默落到 default）
+        assert cli.post("/api/v1/ingest", content=raw,
+                        headers={"X-IF-Signature": sig}).status_code == 400
+        # 工作区不存在 → 404
+        assert cli.post("/api/v1/ingest", params={"workspace_id": "nope"}, content=raw,
+                        headers={"X-IF-Signature": sig}).status_code == 404
+        # 正常 → 200 且落库
+        ok = cli.post("/api/v1/ingest", params={"workspace_id": "test-ws"},
+                      content=raw, headers={"X-IF-Signature": sig})
+        assert ok.status_code == 200 and ok.json()["ok"] is True
+
+    def test_automation_adapter_registered(self):
+        from insflow.actions.router import get_action_router
+        types = get_action_router().list_types()
+        # 模型产出 openflow.automation / openflow.plugin_api，必须有适配器
+        assert "openflow.automation" in types
+        assert "openflow.plugin_api" in types

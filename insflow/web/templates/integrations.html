@@ -1,0 +1,91 @@
+{% extends "base.html" %}
+{% block title %} · 系统集成{% endblock %}
+{% block content %}
+<h1>系统集成</h1>
+<p class="sub">Insight Flow × OpenFlow × MFlow 的四条通道：配置状态、健康度、动作统计、最近事件与死信重放。</p>
+
+{% if data %}
+<div class="cards">
+  {{ viz.kpi_card('通道数', data.channels | length, color='var(--accent)') | safe }}
+  {{ viz.kpi_card('已配置', data.channels | selectattr('configured') | list | length, color='var(--ok)') | safe }}
+  {{ viz.kpi_card('待重放死信',
+      data.channels | map(attribute='stats') | map(attribute='dead_letters') | sum,
+      color='var(--danger)' if (data.channels | map(attribute='stats') | map(attribute='dead_letters') | sum) else 'var(--muted)') | safe }}
+</div>
+
+<h2>通道</h2>
+{% for ch in data.channels %}
+<div class="card" style="margin-bottom:10px">
+  <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">
+    <b>{{ ch.name }}</b>
+    <span>
+      <span class="badge b-{{ 'critical' if ch.health == 'unconfigured' else ('high' if ch.health == 'degraded' else 'info') }}">
+        {{ {'ok':'正常','degraded':'有死信','unconfigured':'未配置'}[ch.health] }}
+      </span>
+      <span class="sub">{{ '出站' if ch.direction == 'out' else '入站' }} · 动作 {{ ch.stats.total }} ·
+        死信 {{ ch.stats.dead_letters }}</span>
+    </span>
+  </div>
+  {% if ch.missing_env %}
+  <div class="sub" style="margin-top:6px">缺少配置：<code>{{ ch.missing_env | join(' / ') }}</code></div>
+  {% endif %}
+  {% if ch.stats.states %}
+  <div class="sub" style="margin-top:6px">状态：{% for k, v in ch.stats.states.items() %}{{ k }}={{ v }} {% endfor %}</div>
+  {% endif %}
+  {% if ch.last_event %}
+  <div class="sub" style="margin-top:4px">最近事件：{{ (ch.last_event.ts or '')[:19].replace('T', ' ') }} · {{ ch.last_event.type }}</div>
+  {% endif %}
+</div>
+{% endfor %}
+
+<h2>出站死信</h2>
+<div class="card">
+  <div class="toolbar" style="gap:8px;margin-bottom:8px">
+    <button onclick="itReplay()">重放全部（≤50）</button>
+    <span id="it-status" class="sub"></span>
+  </div>
+  <table>
+    <tr><th>时间</th><th>动作</th><th>目标</th><th>错误</th><th>重试</th><th>重放结果</th></tr>
+    {% for l in letters %}
+    <tr>
+      <td>{{ (l.created_at or '')[:19].replace('T', ' ') }}</td>
+      <td><code>{{ l.action_type }}</code></td>
+      <td>{{ (l.target_ref or '')[:36] }}</td>
+      <td class="sub">{{ (l.error or '')[:60] }}</td>
+      <td>{{ l.attempts }}</td>
+      <td class="sub">{{ (l.replay_result or '—')[:60] }}</td>
+    </tr>
+    {% else %}
+    <tr><td colspan="6" class="sub">无待重放死信 ✅</td></tr>
+    {% endfor %}
+  </table>
+</div>
+
+<h2>最近互操作事件</h2>
+<div class="card">
+  {% if data.events_recent %}
+  <table>
+    <tr><th>时间</th><th>事件</th></tr>
+    {% for e in data.events_recent %}
+    <tr><td>{{ (e.ts or '')[:19].replace('T', ' ') }}</td><td><code>{{ e.type }}</code></td></tr>
+    {% endfor %}
+  </table>
+  {% else %}
+  <div class="empty">暂无互操作事件</div>
+  {% endif %}
+</div>
+
+<script>
+async function itReplay(){
+  var st = document.getElementById('it-status');
+  st.textContent = '重放中…';
+  var r = await fetch('/api/v1/actions/dead-letters/replay', {method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({workspace_id:'{{ workspace_id }}', limit:50})});
+  var j = await r.json();
+  st.textContent = r.ok ? ('重放 ' + j.replayed + ' 条，成功 ' + j.ok + ' 条') : (j.detail || '失败');
+  if(r.ok) setTimeout(function(){ location.reload(); }, 1200);
+}
+</script>
+{% endif %}
+{% endblock %}
