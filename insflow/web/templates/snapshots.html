@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% block title %} · 快照归档{% endblock %}
+{% block content %}
+<h1>快照归档</h1>
+<p class="sub">服务端生成的自包含 HTML（内联 SVG 图表 + 数据表），可直接打印为 PDF；带 PDF 的快照表示服务端已出档。</p>
+<div class="toolbar" style="margin-bottom:10px">
+  <button onclick="snapCreate()">立即生成快照</button>
+  <span id="snap-status" class="sub"></span>
+</div>
+{% if items %}
+<table>
+  <tr><th>文件</th><th>大小</th><th>生成时间</th><th>PDF</th><th></th></tr>
+  {% for i in items %}
+  <tr>
+    <td><code>{{ i.name }}</code></td>
+    <td>{{ i.size_kb }} KB</td>
+    <td>{{ i.created_at[:19].replace('T', ' ') }}</td>
+    <td>{{ i.pdf or '—' }}</td>
+    <td><a href="/console/snapshots/{{ workspace_id }}/{{ i.name }}?workspace_id={{ workspace_id }}" target="_blank" rel="noopener">打开</a></td>
+  </tr>
+  {% endfor %}
+</table>
+{% else %}
+<div class="empty">暂无快照 —— 点「立即生成快照」或配置订阅（mode=snapshot）定期推送</div>
+{% endif %}
+<script>
+async function snapCreate(){
+  var st = document.getElementById('snap-status');
+  st.textContent = '生成中…';
+  var r = await fetch('/api/v1/snapshots', {method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({workspace_id:'{{ workspace_id }}', panel:'board:traffic', days:30})});
+  var j = await r.json();
+  st.textContent = r.ok ? ('已生成 ' + j.size_kb + 'KB' +
+    (j.pdf_path ? '（含 PDF ' + j.pdf_kb + 'KB）' : '（无 PDF：' + (j.pdf_skipped||'') + '）'))
+    : (j.detail || '失败');
+  if(r.ok) setTimeout(function(){ location.reload(); }, 1000);
+}
+</script>
+{% endblock %}

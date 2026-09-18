@@ -7,7 +7,7 @@
 import os
 from pathlib import Path
 
-from fastapi import APIRouter, Form, Query, Request
+from fastapi import APIRouter, Form, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
@@ -598,6 +598,34 @@ async def mobile_view(request: Request, workspace_id: str = Query("")):
     return templates.TemplateResponse(request, "m.html", _ctx(
         request, "dashboard", workspace_id, kpis=kpis, insights=insights,
         snapshot=snapshot, offline_note=""))
+
+
+@router.get("/snapshots", response_class=HTMLResponse)
+async def snapshots_page(request: Request, workspace_id: str = Query("")):
+    """快照归档（自包含 HTML，可直接打印 PDF）"""
+    if not workspace_id:
+        workspace_id = await _default_workspace()
+    from ..engine.snapshot import list_snapshots
+    items = list_snapshots(workspace_id)
+    return templates.TemplateResponse(request, "snapshots.html", _ctx(
+        request, "reports", workspace_id, items=items,
+    ))
+
+
+@router.get("/snapshots/{path:path}", response_class=HTMLResponse)
+async def snapshot_file(request: Request, path: str, workspace_id: str = Query("")):
+    """快照文件（含 PDF）；按工作区隔离 + 防目录穿越"""
+    if not workspace_id:
+        workspace_id = await _default_workspace()
+    from fastapi.responses import FileResponse
+    from ..engine.snapshot import resolve_snapshot
+    # path 形如 "<workspace>/<file>"（由引擎生成的相对路径）
+    name = path.split("/", 1)[1] if "/" in path else path
+    target = resolve_snapshot(workspace_id, name)
+    if not target:
+        raise HTTPException(status_code=404, detail="快照不存在")
+    media = "application/pdf" if target.suffix == ".pdf" else "text/html; charset=utf-8"
+    return FileResponse(str(target), media_type=media)
 
 
 @router.get("/audit", response_class=HTMLResponse)

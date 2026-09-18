@@ -223,7 +223,7 @@ main button.secondary:hover{background:var(--hover)}
   'insight': {'label':'洞察', 'links':[('insights','/console/insights','💡 洞察流'),('sentiment','/console/sentiment','🌡️ 舆情驾驶舱'),('traffic','/console/cockpit/traffic','📈 流量驾驶舱'),('explore','/console/explore','🔬 即席探索')]},
   'growth': {'label':'增长面', 'links':[('competitor','/console/cockpit/competitor','🔍 竞品驾驶舱'),('journey','/console/cockpit/journey','🧭 旅程驾驶舱')]},
   'loop': {'label':'闭环', 'links':[('action-loop','/console/cockpit/action-loop','✅ 行动验证')]},
-  'report': {'label':'交付', 'links':[('reports','/console/reports','📄 报告中心')]},
+  'report': {'label':'交付', 'links':[('reports','/console/reports','📄 报告中心'),('snapshots','/console/snapshots','🧷 快照归档')]},
   'ecosystem': {'label':'生态', 'links':[('plugins','/console/plugins','🧩 插件与市场')]},
   'settings': {'label':'设置', 'links':[('subscriptions','/console/subscriptions','🔔 洞察订阅'),('usage','/console/usage','💳 套餐用量'),('ops','/console/cockpit/ops','🩺 运维监控'),('audit','/console/audit','🧾 审计轨迹'),('api','/api/v1/docs','🛠 API 文档 ↗')]},
 } %}
@@ -494,6 +494,65 @@ async function ifLayoutHistory(){
       var need = el.getAttribute('data-cap');
       var ok = caps.indexOf('*') >= 0 || caps.indexOf(need) >= 0;
       if(!ok) el.style.display = 'none';
+    });
+  }catch(e){}
+})();
+
+/* ── 图表级批注（协作）：面板头部 💬 打开抽屉，可看可评 ── */
+async function ifPanelComments(panelKey, el){
+  var d = document.getElementById('if-drawer');
+  if(!d){ d = document.createElement('div'); d.id='if-drawer'; document.body.appendChild(d); }
+  d.classList.add('on');
+  var title = el && el.closest('.dp-title') ? el.closest('.dp-title').childNodes[0].textContent.trim() : panelKey;
+  d.innerHTML = '<h3>批注 · ' + title + '</h3><div class="empty">加载中…</div>';
+  var ws = document.body.getAttribute('data-ws') || '';
+  function paint(items){
+    var html = '<h3>批注 · ' + title + '</h3>';
+    html += '<div class="dr-sub">' + items.length + ' 条 · 讨论不触发动作（动作仍走"派发 → 14 天验证"）</div>';
+    html += '<div style="margin:8px 0"><textarea id="if-annot-body" rows="2" style="width:100%" placeholder="写下你的判断/异议…"></textarea>'
+         + '<div class="toolbar" style="margin-top:6px"><button class="dp-btn" onclick="ifPostAnnot(\'' + panelKey + '\')">发表</button>'
+         + '<span id="if-annot-status" class="dp-btn" style="border:0"></span></div></div>';
+    html += items.length ? items.map(function(c){
+      return '<div style="padding:7px 0;border-bottom:1px solid var(--border)">'
+        + '<b>' + String(c.author || '匿名') + '</b> · '
+        + String(c.created_at || '').slice(5,16).replace('T',' ')
+        + '<div>' + String(c.body || '').replace(/</g,'&lt;') + '</div></div>';
+    }).join('') : '<div class="empty">还没有批注</div>';
+    d.innerHTML = html;
+  }
+  try{
+    var r = await fetch('/api/v1/comments?workspace_id=' + encodeURIComponent(ws) +
+      '&target_type=chart&target_id=' + encodeURIComponent(panelKey), {credentials:'same-origin'});
+    paint((await r.json()).comments || []);
+  }catch(e){ d.innerHTML = '<h3>批注</h3><div class="empty">加载失败</div>'; }
+}
+async function ifPostAnnot(panelKey){
+  var ws = document.body.getAttribute('data-ws') || '';
+  var body = (document.getElementById('if-annot-body') || {}).value || '';
+  var st = document.getElementById('if-annot-status');
+  if(!body.trim()){ if(st) st.textContent = '内容为空'; return; }
+  if(st) st.textContent = '发表中…';
+  var r = await fetch('/api/v1/comments', {method:'POST',
+    headers:{'Content-Type':'application/json'}, credentials:'same-origin',
+    body: JSON.stringify({workspace_id: ws, target_type:'chart', target_id: panelKey,
+                          body: body})});
+  if(!r.ok){ if(st) st.textContent = '失败'; return; }
+  if(st) st.textContent = '已发表 ✓';
+  var btn = document.querySelector('[data-annot="' + panelKey + '"]');
+  ifPanelComments(panelKey, btn);
+}
+(async function ifLoadAnnotCounts(){
+  var ws = document.body.getAttribute('data-ws') || '';
+  if(!ws) return;
+  try{
+    var r = await fetch('/api/v1/comments/counts?workspace_id=' + encodeURIComponent(ws) +
+      '&target_type=chart', {credentials:'same-origin'});
+    var counts = (await r.json()).counts || {};
+    document.querySelectorAll('[data-annot]').forEach(function(b){
+      var n = counts[b.getAttribute('data-annot')] || 0;
+      var span = b.querySelector('.annot-n');
+      if(span) span.textContent = n;
+      b.style.opacity = n ? '1' : '.55';
     });
   }catch(e){}
 })();

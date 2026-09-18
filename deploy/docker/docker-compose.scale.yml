@@ -1,0 +1,44 @@
+# 多实例部署（水平扩展）：Redis 共享缓存/锁/事件总线 + 2 个应用实例
+# 用法：docker compose -f deploy/docker/docker-compose.scale.yml up -d
+# 注意：
+#   1) 前端需一个反向代理（Nginx/Caddy）把流量分到 insflow-a / insflow-b
+#   2) 定时任务由 Redis leader 选举保证只跑一份（无 Redis 会各跑一遍）
+#   3) SSE/在线状态通过 Redis pub/sub + Hash 跨实例共享
+#   4) 多实例必须用 MySQL（SQLite 单文件无法多进程写）
+services:
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes: ["redis-data:/data"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  insflow-a: &insflow-app
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile
+    environment:
+      INSFLOW_DB_DRIVER: mysql
+      MYSQL_HOST: ${MYSQL_HOST:-mysql}
+      MYSQL_PORT: ${MYSQL_PORT:-3306}
+      MYSQL_USER: ${MYSQL_USER:-insflow}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?需要设置 MYSQL_PASSWORD}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-insflow}
+      INSFLOW_REDIS_URL: redis://redis:6379/0
+      INSFLOW_MASTER_KEY: ${INSFLOW_MASTER_KEY:?需要设置 INSFLOW_MASTER_KEY}
+      INSFLOW_BASE_PATH: ${INSFLOW_BASE_PATH:-}
+    depends_on:
+      redis: { condition: service_healthy }
+    ports: ["8400:8400"]
+    restart: unless-stopped
+
+  insflow-b:
+    <<: *insflow-app
+    ports: ["8401:8400"]
+
+volumes:
+  redis-data:

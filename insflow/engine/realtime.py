@@ -18,6 +18,8 @@ from datetime import UTC, datetime, timedelta
 
 PRESENCE_TTL = 45          # 秒：超过视为离线
 MAX_PRESENCE = 50          # 单工作区最多跟踪的连接数（防内存膨胀）
+RT_CHANNEL = "insflow:rt"          # 跨实例广播频道（SSE 事件 / 在线状态）
+PRESENCE_KEY = "insflow:presence"  # Redis Hash：conn_id → JSON（多实例共享）
 
 
 class Presence:
@@ -47,6 +49,17 @@ class Presence:
     def leave(self, workspace_id: str, conn_id: str) -> None:
         self._by_ws.get(workspace_id, {}).pop(conn_id, None)
 
+    # ---- 统一异步接口（与 RedisPresence 对齐，路由只依赖这一套）----
+    async def touch_async(self, workspace_id: str, conn_id: str, *, user: str = "",
+                          path: str = "", cursor: dict | None = None) -> None:
+        self.touch(workspace_id, conn_id, user=user, path=path, cursor=cursor)
+
+    async def snapshot_async(self, workspace_id: str) -> list[dict]:
+        return self.snapshot(workspace_id)
+
+    async def leave_async(self, workspace_id: str, conn_id: str) -> None:
+        self.leave(workspace_id, conn_id)
+
     def snapshot(self, workspace_id: str) -> list[dict]:
         bucket = self._bucket(workspace_id)
         now = time.time()
@@ -59,7 +72,107 @@ class Presence:
                 for cid, e in bucket.items()][:MAX_PRESENCE]
 
 
+class RedisPresence:
+    """多实例在线状态（Redis Hash）：无 Redis 时调用方用内存版 Presence"""
+
+    async def touch_async(self, workspace_id: str, conn_id: str, *, user: str = "",
+                          path: str = "", cursor: dict | None = None) -> None:
+        from ..core.db.redis_backend import get_redis
+        client = await get_redis()
+        if client is None:
+            return
+        import json as _json
+        payload = _json.dumps({"w": workspace_id, "user": user, "path": path,
+                               "cursor": cursor, "ts": time.time()},
+                              ensure_ascii=False)
+        await client.hset(PRESENCE_KEY, f"{workspace_id}:{conn_id}", payload)
+
+    async def snapshot_async(self, workspace_id: str) -> list[dict]:
+        from ..core.db.redis_backend import get_redis
+        client = await get_redis()
+        if client is None:
+            return []
+        out = []
+        stale = []
+        now = time.time()
+        for field, raw in (await client.hgetall(PRESENCE_KEY)).items():
+            ws, _, conn = field.partition(":")
+            if ws != workspace_id:
+                continue
+            try:
+                import json as _json
+                data = _json.loads(raw)
+            except Exception:
+                stale.append(field)
+                continue
+            if now - float(data.get("ts") or 0) > PRESENCE_TTL:
+                stale.append(field)
+                continue
+            out.append({"conn_id": conn, "user": data.get("user") or "访客",
+                        "path": data.get("path") or "", "cursor": data.get("cursor"),
+                        "idle_s": round(now - float(data.get("ts") or now), 1)})
+        if stale:
+            await client.hdel(PRESENCE_KEY, *stale)
+        return out[:MAX_PRESENCE]
+
+    async def leave_async(self, workspace_id: str, conn_id: str) -> None:
+        from ..core.db.redis_backend import get_redis
+        client = await get_redis()
+        if client is not None:
+            await client.hdel(PRESENCE_KEY, f"{workspace_id}:{conn_id}")
+
+
 presence = Presence()
+redis_presence = RedisPresence()
+
+
+async def get_presence() -> object:
+    """按环境返回在线状态实现（Redis 优先；不可用则内存）"""
+    try:
+        from ..core.db.redis_backend import redis_available
+        if await redis_available():
+            return redis_presence
+    except Exception:
+        pass
+    return presence
+
+
+async def broadcast(event: str, data: dict) -> int:
+    """跨实例广播（无 Redis 时返回 0，本地仍由本进程 SSE 直发）"""
+    try:
+        from ..core.db.redis_backend import get_redis
+        client = await get_redis()
+        if client is None:
+            return 0
+        import json as _json
+        return await client.publish(RT_CHANNEL,
+                                    _json.dumps({"event": event, "data": data},
+                                                ensure_ascii=False, default=str))
+    except Exception:
+        return 0
+
+
+async def subscribe_broadcast():
+    """订阅跨实例广播（生成器：产出 (event, data)）；无 Redis 时不产出
+
+    注意：Redis 在 subscribe 模式下该连接不能执行其它命令，因此这里开**专用连接**，
+    不能复用全局客户端（否则后续 PUBLISH/GET 会报错）。
+    """
+    try:
+        from ..core.db.redis_backend import RedisClient, redis_url
+        if not redis_url():
+            return
+        client = RedisClient()
+        await client.connect()
+        import json as _json
+        async for raw in client.subscribe(RT_CHANNEL):
+            try:
+                msg = _json.loads(raw)
+                yield msg.get("event", "message"), msg.get("data") or {}
+            except Exception:
+                continue
+    except Exception:
+        return
 
 
 def sse_event(event: str, data, *, event_id: str = "") -> str:
@@ -122,6 +235,7 @@ class StreamHub:
                            for k in self.metrics))
             if changed:
                 self._last = snap["metrics"]
+                await broadcast("metrics", {**snap, "workspace_id": self.workspace_id})
                 yield "metrics", snap
             for ev in recent_alert_events(self.workspace_id):
                 key = f"{ev.get('ts')}:{ev.get('type')}"

@@ -302,6 +302,66 @@ async def index():
     """
 
 
+@app.post("/api/v1/snapshots")
+async def create_snapshot_api(request: Request, payload: dict):
+    """生成看板快照（自包含 HTML；有 Chrome 时同时出 PDF）"""
+    from ..engine.snapshot import create_snapshot
+    ws = str(payload.get("workspace_id") or "")
+    if not ws:
+        raise HTTPException(status_code=400, detail="需要 workspace_id")
+    snap = await create_snapshot(ws, str(payload.get("panel") or "board:traffic"),
+                                 days=float(payload.get("days") or 30),
+                                 title=str(payload.get("title") or ""),
+                                 make_pdf=bool(payload.get("pdf", True)))
+    await _audit_async(request, ws, "snapshot.create", target_type="snapshot",
+                       target_id=snap.get("html_rel", ""),
+                       detail={"size_kb": snap.get("size_kb"),
+                               "pdf": bool(snap.get("pdf_path"))})
+    return snap
+
+
+@app.get("/api/v1/snapshots")
+async def list_snapshots_api(workspace_id: str = Query(...)):
+    """快照列表"""
+    from ..engine.snapshot import list_snapshots
+    return {"snapshots": list_snapshots(workspace_id)}
+
+
+@app.post("/api/v1/snapshots/cleanup")
+async def cleanup_snapshots_api(request: Request, payload: dict):
+    """清理过期快照"""
+    _guard(request, "workspace.write")
+    from ..engine.snapshot import cleanup
+    ws = str(payload.get("workspace_id") or "")
+    if not ws:
+        raise HTTPException(status_code=400, detail="需要 workspace_id")
+    return cleanup(ws, keep_days=int(payload.get("keep_days") or 90))
+
+
+@app.get("/api/v1/observability")
+async def observability(workspace_id: str = Query("")):
+    """可观测性快照：请求性能（p95/慢查询）+ 缓存命中 + 数据库健康（+可选数据质量）"""
+    from ..core.cache import cache as _cache
+    out: dict = {"perf": perf_stats(), "cache": _cache.stats()}
+    try:
+        out["cache_backend"] = "redis" if getattr(_cache, "_backend", None) and \
+            _cache._backend.__class__.__name__.lower().startswith("redis") else "memory"
+    except Exception:
+        out["cache_backend"] = "memory"
+    try:
+        out["db"] = await (await get_store()).health()
+    except Exception as e:
+        out["db"] = {"error": str(e)}
+    if workspace_id:
+        try:
+            from ..engine.data_quality import check_workspace
+            dq = await check_workspace(workspace_id, window_days=14)
+            out["data_quality"] = dq["summary"]
+        except Exception as e:
+            out["data_quality"] = {"error": str(e)}
+    return out
+
+
 @app.get("/health")
 async def health():
     """健康检查（no-store：版本号实时可见，不被 CDN 缓存误导）"""
@@ -604,32 +664,38 @@ async def stream(request: Request, workspace_id: str = Query(...),
 @app.post("/api/v1/presence")
 async def presence_update(request: Request, payload: dict):
     """上报在线状态/光标（前端节流调用，约 10s 一次）"""
-    from ..engine.realtime import presence
+    from ..engine.realtime import get_presence
     ws = str(payload.get("workspace_id") or "")
     conn_id = str(payload.get("conn_id") or "")
     if not ws or not conn_id:
         raise HTTPException(status_code=400, detail="需要 workspace_id 与 conn_id")
     user = getattr(request.state, "user", None) or {}
-    presence.touch(ws, conn_id[:64], user=str(user.get("email") or
-                                            payload.get("user") or "本地用户"),
-                   path=str(payload.get("path") or "")[:200],
-                   cursor=payload.get("cursor") if isinstance(payload.get("cursor"), dict)
-                   else None)
-    return {"ok": True, "online": len(presence.snapshot(ws))}
+    pres = await get_presence()
+    await pres.touch_async(ws, conn_id[:64],
+                           user=str(user.get("email") or payload.get("user")
+                                    or "本地用户"),
+                           path=str(payload.get("path") or "")[:200],
+                           cursor=payload.get("cursor")
+                           if isinstance(payload.get("cursor"), dict) else None)
+    return {"ok": True, "online": len(await pres.snapshot_async(ws)),
+            "backend": pres.__class__.__name__}
 
 
 @app.get("/api/v1/presence")
 async def presence_list(workspace_id: str = Query(...)):
     """当前在线成员与光标（谁在和我看同一个看板）"""
-    from ..engine.realtime import presence
-    return {"online": presence.snapshot(workspace_id)}
+    from ..engine.realtime import get_presence
+    pres = await get_presence()
+    return {"online": await pres.snapshot_async(workspace_id),
+            "backend": pres.__class__.__name__}
 
 
 @app.post("/api/v1/presence/leave")
 async def presence_leave(payload: dict):
-    from ..engine.realtime import presence
-    presence.leave(str(payload.get("workspace_id") or ""),
-                   str(payload.get("conn_id") or ""))
+    from ..engine.realtime import get_presence
+    pres = await get_presence()
+    await pres.leave_async(str(payload.get("workspace_id") or ""),
+                           str(payload.get("conn_id") or ""))
     return {"ok": True}
 
 
@@ -894,6 +960,55 @@ async def explore_sql_api(request: Request, payload: dict):
 
 # ========== 数据质量 / 归因 / 叙事（P1：让"可信"和"验证"更硬） ==========
 
+# ========== 隐私合规：数据主体请求 + 留存策略 ==========
+
+@app.get("/api/v1/privacy/subject/export")
+async def privacy_export(request: Request, workspace_id: str = Query(...),
+                         email: str = Query(...)):
+    """DSAR：导出某主体的全部数据（JSON；含个人数据，请安全交付）"""
+    _guard(request, "workspace.write")
+    from ..engine.privacy import PrivacyError, export_subject
+    try:
+        data = await export_subject(workspace_id, email)
+    except PrivacyError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    await _audit_async(request, workspace_id, "privacy.subject_export",
+                       target_type="subject", detail={"email_domain":
+                                                      email.split("@")[-1][:40]})
+    return data
+
+
+@app.post("/api/v1/privacy/subject/erase")
+async def privacy_erase(request: Request, payload: dict):
+    """RTBF：删除/匿名化主体数据（默认 dry-run；purge=true 走物理删除）"""
+    _guard(request, "workspace.write")
+    from ..engine.privacy import PrivacyError, erase_subject
+    ws = str(payload.get("workspace_id") or "")
+    email = str(payload.get("email") or "")
+    if not ws or not email:
+        raise HTTPException(status_code=400, detail="需要 workspace_id 与 email")
+    try:
+        return await erase_subject(ws, email, purge=bool(payload.get("purge")),
+                                   dry_run=bool(payload.get("dry_run", True)),
+                                   actor=_role_of(request))
+    except PrivacyError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/api/v1/privacy/retention/sweep")
+async def privacy_retention(request: Request, payload: dict):
+    """留存策略清理（默认 dry-run；策略来自工作区 settings.retention）"""
+    _guard(request, "workspace.write")
+    from ..engine.privacy import retention_sweep
+    ws = str(payload.get("workspace_id") or "")
+    if not ws:
+        raise HTTPException(status_code=400, detail="需要 workspace_id")
+    return await retention_sweep(ws, dry_run=bool(payload.get("dry_run", True)),
+                                 override=dict(payload.get("retention") or {}))
+
+
+@app.get("/api/v1/privacy/subject/export")
+
 @app.get("/api/v1/data-quality")
 async def data_quality(workspace_id: str = Query(...), window_days: int = Query(14),
                        sla_hours: float = Query(0), staleness_only: bool = Query(False)):
@@ -1029,6 +1144,17 @@ async def _audit_async(request: Request, workspace_id: str, action: str, *,
                                  detail=detail or {}, ip=ip)
     except Exception:
         pass        # 审计失败不得影响业务
+
+
+@app.get("/api/v1/comments/counts")
+async def comment_counts(workspace_id: str = Query(...), target_type: str = Query("chart")):
+    """批注计数（按 target_id 聚合，供页面一次性画徽标）"""
+    store = await get_store()
+    rows = await store._fetchall(
+        """SELECT target_id, COUNT(*) AS n FROM comments
+           WHERE workspace_id = ? AND target_type = ?
+           GROUP BY target_id""", (workspace_id, target_type))
+    return {"counts": {str(r["target_id"]): int(r["n"] or 0) for r in rows}}
 
 
 @app.get("/api/v1/comments")

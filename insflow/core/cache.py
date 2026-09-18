@@ -82,19 +82,55 @@ class TTLCache:
 
     # ========== 单飞计算 ==========
 
+    async def _backend_get(self, key: str) -> Any:
+        """外部后端读取（Redis 需要异步；文件后端是同步的）"""
+        backend = self._backend
+        if backend is None:
+            return None
+        aget = getattr(backend, "aget", None)
+        if aget is not None:
+            try:
+                return await aget(key)
+            except Exception:
+                return None
+        try:
+            return backend.get(key)
+        except Exception:
+            return None
+
     async def get_or_compute(self, key: str, factory: Callable[[], Awaitable[Any]],
                              ttl: float | None = None) -> Any:
         cached = self.get(key)
         if cached is not None:
             return cached
+        # 多实例：先问共享后端（Redis），命中即回填本地，避免重复计算
+        external = await self._backend_get(key)
+        if external is not None:
+            self._data[key] = _Entry(external, time.time(),
+                                     time.time() + (ttl or self.default_ttl))
+            self._hits += 1
+            return external
         lock = self._locks.setdefault(key, asyncio.Lock())
         async with lock:
             # 双重检查：等锁期间可能已被其他协程算好
             cached = self.get(key)
             if cached is not None:
                 return cached
+            external = await self._backend_get(key)
+            if external is not None:
+                self._data[key] = _Entry(external, time.time(),
+                                     time.time() + (ttl or self.default_ttl))
+                self._hits += 1
+                return external
             value = await factory()
             self.set(key, value, ttl)
+            if self._backend is not None:
+                aset = getattr(self._backend, "aset", None)
+                if aset is not None:
+                    try:
+                        await aset(key, value, ttl or self.default_ttl)
+                    except Exception:
+                        pass
             return value
 
     # ========== 失效与观测 ==========
@@ -182,10 +218,23 @@ class FileBackend:
 
 
 def get_cache():
-    """获取缓存单例（INSFLOW_CACHE=file 时启用文件后端）"""
+    """获取缓存单例
+
+    后端优先级：INSFLOW_REDIS_URL（多实例共享）> INSFLOW_CACHE=file（跨进程文件）
+    > 内存。多实例部署必须配 Redis，否则各实例缓存不一致（但不会错，只是命中率低）。
+    """
     import os
     global cache
-    if os.environ.get("INSFLOW_CACHE", "").lower() == "file" and cache._backend is None:
+    if cache._backend is not None:
+        return cache
+    if os.environ.get("INSFLOW_REDIS_URL", "").strip():
+        try:
+            from .db.redis_backend import RedisCacheBackend
+            cache._backend = RedisCacheBackend()
+            return cache
+        except Exception:
+            pass
+    if os.environ.get("INSFLOW_CACHE", "").lower() == "file":
         from .files import DATA_DIR
         cache._backend = FileBackend((DATA_DIR or ".").__str__() + "/cache")
     return cache

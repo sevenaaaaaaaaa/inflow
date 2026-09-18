@@ -137,3 +137,41 @@ def _monitor_service(workspace_id: str):
     from ..core.scheduler import get_scheduler
     from .monitors import MonitorService
     return MonitorService(workspace_id, scheduler=get_scheduler())
+
+
+# ========== 经验沉淀：工作区配置 → 行业模板包（R3-1） ==========
+
+async def export_from_workspace(workspace_id: str, *, template_id: str = "",
+                                name: str = "", industry: str = "",
+                                include_dsl: bool = True) -> dict:
+    """把某个工作区的监控/DSL 规则沉淀成可复用模板包（脱敏：不含数据与账号）"""
+    from ..core.store import get_store
+    from .dsl_models import get_dsl_registry
+    store = await get_store()
+    monitors = await store.list_monitors_full(workspace_id)
+    spec = {
+        "id": template_id or f"custom-{workspace_id[:8]}",
+        "name": name or f"{workspace_id} 配置沉淀",
+        "industry": industry,
+        "monitors": [],
+        "dsl_rules": [],
+        "source_note": ("由 insflow template export 从工作区导出；"
+                        "已剔除数据、账号与密钥，仅保留配置形态"),
+    }
+    for m in monitors:
+        spec["monitors"].append({
+            "kind": m.get("kind"),
+            "target": dict(m.get("target_json") or {}),
+            "schedule_cron": m.get("schedule_cron") or "0 */6 * * *",
+        })
+    if include_dsl:
+        try:
+            registry = get_dsl_registry()
+            for rule in registry.list(workspace_id):
+                spec["dsl_rules"].append(rule if isinstance(rule, dict)
+                                         else {"id": str(rule)})
+        except Exception:
+            pass
+    errors = validate_template(spec)
+    return {"spec": spec, "errors": errors,
+            "monitors": len(spec["monitors"]), "dsl_rules": len(spec["dsl_rules"])}

@@ -1,0 +1,127 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  unit:
+    name: 单元测试（SQLite）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: 安装依赖
+        run: |
+          python -m pip install -q --upgrade pip
+          pip install -q -e ".[dev,mysql]"
+      - name: 语法检查（compileall）
+        run: python -m compileall -q insflow
+      - name: 单元测试（排除 e2e）
+        run: pytest -q -m "not e2e" --no-header
+      - name: E2E 冒烟（进程内 HTTP）
+        run: pytest tests/e2e -q --no-header
+
+  mysql:
+    name: MySQL 5.7 兼容（真实服务）
+    runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mysql:5.7
+        env:
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_DATABASE: insflow
+          MYSQL_USER: insflow
+          MYSQL_PASSWORD: insflow
+        ports: ["3306:3306"]
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -uinsflow -pinsflow"
+          --health-interval=5s --health-timeout=5s --health-retries=20
+    env:
+      INSFLOW_DB_DRIVER: mysql
+      MYSQL_HOST: 127.0.0.1
+      MYSQL_PORT: "3306"
+      MYSQL_USER: insflow
+      MYSQL_PASSWORD: insflow
+      MYSQL_DATABASE: insflow
+      INSFLOW_MASTER_KEY: ci-key
+      INSFLOW_DISABLE_SCHEDULER: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: |
+          python -m pip install -q --upgrade pip
+          pip install -q -e ".[dev,mysql]"
+      - name: MySQL 驱动与迁移测试
+        run: |
+          pytest tests/test_db_driver.py tests/test_store.py tests/e2e -q --no-header
+      - name: MySQL 关键查询（预聚合/JSON 维度/沙箱）
+        run: |
+          python - <<'PY'
+          import asyncio, os
+          from insflow.core.store import Store, reset_store
+          from insflow.core.entities import Workspace
+
+          async def main():
+              s = Store(); await s.connect(); await s.migrate(); reset_store(s)
+              await s.create_workspace(Workspace(id="ci", name="CI"))
+              for i, (prov, ch, v) in enumerate([("广东", "search", 10),
+                                                 ("北京", "social", 6)]):
+                  await s._execute(
+                      "INSERT INTO metrics (id, workspace_id, entity_type, entity_id, "
+                      "metric, value, dim_json, ts) VALUES (?, 'ci', 'site', 'main', "
+                      "'ga4_sessions', ?, ?, '2026-09-10T00:00:00+00:00')",
+                      (f"m{i}", v, '{"province": "%s", "channel": "%s"}' % (prov, ch)))
+              await s._db.commit()
+              rows = await s.metric_dim_breakdown("ci", "ga4_sessions", "province", days=3650)
+              assert rows and rows[0]["key"] == "广东", rows
+              from insflow.core.rollup import rollup, daily_series
+              await rollup("ci", days=3650)
+              assert await daily_series("ci", "ga4_sessions", days=3650)
+              from insflow.engine.explore_sql import run as sql_run
+              out = await sql_run("ci", "SELECT metric, SUM(value) v FROM metrics GROUP BY metric")
+              assert out["count"] == 1, out
+              print("MySQL 关键路径 OK")
+              await s.close()
+          asyncio.run(main())
+          PY
+
+  ui:
+    name: UI 行为回归（Node DOM 桩）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: 抽取控制台内联 JS 并跑行为断言
+        run: |
+          pip install -q -e ".[dev]"
+          python - <<'PY'
+          import os
+          import tempfile
+          from pathlib import Path
+
+          import insflow.core.files as files_mod
+
+          os.environ.setdefault("INSFLOW_MASTER_KEY", "ci-key")
+          os.environ.setdefault("INSFLOW_DISABLE_SCHEDULER", "1")
+          files_mod.DATA_DIR = Path(tempfile.mkdtemp())
+          from fastapi.testclient import TestClient
+          from insflow.server.app import app
+
+          # 必须取包含 base.html 的页面（交互函数都在 base.html 里）
+          html = TestClient(app).get("/console/m").text
+          assert "ifToggleSeries" in html, "页面未包含 base.html 交互脚本"
+          Path("/tmp/console.html").write_text(html, encoding="utf-8")
+          PY
+          python scripts/extract_inline_js.py /tmp/console.html /tmp/inline.js
+          node scripts/e2e_ui.mjs /tmp/inline.js

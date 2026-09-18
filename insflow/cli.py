@@ -1,6 +1,8 @@
 """Insight Flow CLI 入口"""
 
 import asyncio
+import json
+import pathlib
 import sys
 from pathlib import Path
 
@@ -497,6 +499,32 @@ def rollup_status(workspace: str):
     console.print(run_async(rollup_stats(workspace)))
 
 
+@main.command("snapshot")
+@click.option("--workspace", "-w", required=True)
+@click.option("--panel", "-p", default="board:traffic",
+              help="board:<驾驶舱> 或 metric:<指标>")
+@click.option("--days", default=30)
+@click.option("--no-pdf", is_flag=True, help="只出 HTML（不调用 Chrome）")
+@click.option("--push", is_flag=True, help="生成后按通知渠道推送链接")
+def snapshot_cmd(workspace: str, panel: str, days: int, no_pdf: bool, push: bool):
+    """生成看板快照（自包含 HTML，可直接打印 PDF）"""
+    if push:
+        from .engine.snapshot import push_snapshot
+        res = run_async(push_snapshot(workspace, panel, days=days))
+    else:
+        from .engine.snapshot import create_snapshot
+        res = run_async(create_snapshot(workspace, panel, days=days,
+                                        make_pdf=not no_pdf))
+    console.print(f"[green]快照已生成[/] {res.get('html_path')} "
+                  f"（{res.get('size_kb')}KB）")
+    if res.get("pdf_path"):
+        console.print(f"  PDF: {res['pdf_path']}（{res.get('pdf_kb')}KB）")
+    elif res.get("pdf_skipped"):
+        console.print(f"  [yellow]PDF 跳过：{res['pdf_skipped']}[/]")
+    if push:
+        console.print(f"  推送：{res.get('notified')}")
+
+
 @main.command("bench")
 @click.option("--monitors", default=1000, help="监控任务数（默认 1000，对齐性能基线）")
 @click.option("--insights", default=100000, help="洞察行数（默认 10 万）")
@@ -521,6 +549,52 @@ def bench_cmd(monitors, insights, metrics, driver, keep):
         table.add_row(name, str(st["n"]), str(st["p50_ms"]), str(st["p95_ms"]),
                       str(st["max_ms"]))
     console.print(table)
+
+
+@main.group("privacy")
+def privacy_group():
+    """隐私合规：数据主体导出/删除 + 留存清理"""
+    pass
+
+
+@privacy_group.command("export")
+@click.option("--workspace", "-w", required=True)
+@click.option("--email", "-e", required=True)
+@click.option("--out", default="", help="输出文件（默认打印到终端）")
+def privacy_export(workspace: str, email: str, out: str):
+    """DSAR：导出该主体的全部数据"""
+    from .engine.privacy import export_subject
+    data = run_async(export_subject(workspace, email))
+    text = json.dumps(data, ensure_ascii=False, indent=2, default=str)
+    if out:
+        pathlib.Path(out).write_text(text, encoding="utf-8")
+        console.print(f"[green]已导出[/] {out}（含个人数据，请安全交付）")
+    else:
+        console.print(text[:4000])
+
+
+@privacy_group.command("erase")
+@click.option("--workspace", "-w", required=True)
+@click.option("--email", "-e", required=True)
+@click.option("--purge", is_flag=True, help="物理删除（默认匿名化）")
+@click.option("--yes", is_flag=True, help="跳过 dry-run 直接执行")
+def privacy_erase(workspace: str, email: str, purge: bool, yes: bool):
+    """RTBF：删除/匿名化主体数据"""
+    from .engine.privacy import erase_subject
+    plan = run_async(erase_subject(workspace, email, purge=purge, dry_run=not yes))
+    console.print(json.dumps(plan, ensure_ascii=False, indent=2, default=str)[:3000])
+
+
+@privacy_group.command("retention")
+@click.option("--workspace", "-w", required=True)
+@click.option("--day/--days", "days", default=None, help="覆盖保留天数（metrics）")
+@click.option("--yes", is_flag=True, help="跳过 dry-run 直接执行")
+def privacy_retention(workspace: str, days, yes: bool):
+    """留存策略清理（默认 dry-run）"""
+    from .engine.privacy import retention_sweep
+    res = run_async(retention_sweep(workspace, dry_run=not yes,
+                                    override={"metrics_days": days} if days else None))
+    console.print(json.dumps(res, ensure_ascii=False, indent=2, default=str)[:3000])
 
 
 @main.group("dq")
@@ -823,6 +897,40 @@ def setup(name: str, workspace: str, pack: str, base_url: str):
 def template():
     """行业模板包"""
     pass
+
+
+@template.command("export")
+@click.option("--workspace", "-w", required=True)
+@click.option("--out", "-o", required=True, help="输出 JSON 路径")
+@click.option("--id", "template_id", default="", help="模板包 id")
+@click.option("--name", default="", help="模板包名称")
+@click.option("--industry", default="", help="行业标签")
+def template_export(workspace: str, out: str, template_id: str, name: str,
+                    industry: str):
+    """把工作区配置沉淀为行业模板包（脱敏，可给下一个客户直接用）"""
+    from .engine.template_pack import export_from_workspace
+    res = run_async(export_from_workspace(workspace, template_id=template_id,
+                                          name=name, industry=industry))
+    if res["errors"]:
+        console.print(f"[red]校验未通过：{res['errors']}[/]")
+        raise SystemExit(1)
+    pathlib.Path(out).write_text(json.dumps(res["spec"], ensure_ascii=False, indent=2),
+                                 encoding="utf-8")
+    console.print(f"[green]已导出[/] {out}（监控 {res['monitors']} · "
+                  f"DSL {res['dsl_rules']}；不含数据与凭据）")
+
+
+@template.command("validate")
+@click.argument("path")
+def template_validate(path: str):
+    """校验模板包 JSON（应用前先验证）"""
+    from .engine.template_pack import validate_template
+    spec = json.loads(pathlib.Path(path).read_text(encoding="utf-8"))
+    errors = validate_template(spec)
+    if errors:
+        console.print(f"[red]不通过：{errors}[/]")
+        raise SystemExit(1)
+    console.print("[green]模板包有效[/]")
 
 
 @template.command("list")

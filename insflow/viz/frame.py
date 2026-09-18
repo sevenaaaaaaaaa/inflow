@@ -49,12 +49,17 @@ def _xlsx_data_uri(columns: list[str], rows: list[list], name: str,
 
 def datapanel(title: str, columns: list[str], rows: list[list], chart_html: str, *,
               csv_name: str = "chart", subtitle: str = "", drill_metric: str = "",
-              drill_entity: str = "", xlsx: bool = True, png: bool = True) -> str:
+              drill_entity: str = "", xlsx: bool = True, png: bool = True,
+              panel_key: str = "") -> str:
     """图表面板：图/表切换 + CSV / XLSX / PNG 导出（+ 可选下钻提示）
 
     columns/rows 同时用于表格渲染与导出（单一数据源，不会图表与表格不一致）。
     """
-    uid = f"dp{abs(hash(title + str(len(rows)))) % 100000:05d}"
+    import re as _re
+    # 面板稳定标识：优先显式 panel_key，否则由标题推导（同页同名面板需显式传 key）
+    key = panel_key or (csv_name if csv_name and csv_name != "chart" else
+                        _re.sub(r"[^\w\u4e00-\u9fff-]+", "-", title)[:48] or "panel")
+    uid = f"dp{key}"
     csv_uri = _csv_data_uri(columns, rows, csv_name)
     xlsx_uri = _xlsx_data_uri(columns, rows, csv_name) if xlsx else ""
     xlsx_btn = (f'<a class="dp-btn" href="{xlsx_uri}" '
@@ -68,10 +73,14 @@ def datapanel(title: str, columns: list[str], rows: list[list], chart_html: str,
     if drill_metric and drill_entity:
         drill_attr = (f' data-drill-metric="{html.escape(drill_metric)}"'
                       f' data-drill-entity="{html.escape(drill_entity)}"')
-    return f'''<div class="dp" id="{uid}">
+    return f'''<div class="dp" id="{uid}" data-panel="{html.escape(key)}">
   <div class="dp-head">
     <div class="dp-title">{html.escape(title)}
-      {f'<span class="dp-sub">{html.escape(subtitle)}</span>' if subtitle else ''}</div>
+      {f'<span class="dp-sub">{html.escape(subtitle)}</span>' if subtitle else ''}
+      <button type="button" class="dp-btn" data-annot="{html.escape(key)}"
+        aria-label="图表批注" title="批注（协作）"
+        onclick="ifPanelComments(\'{html.escape(key)}\',this)">💬 <span class="annot-n">0</span></button>
+    </div>
     <div class="dp-tools">
       <button type="button" class="dp-btn dp-on" aria-pressed="true" aria-label="图表视图"
         onclick="dpView('{uid}','chart')" title="图表视图">图</button>

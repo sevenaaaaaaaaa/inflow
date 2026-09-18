@@ -60,3 +60,6 @@ ignore = ["E501"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+markers = [
+    "e2e: 端到端冒烟（进程内 HTTP + UI 行为），可用 -m \"not e2e\" 排除",
+]

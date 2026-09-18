@@ -208,6 +208,34 @@ class SubscriptionService:
                               {"subscription_id": sub["id"], "error": str(e)})
         return {"sent": sent, "failed": failed}
 
+    async def create_snapshot(self, name: str, panel: str, channels: list[str],
+                              target: dict, *, days: float = 30,
+                              notes: str = "") -> dict:
+        """快照订阅：按期把看板快照（HTML/PDF）推送到交付渠道"""
+        return await self.create(name, channels, target,
+                                 filters={"kind": "snapshot", "panel": panel,
+                                          "days": days, "notes": notes},
+                                 mode="daily")
+
+    async def dispatch_snapshots(self) -> dict:
+        """所有 snapshot 订阅 → 生成快照 → 推送链接"""
+        from .snapshot import push_snapshot
+        sent = failed = 0
+        for sub in await self.list():
+            if not sub["enabled"] or sub["filters"].get("kind") != "snapshot":
+                continue
+            try:
+                await push_snapshot(self.workspace_id,
+                                    str(sub["filters"].get("panel") or "board:traffic"),
+                                    days=float(sub["filters"].get("days") or 30),
+                                    title=sub["name"])
+                sent += 1
+            except Exception as e:
+                failed += 1
+                self.bus.emit("subscription.push_failed",
+                              {"subscription_id": sub["id"], "error": str(e)})
+        return {"sent": sent, "failed": failed}
+
     async def dispatch_daily(self) -> dict:
         """每日模式：按最近 24h 匹配洞察聚合推送（无状态）"""
         store = await get_store()

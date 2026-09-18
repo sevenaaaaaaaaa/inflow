@@ -14,6 +14,26 @@ from ..core.store import get_store
 logger = logging.getLogger("insflow.bootstrap")
 
 
+def _leader_wrapped(handler):
+    """把调度 handler 包一层「仅 leader 执行」
+
+    多实例部署时避免每个实例各跑一遍采集/汇总/告警；幂等窗口键是第二道保险。
+    无 Redis（单机私有化）时 leader 恒为 True，行为与单机完全一致。
+    """
+    import functools
+
+    @functools.wraps(handler)
+    async def wrapper(payload=None):
+        from ..core.leader import get_leader
+        leader = get_leader()
+        if not await leader.acquire():
+            logger.info(f"非 leader（{leader.ident}），跳过任务 {handler.__name__}")
+            return {"skipped": "not-leader"}
+        return await handler(payload)
+
+    return wrapper
+
+
 async def bootstrap_scheduled_jobs() -> dict:
     """注册全部定时任务（FastAPI lifespan 启动时调用一次）"""
     store = await get_store()
@@ -179,6 +199,7 @@ async def bootstrap_scheduled_jobs() -> dict:
                 svc = SubscriptionService(ws.id)
                 await svc.dispatch_daily()
                 await svc.dispatch_metric_charts()   # 图表级订阅
+                await svc.dispatch_snapshots()       # 看板快照订阅
             except Exception:
                 logger.exception(f"订阅日报推送失败: {ws.id}")
 
@@ -231,6 +252,37 @@ async def bootstrap_scheduled_jobs() -> dict:
             except Exception:
                 logger.exception(f"数据质量体检失败: {ws.id}")
 
+    async def _snapshot_cleanup(payload=None):
+        """每周清理过期快照（默认保留 90 天）"""
+        from ..engine.snapshot import cleanup
+        for ws in await store.list_workspaces():
+            try:
+                out = cleanup(ws.id)
+                if out["removed"]:
+                    logger.info(f"快照清理: {ws.id} 删除 {out['removed']} 个")
+            except Exception:
+                logger.exception(f"快照清理失败: {ws.id}")
+
+    scheduler.add_job("snapshot.cleanup", "0 4 * * 0", "snapshot.cleanup", {})
+    scheduler.register_handler("snapshot.cleanup", _snapshot_cleanup)
+    registered["jobs"].append("snapshot.cleanup@sun-04:00")
+
+    async def _privacy_retention(payload=None):
+        """每周留存清理（按工作区 retention 策略；无策略=默认值）"""
+        from ..engine.privacy import retention_sweep
+        for ws in await store.list_workspaces():
+            try:
+                res = await retention_sweep(ws.id, dry_run=False)
+                deleted = sum(v.get("deleted", 0) for v in res["result"].values())
+                if deleted:
+                    logger.info(f"留存清理: {ws.id} 删除 {deleted} 行")
+            except Exception:
+                logger.exception(f"留存清理失败: {ws.id}")
+
+    scheduler.add_job("privacy.retention", "30 3 * * 0", "privacy.retention", {})
+    scheduler.register_handler("privacy.retention", _privacy_retention)
+    registered["jobs"].append("privacy.retention@sun-03:30")
+
     scheduler.add_job("dq.daily", "45 9 * * *", "dq.daily", {})
     scheduler.register_handler("dq.daily", _dq_daily)
     registered["jobs"].append("dq.daily@daily-09:45")
@@ -238,6 +290,14 @@ async def bootstrap_scheduled_jobs() -> dict:
     scheduler.add_job("alerts.hourly", "40 * * * *", "alerts.hourly", {})
     scheduler.register_handler("alerts.hourly", _alerts_hourly)
     registered["jobs"].append("alerts.hourly@hourly-40")
+
+    # 多实例：定时任务只由 leader 执行（无 Redis → 单机恒为 leader）
+    from ..core.leader import get_leader
+    leader = get_leader()
+    for task_type, handler in list(scheduler._handlers.items()):
+        scheduler.register_handler(task_type, _leader_wrapped(handler))
+    await leader.acquire()
+    registered["leader"] = await leader.status()
 
     scheduler.start()
     logger.info(f"Bootstrap 完成: {registered}")
