@@ -318,6 +318,25 @@ MIGRATIONS = [
         updated_at TEXT NOT NULL
     );
     """,
+    """
+    CREATE TABLE IF NOT EXISTS admin_audit (
+        id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL,
+        actor TEXT NOT NULL DEFAULT '',
+        role TEXT NOT NULL DEFAULT '',
+        action TEXT NOT NULL,
+        target_type TEXT NOT NULL DEFAULT '',
+        target_id TEXT NOT NULL DEFAULT '',
+        detail_json TEXT NOT NULL DEFAULT '{}',
+        ip TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL
+    );
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_admin_audit_ws_time
+        ON admin_audit(workspace_id, created_at);
+    """,
+
 ]
 
 # V3: metrics 幂等去重（R1-4）—— ALTER 语句需要幂等执行（检查列是否存在）
@@ -331,9 +350,13 @@ V3_METRICS_DEDUPE_SQL = [
 
 
 def generate_id() -> str:
-    """生成唯一ID"""
+    """生成唯一ID
+
+    注意：曾用 `uuid4()[:8]`（16^8 ≈ 4.3e9 空间），按生日悖论约 7.7 万行即 ~50%
+    概率碰撞（实测 20 万行批量插入直接 UNIQUE 冲突）。改为 16 位十六进制（2^64）。
+    """
     import uuid
-    return str(uuid.uuid4())[:8]
+    return uuid.uuid4().hex[:16]
 new_id = generate_id  # 别名：新增行主键
 
 
@@ -1103,6 +1126,43 @@ class Store:
         return {"rows": rows, "cols": [col_dim or "时间"],
                 "row_labels": row_labels, "col_labels": col_labels, "matrix": matrix,
                 "dim_rows": rows, "dim_col": col_dim, "metric": metric, "agg": agg}
+
+    # ---- 管理动作审计（合规：谁在何时改了什么）----
+
+    async def record_admin(self, workspace_id: str, action: str, *,
+                           actor: str = "", role: str = "",
+                           target_type: str = "", target_id: str = "",
+                           detail: dict | None = None, ip: str = "") -> None:
+        """记录管理动作（失败不得影响主流程——调用方通常包 try/except）"""
+        await self._execute(
+            """INSERT INTO admin_audit (id, workspace_id, actor, role, action,
+               target_type, target_id, detail_json, ip, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (generate_id(), workspace_id, actor[:191], role[:32], action[:64],
+             target_type[:48], target_id[:191],
+             json.dumps(detail or {}, ensure_ascii=False), ip[:64],
+             datetime.now(UTC).isoformat()))
+        await self._db.commit()
+
+    async def list_admin_audit(self, workspace_id: str, *, action: str = "",
+                               actor: str = "", limit: int = 200) -> list[dict]:
+        where = "workspace_id = ?"
+        params: list = [workspace_id]
+        if action:
+            where += " AND action = ?"
+            params.append(action)
+        if actor:
+            where += " AND actor = ?"
+            params.append(actor)
+        rows = await self._fetchall(
+            f"SELECT * FROM admin_audit WHERE {where} ORDER BY created_at DESC LIMIT ?",
+            tuple([*params, min(limit, 1000)]))
+        for r in rows:
+            try:
+                r["detail"] = json.loads(r.get("detail_json") or "{}")
+            except Exception:
+                r["detail"] = {}
+        return rows
 
     async def dim_keys(self, workspace_id: str, metric: str = "",
                        candidates: tuple[str, ...] = (

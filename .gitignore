@@ -41,6 +41,8 @@ data/reports/
 data/snapshots/
 data/events/
 data/vault.json
+data-backup/
+data/geo/
 
 # Environment
 .env

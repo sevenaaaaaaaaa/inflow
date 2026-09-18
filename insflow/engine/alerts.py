@@ -88,11 +88,45 @@ async def _evaluate_rule(store, workspace_id: str, rule: dict) -> dict | None:
         "threshold": threshold, "op": op, "routes": routes,
         "insight_id": getattr(insight, "id", "")})
 
-    notified = await _notify(workspace_id, title, summary, routes, escalation)
-    return {"rule_id": rule.get("id"), "name": rule.get("name"), "metric": rule["metric"],
-            "value": value, "threshold": threshold, "op": op,
-            "insight_id": getattr(insight, "id", ""), "notified": notified,
-            "escalation": escalation, "routes": routes}
+    result = {"rule_id": rule.get("id"), "name": rule.get("name"),
+              "metric": rule["metric"], "value": value, "threshold": threshold,
+              "op": op, "insight_id": getattr(insight, "id", "")}
+    notified = await notify_with_policy(workspace_id, title, summary, routes,
+                                       escalation, result)
+    return {**result, "notified": notified, "escalation": escalation,
+            "routes": routes}
+
+
+async def notify_with_policy(workspace_id: str, title: str, summary: str,
+                             routes: list, escalation: dict,
+                             alert: dict | None = None) -> dict:
+    """按工作区通知策略发送：静默时段 → 待发；节流 → 合并计数；升级链 → 逐级通道"""
+    from .notify_policy import (QuietHours, defer, escalation_targets, group_key,
+                                pending_count, policy_of, throttle)
+    store = await get_store()
+    ws = await store.get_workspace(workspace_id)
+    policy = policy_of(ws.settings_json if ws else {})
+    alert = alert or {}
+    quiet = QuietHours(policy.get("quiet_hours"))
+    if quiet.active():
+        defer(alert, "quiet_hours")
+        return {"deferred": "quiet_hours", "resume_at": quiet.next_resume(),
+                "pending": pending_count()}
+    grouping = policy.get("grouping") or {}
+    group = group_key(alert, grouping)
+    min_interval = float(grouping.get("min_interval_s") or 0)
+    if min_interval > 0:
+        allowed, suppressed = throttle.check(group, min_interval)
+        if not allowed:
+            defer(alert, "throttled")
+            return {"throttled": True, "group": group, "similar": suppressed}
+    chain = escalation.get("chain") or policy.get("escalation_chain") or []
+    targets = escalation_targets(chain, 0.0) or list(routes or [])
+    merged = list(dict.fromkeys([*targets, *[r for r in (routes or [])]]))
+    out = await _notify(workspace_id, title, summary, merged, escalation)
+    if chain:
+        out["chain_targets"] = merged
+    return out
 
 
 async def _notify(workspace_id: str, title: str, summary: str,

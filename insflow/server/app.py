@@ -513,7 +513,7 @@ async def api_load_layout(workspace_id: str = Query(""), path: str = Query("")):
 
 
 @app.put("/api/v1/ui/layout")
-async def api_save_layout(payload: dict):
+async def api_save_layout(request: Request, payload: dict):
     """保存看板布局（按路径存于工作区设置，不需要新表/迁移）"""
     workspace_id = str(payload.get("workspace_id") or "")
     path = str(payload.get("path") or "")[:200]
@@ -527,6 +527,7 @@ async def api_save_layout(payload: dict):
     settings = dict(ws.settings_json or {})
     layouts = dict(settings.get("layouts") or {})
     prev = layouts.get(path)
+    prev_layout = layouts.get(path)
     layouts[path] = order
     settings["layouts"] = layouts
     if prev and prev != order:      # 版本历史（可回溯，最多留 20 版）
@@ -536,6 +537,9 @@ async def api_save_layout(payload: dict):
         settings["layouts_history"] = history[-20:]
     ws.settings_json = settings
     await store.update_workspace(ws)
+    await _audit_async(request, workspace_id, "layout.save",
+                 target_type="layout", target_id=path,
+                 detail={"before": prev_layout, "after": order})
     return {"ok": True, "path": path, "order": order}
 
 
@@ -665,6 +669,8 @@ async def set_rls_policies(request: Request, payload: dict):
     settings["rls_policies"] = clean
     ws_row.settings_json = settings
     await store.update_workspace(ws_row)
+    await _audit_async(request, ws, "rls.update", target_type="rls",
+                 detail={"policies": clean})
     return {"ok": True, "policies": clean}
 
 
@@ -729,6 +735,24 @@ async def upsert_metric_def(request: Request, payload: dict):
         if payload.get(k) is not None})
 
 
+async def _audit_async(request: Request, workspace_id: str, action: str, *,
+                       target_type: str = "", target_id: str = "",
+                       detail: dict | None = None) -> None:
+    try:
+        from ..core.store import get_store as _gs
+        user = getattr(request.state, "user", None) or {}
+        store = await _gs()
+        ip = (request.headers.get("x-forwarded-for") or
+              (request.client.host if request.client else ""))[:64]
+        await store.record_admin(workspace_id, action,
+                                 actor=str(user.get("email") or user.get("user_id") or "本地用户"),
+                                 role=str(user.get("role") or "owner"),
+                                 target_type=target_type, target_id=target_id,
+                                 detail=detail or {}, ip=ip)
+    except Exception:
+        pass        # 审计失败不得影响业务
+
+
 @app.get("/api/v1/comments")
 async def list_comments(workspace_id: str = Query(...), target_type: str = Query(""),
                         target_id: str = Query("")):
@@ -748,8 +772,12 @@ async def add_comment(request: Request, payload: dict):
         raise HTTPException(status_code=400, detail="需要 workspace_id 与 body")
     user = getattr(request.state, "user", None) or {}
     author = str(payload.get("author") or user.get("email") or "本地用户")
-    return await store.add_comment(ws, str(payload.get("target_type") or "insight"),
-                                   str(payload.get("target_id") or ""), body, author)
+    comment = await store.add_comment(ws, str(payload.get("target_type") or "insight"),
+                                      str(payload.get("target_id") or ""), body, author)
+    await _audit_async(request, ws, "comment.add", target_type="comment",
+                 target_id=str(comment.get("id") or ""),
+                 detail={"target": payload.get("target_id")})
+    return comment
 
 
 @app.get("/api/v1/alerts/rules")
@@ -765,7 +793,13 @@ async def upsert_alert_rule(request: Request, payload: dict):
     ws = str(payload.get("workspace_id") or "")
     if not ws:
         raise HTTPException(status_code=400, detail="需要 workspace_id")
-    return await (await get_store()).upsert_alert_rule(ws, payload)
+    rule = await (await get_store()).upsert_alert_rule(ws, payload)
+    await _audit_async(request, ws, "alert_rule.upsert", target_type="alert_rule",
+                 target_id=str(rule.get("id") or ""),
+                 detail={"name": rule.get("name"), "metric": rule.get("metric"),
+                         "op": rule.get("op"), "threshold": rule.get("threshold"),
+                         "routes": rule.get("routes_json")})
+    return rule
 
 
 @app.delete("/api/v1/alerts/rules/{rule_id}")
@@ -773,6 +807,8 @@ async def delete_alert_rule(request: Request, workspace_id: str = Query(...),
                             rule_id: str = ""):
     _guard(request, "alert.write")
     ok = await (await get_store()).delete_alert_rule(workspace_id, rule_id)
+    await _audit_async(request, workspace_id, "alert_rule.delete", target_type="alert_rule",
+                 target_id=rule_id)
     return {"ok": ok}
 
 
@@ -1005,6 +1041,87 @@ async def toggle_subscription(workspace_id: str, subscription_id: str, enabled: 
     if not ok:
         raise HTTPException(status_code=404, detail="Subscription not found")
     return {"ok": True, "enabled": enabled}
+
+
+@app.post("/api/v1/geo/datasets")
+async def import_geo_dataset(request: Request, payload: dict):
+    """导入 GeoJSON 数据集（URL 或 content）；用于精确边界地图"""
+    _guard(request, "workspace.write" if _role_of(request) in ("owner", "admin")
+           else "read")
+    from ..engine.geo import GeoError, save_dataset
+    ws = str(payload.get("workspace_id") or "")
+    name = str(payload.get("name") or "").strip()
+    if not ws or not name:
+        raise HTTPException(status_code=400, detail="需要 workspace_id 与 name")
+    try:
+        result = await save_dataset(ws, name, url=str(payload.get("url") or ""),
+                                    content=str(payload.get("content") or ""),
+                                    name_key=str(payload.get("name_key") or ""))
+    except GeoError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    await _audit_async(request, ws, "geo.dataset_import", target_type="geo",
+                       target_id=name, detail={"count": result.get("count")})
+    return result
+
+
+@app.get("/api/v1/geo/datasets")
+async def list_geo_datasets(workspace_id: str = Query(...)):
+    """已导入的 GeoJSON 数据集"""
+    from ..engine.geo import list_datasets
+    ws = await (await get_store()).get_workspace(workspace_id)
+    return {"datasets": list_datasets(ws.settings_json if ws else {})}
+
+
+@app.get("/api/v1/audit/admin")
+async def admin_audit(workspace_id: str = Query(...), action: str = Query(""),
+                      actor: str = Query(""), limit: int = Query(200),
+                      format: str = Query("json")):
+    """管理动作审计（谁在何时改了什么）；format=csv 供合规归档"""
+    rows = await (await get_store()).list_admin_audit(
+        workspace_id, action=action, actor=actor, limit=limit)
+    if format == "csv":
+        import csv as _csv
+        import io as _io
+        import json as _json2
+
+        from fastapi.responses import Response
+        buf = _io.StringIO()
+        writer = _csv.writer(buf)
+        writer.writerow(["created_at", "actor", "role", "action", "target_type",
+                         "target_id", "ip", "detail"])
+        for r in rows:
+            writer.writerow([r.get("created_at"), r.get("actor"), r.get("role"),
+                             r.get("action"), r.get("target_type"),
+                             r.get("target_id"), r.get("ip"),
+                             _json2.dumps(r.get("detail") or {},
+                                          ensure_ascii=False)])
+        return Response(buf.getvalue(), media_type="text/csv; charset=utf-8",
+                        headers={"Content-Disposition":
+                                 "attachment; filename=admin-audit.csv"})
+    return {"logs": rows}
+
+
+@app.post("/api/v1/members/role")
+async def set_member_role(request: Request, payload: dict):
+    """调整成员角色（owner/admin 才能操作；变更进审计）"""
+    if _role_of(request) not in ("owner", "admin"):
+        raise HTTPException(status_code=403, detail="仅 owner/admin 可调整角色")
+    from ..engine.permissions import ROLES
+    store = await get_store()
+    ws = str(payload.get("workspace_id") or "")
+    email = str(payload.get("email") or "").strip().lower()
+    role = str(payload.get("role") or "").strip().lower()
+    if not ws or not email or role not in ROLES:
+        raise HTTPException(status_code=400,
+                            detail=f"需要 workspace_id/email/role（可用角色 {list(ROLES)}）")
+    row = await store._fetchone("SELECT id, role FROM users WHERE email = ?", (email,))
+    if not row:
+        raise HTTPException(status_code=404, detail="用户不存在")
+    await store._execute("UPDATE users SET role = ? WHERE id = ?", (role, row["id"]))
+    await store._db.commit()
+    await _audit_async(request, ws, "member.role_change", target_type="user",
+                       target_id=email, detail={"from": row["role"], "to": role})
+    return {"ok": True, "email": email, "role": role, "previous": row["role"]}
 
 
 @app.get("/api/v1/audit/export")

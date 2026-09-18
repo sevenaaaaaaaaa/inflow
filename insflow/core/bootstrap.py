@@ -29,7 +29,7 @@ async def bootstrap_scheduled_jobs() -> dict:
         registered["monitors_restored"] += n
 
     # 2. 每日 09:00 UTC：到期动作验证评估
-    async def _evaluate_feedback():
+    async def _evaluate_feedback(payload=None):
         from ..actions.feedback_tracker import FeedbackTracker
         for ws in await store.list_workspaces():
             tracker = FeedbackTracker(ws.id)
@@ -44,7 +44,7 @@ async def bootstrap_scheduled_jobs() -> dict:
     registered["jobs"].append("feedback.evaluate@daily-09:00")
 
     # 3. 每周一 09:30 UTC：增长周报
-    async def _weekly_report():
+    async def _weekly_report(payload=None):
         from ..engine.weekly_report import WeeklyReportBuilder
         for ws in await store.list_workspaces():
             try:
@@ -57,7 +57,7 @@ async def bootstrap_scheduled_jobs() -> dict:
     registered["jobs"].append("report.weekly@mon-09:30")
 
     # 4. 每小时：配额审计
-    async def _quota_audit():
+    async def _quota_audit(payload=None):
         from ..core.security import get_quota_ledger
         ledger = get_quota_ledger()
         for source_id, usage in ledger.get_all_usage().items():
@@ -72,7 +72,7 @@ async def bootstrap_scheduled_jobs() -> dict:
     registered["jobs"].append("quota.audit@hourly")
 
     # 5. 每日 09:15：数据备份（R1-2，data/ 是客户资产）
-    async def _daily_backup():
+    async def _daily_backup(payload=None):
         from ..engine.backup import BackupManager
         mgr = BackupManager()
         result = mgr.run()
@@ -86,18 +86,78 @@ async def bootstrap_scheduled_jobs() -> dict:
     scheduler.register_handler("backup.daily", _daily_backup)
     registered["jobs"].append("backup.daily@daily-09:15")
 
-    # 6. 每日 09:20：OAuth 授权过期审计（7 天预警，R2-3）
-    async def _token_audit():
+    # 6. 每日 09:35：每日运行摘要（R2-1）；09:20 的 OAuth 临期预警见下
+    async def _digest_daily(payload=None):
+        """每日运行摘要（采集成功率/洞察/验证/告警）→ 飞书（配置了 feishu 才发）"""
+        from ..engine.observability import DailyDigestBuilder
+        for ws in await store.list_workspaces():
+            try:
+                row = await store.get_workspace(ws.id)
+                targets = ((row.settings_json or {}).get("alert_targets") or {}) if row else {}
+                if not (targets.get("feishu") or {}).get("feishu_url"):
+                    continue
+                await DailyDigestBuilder(ws.id).push_to_feishu()
+            except Exception:
+                logger.exception(f"每日摘要推送失败: {ws.id}")
+
+    scheduler.add_job("digest.daily", "35 9 * * *", "digest.daily", {})
+    scheduler.register_handler("digest.daily", _digest_daily)
+    registered["jobs"].append("digest.daily@daily-09:35")
+
+    async def _pending_flush(payload=None):
+        """静默/节流期累计的告警，恢复后合并补发（每工作区一条摘要）"""
+        from ..core.files import EventBus
+        from ..engine.alerts import _notify
+        from ..engine.notify_policy import QuietHours, drain_pending, policy_of
+        for ws in await store.list_workspaces():
+            try:
+                row = await store.get_workspace(ws.id)
+                policy = policy_of(row.settings_json if row else {})
+                if QuietHours(policy.get("quiet_hours")).active():
+                    continue
+                items = drain_pending(ws.id)
+                if not items:
+                    continue
+                titles = [str(i["alert"].get("name") or i["alert"].get("metric"))
+                          for i in items][:10]
+                await _notify(ws.id, f"静默期累计 {len(items)} 条告警",
+                              "、".join(titles), ["feishu", "webhook"], {})
+                EventBus(ws.id).emit("alert.flushed", {"count": len(items)})
+            except Exception:
+                logger.exception(f"待发告警补发失败: {ws.id}")
+
+    scheduler.add_job("alerts.flush", "*/15 * * * *", "alerts.flush", {})
+    scheduler.register_handler("alerts.flush", _pending_flush)
+    registered["jobs"].append("alerts.flush@every-15min")
+
+    # 5.5 OAuth 临期预警（≤7 天，主动通知而非只写事件流）
+    async def _token_audit(payload=None):
+        from ..engine.alerts import _notify
         from ..engine.token_manager import TokenManager
         for ws in await store.list_workspaces():
-            TokenManager(ws.id).audit_all()
+            try:
+                statuses = TokenManager(ws.id).audit_all()
+                urgent = [s for s in statuses
+                          if s["state"] in ("expiring_soon", "expired")]
+                if not urgent:
+                    continue
+                detail = "、".join(
+                    f"{s['provider']} {s['state']}"
+                    + (f"（剩 {s['remaining_days']} 天）"
+                       if s.get("remaining_days") is not None else "")
+                    for s in urgent)
+                await _notify(ws.id, "OAuth 授权即将到期",
+                              detail + "；请重新授权以免采集中断",
+                              ["feishu", "webhook", "email"], {})
+            except Exception:
+                logger.exception(f"token 预警失败: {ws.id}")
 
     scheduler.add_job("token.audit", "20 9 * * *", "token.audit", {})
     scheduler.register_handler("token.audit", _token_audit)
     registered["jobs"].append("token.audit@daily-09:20")
 
     # 6.5 每日 09:10：事件流轮转（性能守则：事件流不得无限增长）
-    async def _event_rotate():
+    async def _event_rotate(payload=None):
         from ..core.files import EventBus
         kept_total = 0
         for ws in await store.list_workspaces():
@@ -112,7 +172,7 @@ async def bootstrap_scheduled_jobs() -> dict:
     registered["jobs"].append("events.rotate@daily-09:10")
 
     # 7. 每日 09:25：订阅每日汇总推送（G-5 daily 模式）
-    async def _subscription_daily():
+    async def _subscription_daily(payload=None):
         from ..engine.subscriptions import SubscriptionService
         for ws in await store.list_workspaces():
             try:
@@ -128,7 +188,7 @@ async def bootstrap_scheduled_jobs() -> dict:
 
 
     # 8. 每日 09:05：预聚合汇总（metric_daily，长窗口查询提速）
-    async def _rollup_daily():
+    async def _rollup_daily(payload=None):
         from ..core.rollup import rollup
         for ws in await store.list_workspaces():
             try:
@@ -141,7 +201,7 @@ async def bootstrap_scheduled_jobs() -> dict:
     registered["jobs"].append("rollup.daily@daily-09:05")
 
     # 9. 每小时：阈值告警规则评估 + 升级检查
-    async def _alerts_hourly():
+    async def _alerts_hourly(payload=None):
         from ..engine.alerts import evaluate_workspace, sweep_escalations
         for ws in await store.list_workspaces():
             try:

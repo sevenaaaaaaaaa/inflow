@@ -497,6 +497,32 @@ def rollup_status(workspace: str):
     console.print(run_async(rollup_stats(workspace)))
 
 
+@main.command("bench")
+@click.option("--monitors", default=1000, help="监控任务数（默认 1000，对齐性能基线）")
+@click.option("--insights", default=100000, help="洞察行数（默认 10 万）")
+@click.option("--metrics", default=200000, help="指标行数（默认 20 万）")
+@click.option("--driver", default="sqlite", type=click.Choice(["sqlite", "mysql"]))
+@click.option("--keep", is_flag=True, help="保留临时库（SQLite）以便复查")
+def bench_cmd(monitors, insights, metrics, driver, keep):
+    """性能基准：合成数据 + 关键查询 P50/P95（不影响生产库）"""
+    from .engine.bench import run_bench
+    console.print(f"[cyan]造数中[/] monitors={monitors} insights={insights} "
+                  f"metrics={metrics} driver={driver}")
+    rep = run_async(run_bench(monitors=monitors, insights=insights, metrics=metrics,
+                              driver=driver, keep=keep))
+    console.print(f"[green]写入[/] {rep['dataset']} · {rep['write']['seconds']}s "
+                  f"（{rep['write']['rows_per_sec']:,} 行/秒）"
+                  + (f" · 库大小 {rep['db_file_mb']}MB" if rep.get("db_file_mb") else ""))
+    table = Table(title=f"查询延迟（{rep['driver']}）")
+    table.add_column("查询"); table.add_column("n", justify="right")
+    table.add_column("P50 (ms)", justify="right"); table.add_column("P95 (ms)", justify="right")
+    table.add_column("max (ms)", justify="right")
+    for name, st in rep["queries"].items():
+        table.add_row(name, str(st["n"]), str(st["p50_ms"]), str(st["p95_ms"]),
+                      str(st["max_ms"]))
+    console.print(table)
+
+
 @main.group("alerts")
 def alerts_group():
     """阈值告警规则：评估与升级"""

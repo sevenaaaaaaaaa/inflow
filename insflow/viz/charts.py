@@ -1016,3 +1016,51 @@ def boxplot(groups: Sequence[tuple[str, Sequence[float]]], *, width: int = 720,
     aria = ("箱线图：" + "；".join(
         f"{k} 中位 {fmt_num(_quantile(v, 0.5))}" for k, v in data[:6]))
     return svg(width, height, "".join(body), aria=aria)
+
+
+# ========== 精确边界地图（GeoJSON choropleth）==========
+
+def choropleth(dataset: dict, values: Sequence[tuple[str, float]], *, width: int = 720,
+               height: int = 380, unit: str = "", label: str = "",
+               filter_dim: str = "") -> str:
+    """GeoJSON 精确边界地图 + 指标热力（数据由 engine/geo 提供并缓存）
+
+    dataset: {"features": [{label, geometry, properties}], "name_key": "name"}
+    values:  [(区域名, 值)]，与 feature.label 精确匹配（未匹配按"无数据"渲染）
+    """
+    from ..engine.geo import bounds_of, project
+    feats = (dataset or {}).get("features") or []
+    if not feats:
+        return placeholder(width, height)
+    data = {str(k): float(v or 0) for k, v in values}
+    vmax = max(data.values(), default=0) or 1
+    pad_l, pad_t = 6, 20
+    plot_w, plot_h = width - 2 * pad_l, height - pad_t - 26
+    bounds = bounds_of(feats)
+    body = []
+    matched = 0
+    for f in feats:
+        d = project(f["geometry"], bounds, plot_w, plot_h, pad=4)
+        if not d:
+            continue
+        v = data.get(f["label"])
+        if v is None:
+            fill, op, tip = theme.BORDER, 0.35, f'{f["label"]}：无数据'
+        else:
+            matched += 1
+            fill, op = theme.ACCENT, 0.12 + 0.88 * min(1.0, v / vmax)
+            tip = f'{f["label"]}：{fmt_num(v)}{unit}'
+        cf = (f' data-cf="{esc(filter_dim)}:{esc(f["label"])}" '
+              f'data-cf-label="{esc(f["label"])}"') if (filter_dim and v is not None) else ""
+        body.append(
+            f'<g transform="translate({pad_l},{pad_t})">'
+            f'<path d="{d}" fill="{fill}" opacity="{op:.2f}" stroke="{theme.SURFACE}" '
+            f'stroke-width="0.6" class="geo" data-tip="{esc(tip)}"{cf}>'
+            f'<title>{esc(tip)}</title></path></g>')
+    if label:
+        body.append(f'<text x="{pad_l}" y="12" style="font-size:10.5px;'
+                    f'fill:{theme.MUTED}">{esc(label)}</text>')
+    top = sorted(((k, v) for k, v in data.items()), key=lambda t: -t[1])[:5]
+    aria = (f"边界地图（{len(feats)} 个区域，{matched} 个有数据）："
+            + "；".join(f"{k} {fmt_num(v)}" for k, v in top))
+    return svg(width, height, "".join(body), aria=aria)

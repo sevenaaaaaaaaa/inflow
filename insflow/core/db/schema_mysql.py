@@ -280,5 +280,20 @@ MYSQL_MIGRATIONS = [
         updated_at VARCHAR(40) NOT NULL,
         KEY idx_alert_rules_ws (workspace_id, enabled)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    """,    """
+    CREATE TABLE IF NOT EXISTS admin_audit (
+        id VARCHAR(64) PRIMARY KEY,
+        workspace_id VARCHAR(64) NOT NULL,
+        actor VARCHAR(191) NOT NULL DEFAULT '',
+        role VARCHAR(32) NOT NULL DEFAULT '',
+        action VARCHAR(64) NOT NULL,
+        target_type VARCHAR(48) NOT NULL DEFAULT '',
+        target_id VARCHAR(191) NOT NULL DEFAULT '',
+        detail_json TEXT,
+        ip VARCHAR(64) NOT NULL DEFAULT '',
+        created_at VARCHAR(40) NOT NULL,
+        KEY idx_admin_audit_ws_time (workspace_id, created_at)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
     """,
+
 ]

@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% block title %} · 审计轨迹{% endblock %}
+{% block content %}
+<h1>审计轨迹</h1>
+<p class="sub">记录管理动作（RLS 策略 / 布局 / 告警规则 / 评论 / 成员角色）——企业采购过合规审查用；
+每条含操作者、角色、目标与变更详情。</p>
+
+<form class="if-filter" method="get" action="/console/audit">
+  <input type="hidden" name="workspace_id" value="{{ workspace_id }}">
+  <label>动作</label>
+  <select name="action" onchange="this.form.submit()">
+    <option value="">全部</option>
+    {% for a in ['rls.update','layout.save','alert_rule.upsert','alert_rule.delete','comment.add','member.role_change'] %}
+    <option value="{{ a }}" {% if action == a %}selected{% endif %}>{{ a }}</option>
+    {% endfor %}
+  </select>
+  <label>操作者</label>
+  <input name="actor" value="{{ actor }}" placeholder="邮箱" style="min-width:180px">
+  <button type="submit">筛选</button>
+  <a class="dp-btn" href="/api/v1/audit/admin?workspace_id={{ workspace_id }}&format=csv">导出 CSV</a>
+</form>
+
+{% if logs %}
+<table>
+  <tr><th>时间</th><th>操作者</th><th>角色</th><th>动作</th><th>目标</th><th>详情</th></tr>
+  {% for l in logs %}
+  <tr>
+    <td>{{ (l.created_at or '')[:19].replace('T', ' ') }}</td>
+    <td>{{ l.actor }}</td>
+    <td>{{ l.role }}</td>
+    <td><code>{{ l.action }}</code></td>
+    <td>{{ l.target_type }}{% if l.target_id %} · {{ l.target_id[:40] }}{% endif %}</td>
+    <td><code style="font-size:11px">{{ l.detail | tojson if l.detail else '—' }}</code></td>
+  </tr>
+  {% endfor %}
+</table>
+{% else %}
+<div class="empty">暂无审计记录 —— 修改 RLS 策略 / 布局 / 告警规则 / 成员角色后会出现在这里</div>
+{% endif %}
+{% endblock %}

@@ -494,6 +494,12 @@ async def cockpit_page(request: Request, name: str, workspace_id: str = Query(""
     if allow and entity and entity not in allow:
         return templates.TemplateResponse(request, "403.html", _ctx(
             request, nav, workspace_id, title="无权限"), status_code=403)
+    geo_dataset = None
+    if name == "traffic" and ws_row is not None:
+        from ..engine.geo import list_datasets, load_dataset
+        names = list_datasets(_settings)
+        if names:
+            geo_dataset = await load_dataset(workspace_id, sorted(names)[0])
     kw: dict = {}
     if name in ("traffic", "sentiment"):
         if allow:
@@ -513,7 +519,7 @@ async def cockpit_page(request: Request, name: str, workspace_id: str = Query(""
     template, nav, title = COCKPIT_PAGES[name]
     return templates.TemplateResponse(request, template, _ctx(
         request, nav, workspace_id, data=data, title=title, days=days or 14,
-        entity=entity, channel=channel,
+        entity=entity, channel=channel, geo_dataset=geo_dataset,
     ))
 
 
@@ -535,6 +541,20 @@ async def sentiment_page(request: Request, workspace_id: str = Query(""),
     return templates.TemplateResponse(request, "sentiment.html", _ctx(
         request, "sentiment", workspace_id, data=data, title="舆情驾驶舱", days=days,
         entity=entity, channel=channel,
+    ))
+
+
+@router.get("/audit", response_class=HTMLResponse)
+async def audit_page(request: Request, workspace_id: str = Query(""),
+                     action: str = Query(""), actor: str = Query("")):
+    """管理动作审计（合规：谁在何时改了什么；可导出 CSV）"""
+    if not workspace_id:
+        workspace_id = await _default_workspace()
+    store = await get_store()
+    logs = await store.list_admin_audit(workspace_id, action=action, actor=actor,
+                                        limit=300)
+    return templates.TemplateResponse(request, "audit.html", _ctx(
+        request, "audit", workspace_id, logs=logs, action=action, actor=actor,
     ))
 
 
