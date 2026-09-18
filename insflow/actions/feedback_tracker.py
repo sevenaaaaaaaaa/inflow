@@ -179,7 +179,7 @@ class FeedbackTracker:
 
         # 《验证报告》落盘
         report_md = self._render_report(action, feedbacks, final, current_metrics or {})
-        report_path = ReportStore(self.workspace_id).save_report("verification", report_md)
+        ReportStore(self.workspace_id).save_report("verification", report_md)
 
         return feedbacks[0] if feedbacks else Feedback(
             workspace_id=action.workspace_id,

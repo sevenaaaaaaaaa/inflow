@@ -20,6 +20,8 @@ jobs:
           pip install -q -e ".[dev,mysql]"
       - name: 语法检查（compileall）
         run: python -m compileall -q insflow
+      - name: Lint（ruff，阻塞）
+        run: python -m ruff check insflow tests scripts
       - name: 单元测试（排除 e2e）
         run: pytest -q -m "not e2e" --no-header
       - name: E2E 冒烟（进程内 HTTP）
@@ -102,13 +104,11 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
-      - name: 抽取控制台内联 JS 并跑行为断言
+      - name: UI 行为回归（直接消费抽离后的静态 JS）
         run: |
           pip install -q -e ".[dev]"
-          python - <<'PY'
-          import os
-          import tempfile
-          from pathlib import Path
+          node scripts/e2e_ui.mjs insflow/web/static_app.js
+
 
           import insflow.core.files as files_mod
 

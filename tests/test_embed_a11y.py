@@ -13,6 +13,7 @@ from insflow.core.store import Store, reset_store
 from insflow.engine import embed
 from insflow.viz import charts as c
 from insflow.viz.frame import datapanel
+from tests._ui_source import ui_source
 
 
 @pytest.fixture
@@ -87,8 +88,7 @@ class TestChartEngineP1:
         assert 'aria-pressed="true"' in html and 'aria-pressed="false"' in html
 
     def test_reduced_motion_and_sr_only_in_base(self):
-        from insflow.web.routes import templates
-        src = templates.env.loader.get_source(templates.env, "base.html")[0]
+        src = ui_source()
         assert ".sr-only" in src
         assert "prefers-reduced-motion" in src
 
@@ -130,6 +130,7 @@ class TestEmbedToken:
 
     def test_route_ok_forbidden_and_missing_ws(self, env, monkeypatch):
         from fastapi.testclient import TestClient
+
         from insflow.server.app import app
         monkeypatch.setenv("INSFLOW_MASTER_KEY", "mk")
         c = TestClient(app)
@@ -143,7 +144,9 @@ class TestEmbedToken:
 
     def test_metric_panel_renders_no_nav(self, env, monkeypatch):
         import asyncio
+
         from fastapi.testclient import TestClient
+
         from insflow.server.app import app
         monkeypatch.setenv("INSFLOW_MASTER_KEY", "mk")
 
@@ -168,6 +171,7 @@ class TestEmbedToken:
 
     def test_cockpit_panel_renders_kpis_and_a11y(self, env, monkeypatch):
         from fastapi.testclient import TestClient
+
         from insflow.server.app import app
         monkeypatch.setenv("INSFLOW_MASTER_KEY", "mk")
         for panel in ("cockpit:overview", "cockpit:sentiment", "cockpit:traffic",
@@ -183,10 +187,10 @@ class TestEmbedToken:
 
     def test_iframe_snippet_cache_busters(self, env, monkeypatch):
         """CDN 可能无视 no-store 缓存 HTML：嵌入片段必须自带缓存绕过"""
+
         from fastapi.testclient import TestClient
+
         from insflow.server.app import app
-        import asyncio
-        from insflow.core.accounts import AccountManager
         monkeypatch.setenv("INSFLOW_MASTER_KEY", "mk")
         # 直接用令牌端点（非 SAAS 模式下不需要登录）
         r = TestClient(app).get("/console/embed/token",
@@ -198,6 +202,7 @@ class TestEmbedToken:
 
     def test_cli_token_output(self, monkeypatch):
         from click.testing import CliRunner
+
         from insflow.cli import main
         monkeypatch.setenv("INSFLOW_MASTER_KEY", "mk")
         res = CliRunner().invoke(main, ["embed", "token", "-w", "w1",
@@ -210,7 +215,9 @@ class TestExploreAndRange:
     def test_explore_page_with_metric_param(self, env):
         """回归：chart.values 与 dict.values 命名冲突曾致 500"""
         import asyncio
+
         from fastapi.testclient import TestClient
+
         from insflow.server.app import app
 
         async def _seed():
@@ -231,7 +238,9 @@ class TestExploreAndRange:
 
     def test_metric_catalog_api(self, env):
         import asyncio
+
         from fastapi.testclient import TestClient
+
         from insflow.server.app import app
 
         async def _seed():
@@ -250,7 +259,9 @@ class TestExploreAndRange:
 
     def test_range_api_returns_insights_and_actions(self, env):
         import asyncio
+
         from fastapi.testclient import TestClient
+
         from insflow.core.entities import Action, Insight
         from insflow.server.app import app
 

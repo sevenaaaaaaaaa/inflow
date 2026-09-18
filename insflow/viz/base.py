@@ -71,7 +71,7 @@ def wrap_html(title: str, body: str, *, branding: dict | None = None,
             f'<div style="font-weight:800;font-size:14px;color:var(--accent)">'
             f'Prepared by {company}</div>'
             + (f'<div class="sub">客户：{client}</div>' if client else "")
-            + f'</div><div class="toolbar">'
+            + '</div><div class="toolbar">'
             + ('<button class="btn" onclick="window.print()" '
                'style="border:0;cursor:pointer">打印 / 导出 PDF</button>' if allow_theme_toggle else "")
             + ('<button class="btn" onclick="toggle()" style="background:var(--surface-strong);'

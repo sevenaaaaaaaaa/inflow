@@ -47,7 +47,7 @@ async def env(tmp_path, monkeypatch):
 class TestStateMachineRules:
     async def test_valid_flow(self):
         flow = ["pending", "dispatched", "done", "verifying", "verified"]
-        for cur, nxt in zip(flow, flow[1:]):
+        for cur, nxt in zip(flow, flow[1:], strict=False):
             ACTION_MACHINE.validate(cur, nxt)
 
     async def test_invalid_jump(self):

@@ -180,7 +180,7 @@ class TestNegativeAlert:
             async def get(self, *a, **kw): return FakeResp()
 
         monkeypatch.setattr(httpx, "AsyncClient", lambda **kw: FakeClient())
-        result = await svc.run(m["id"])
+        await svc.run(m["id"])
         from insflow.core.store import get_store
         insights = await (await get_store()).list_insights("test-ws")
         assert not any(i.type == "topic_negative_alert" for i in insights)

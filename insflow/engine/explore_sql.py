@@ -96,7 +96,7 @@ async def run(workspace_id: str, sql: str, max_rows: int = MAX_ROWS) -> dict:
     rows = await store._fetchall(wrapped, tuple(params))
     cols: list[str] = []
     for r in rows:
-        for k in r.keys():
+        for k in r:
             if k not in cols:
                 cols.append(k)
     return {
@@ -105,5 +105,5 @@ async def run(workspace_id: str, sql: str, max_rows: int = MAX_ROWS) -> dict:
         "count": len(rows),
         "truncated": len(rows) >= max_rows,
         "note": ("只读沙箱：仅白名单表，租户过滤由系统注入（每条表引用都包了 "
-                 "workspace_id 子查询），结果上限 %d 行" % max_rows),
+                 f"workspace_id 子查询），结果上限 {max_rows} 行"),
     }

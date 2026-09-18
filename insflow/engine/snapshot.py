@@ -48,10 +48,10 @@ def chrome_bin() -> str:
 async def build_snapshot_html(workspace_id: str, panel: str = "board:traffic",
                               days: float = 30, title: str = "") -> str:
     """生成自包含快照 HTML（内联样式 + SVG 图表 + 数据表）"""
+    from ..viz import charts as c  # noqa: F401  确保图表模块加载
     from ..viz.base import TOKENS_CSS
     from ..viz.frame import datapanel
-    from ..viz import charts as c  # noqa: F401  确保图表模块加载
-    from ..web.routes import build_board_panels, _embed_normalize
+    from ..web.routes import _embed_normalize, build_board_panels
 
     kind, _, name = panel.partition(":")
     panels_html: list[str] = []
@@ -135,7 +135,11 @@ async def _render_pdf(html_path: Path) -> dict:
                               "临时可用浏览器打印为 PDF）"}
     pdf_path = html_path.with_suffix(".pdf")
     try:
-        proc = subprocess.run(  # noqa: S603
+        import asyncio
+
+        # subprocess 是阻塞调用：放线程池，避免卡住事件循环（ASYNC221）
+        proc = await asyncio.to_thread(
+            subprocess.run,  # noqa: S603
             [chrome, "--headless", "--disable-gpu", "--no-sandbox",
              f"--print-to-pdf={pdf_path}", "--no-pdf-header-footer",
              html_path.as_uri()],

@@ -12,6 +12,7 @@ HSET、HGET、HGETALL、HDEL、LPUSH、LRANGE、SCAN？
 """
 
 import asyncio
+import contextlib
 import os
 from urllib.parse import urlparse
 
@@ -127,10 +128,8 @@ class RedisClient:
     async def close(self) -> None:
         if self._writer:
             self._writer.close()
-            try:
+            with contextlib.suppress(Exception):
                 await self._writer.wait_closed()
-            except Exception:
-                pass
         self._writer = None
         self._reader = None
 
@@ -264,10 +263,8 @@ class RedisCacheBackend:
 
     def set(self, key: str, value, ttl: float = 60.0) -> None:
         """兼容同步协议（fire-and-forget）：调度一个任务写入"""
-        try:
+        with contextlib.suppress(RuntimeError):
             asyncio.get_running_loop().create_task(self.aset(key, value, ttl))
-        except RuntimeError:
-            pass
 
     async def aset(self, key: str, value, ttl: float = 60.0) -> None:
         client = await self._client()

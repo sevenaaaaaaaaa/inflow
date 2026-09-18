@@ -11,7 +11,6 @@
 """
 
 import re
-from datetime import UTC, datetime, timedelta
 
 RANGE_WORDS = [
     (r"(最近|近|过去)\s*(\d{1,3})\s*天", lambda m: float(m.group(2))),
@@ -238,6 +237,7 @@ async def _polish(markdown: str, workspace_id: str) -> str:
     """LLM 润色（可选）：只允许使用给定数字，避免编造"""
     try:
         import os
+
         from ..agent.llm import LLMGateway
         gw = LLMGateway(api_key=os.environ.get("OPENAI_API_KEY") or None)
         if not gw.available:

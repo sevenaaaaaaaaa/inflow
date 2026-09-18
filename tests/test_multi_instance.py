@@ -5,11 +5,11 @@
 """
 
 import asyncio
+import contextlib
 import json
 import threading
 
 import pytest
-
 
 # ---------------- 假 Redis（RESP 服务） ----------------
 
@@ -78,10 +78,8 @@ class FakeRedis:
         except (asyncio.IncompleteReadError, ConnectionResetError):
             return
         finally:
-            try:
+            with contextlib.suppress(Exception):
                 writer.close()
-            except Exception:
-                pass
 
     async def _read_command(self, reader) -> list[str] | None:
         line = await reader.readline()
@@ -306,8 +304,7 @@ class TestRedisCacheAndRealtime:
         assert second == {"v": 42} and calls["n"] == 1      # 未重复计算
 
     async def test_realtime_broadcast_and_presence(self, fake_redis):
-        from insflow.engine.realtime import (RedisPresence, broadcast,
-                                            subscribe_broadcast)
+        from insflow.engine.realtime import RedisPresence, broadcast, subscribe_broadcast
 
         events = []
 
@@ -340,12 +337,14 @@ class TestRedisCacheAndRealtime:
 
     async def test_observability_reports_backend(self, fake_redis):
         from fastapi.testclient import TestClient
+
         from insflow.server.app import app
         body = TestClient(app).get("/api/v1/observability").json()
         assert body["cache_backend"] in ("redis", "memory")
 
     async def test_presence_api_uses_shared_backend(self, fake_redis):
         from fastapi.testclient import TestClient
+
         from insflow.server.app import app
         cli = TestClient(app)
         r = cli.post("/api/v1/presence", json={

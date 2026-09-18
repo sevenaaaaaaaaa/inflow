@@ -26,7 +26,7 @@
   </select>
   {% endif %}
   <label>图表</label>
-  {% for ct, lbl in [('line','趋势'),('bar','条形'),('box','箱线'),('scatter','散点'),('map','网格地图'),('treemap','树图'),('waterfall','瀑布'),('calendar','日历热力'),('candlestick','K线')] %}
+  {% for ct, lbl in [('line','趋势'),('bar','条形'),('box','箱线'),('scatter','散点'),('map','网格地图'),('treemap','树图'),('waterfall','瀑布'),('stacked','堆叠'),('calendar','日历热力'),('candlestick','K线')] %}
   <a class="if-chip {{ 'on' if chart_type == ct }}" href="#" onclick="exSet('chart','{{ ct }}');return false">{{ lbl }}</a>
   {% endfor %}
   <label>时间</label>
@@ -99,6 +99,11 @@ function exSet(k, v){
       dim_values | map(attribute=0) | zip(dim_values | map(attribute=1)) | map('list') | list,
       viz.treemap(dim_values, filter_dim=dim, unit=''),
       csv_name='explore-treemap', subtitle='面积=占比；点区块可联动筛选') | safe }}
+{% elif chart_type == 'stacked' and stacked_rows %}
+  {{ viz.datapanel(chart.metric ~ ' · ' ~ dim ~ ' × 时间构成（堆叠）',
+      [dim ~ ' / 时间桶'] , stacked_rows | map(attribute=0) | map('list') | list,
+      viz.stacked_bar(stacked_rows, height=320),
+      csv_name='explore-stacked', subtitle='同一维度的各时间点构成（>24 点自动合并尾部）') | safe }}
 {% elif chart_type == 'waterfall' and waterfall_items %}
   {{ viz.datapanel(chart.metric ~ ' · 差值归因（瀑布）', ['维度', '变化'],
       waterfall_items | map(attribute=0) | zip(waterfall_items | map(attribute=1)) | map('list') | list,

@@ -1,6 +1,5 @@
 """测试 P0 交互：图表面板（表/CSV）、下钻 API、筛选栏（对齐 docs/10 P0）"""
 
-import base64
 import csv
 import io
 from urllib.parse import unquote
@@ -8,8 +7,8 @@ from urllib.parse import unquote
 import pytest
 
 import insflow.core.files as files_mod
-from insflow.core.entities import Insight, Metric, Workspace
-from insflow.core.store import Store, get_store, reset_store
+from insflow.core.entities import Insight, Workspace
+from insflow.core.store import Store, reset_store
 from insflow.viz import charts as c
 from insflow.viz.frame import datapanel
 
@@ -76,9 +75,11 @@ async def env(tmp_path, monkeypatch):
 
 class TestDrillAPI:
     def test_endpoint_returns_series_and_insights(self, env):
-        from fastapi.testclient import TestClient
-        from insflow.server.app import app
         import asyncio
+
+        from fastapi.testclient import TestClient
+
+        from insflow.server.app import app
 
         async def _seed():
             store = env["store"]
@@ -106,6 +107,7 @@ class TestDrillAPI:
 
     def test_endpoint_empty_ok(self, env):
         from fastapi.testclient import TestClient
+
         from insflow.server.app import app
         c = TestClient(app)
         r = c.get("/api/v1/charts/drill", params={
@@ -116,7 +118,9 @@ class TestDrillAPI:
 class TestFilterBar:
     def test_filter_bar_renders_and_links(self, env):
         import asyncio
+
         from fastapi.testclient import TestClient
+
         from insflow.server.app import app
 
         async def _seed():
@@ -139,6 +143,7 @@ class TestFilterBar:
     def test_filter_affects_query(self, env):
         """筛选参数进入 URL（可分享）并由路由透传（days/entity）"""
         from fastapi.testclient import TestClient
+
         from insflow.server.app import app
         c = TestClient(app)
         r = c.get("/console/sentiment", params={"days": 90, "entity": "某品牌"})

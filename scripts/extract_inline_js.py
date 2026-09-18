@@ -17,13 +17,15 @@ def main() -> int:
         with urllib.request.urlopen(src, timeout=20) as resp:   # noqa: S310
             html = resp.read().decode("utf-8", "ignore")
     else:
-        html = open(src, encoding="utf-8").read()
+        with open(src, encoding="utf-8") as fh:
+            html = fh.read()
     scripts = re.findall(r"<script[^>]*>(.*?)</script>", html, re.S)
     if not scripts:
         print("未找到内联脚本")
         return 1
     js = max(scripts, key=len)
-    open(out, "w", encoding="utf-8").write(js)
+    with open(out, "w", encoding="utf-8") as fh:
+        fh.write(js)
     print(f"已抽取 {len(js)} 字符 → {out}")
     return 0
 

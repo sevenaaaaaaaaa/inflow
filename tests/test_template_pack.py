@@ -1,7 +1,5 @@
 """测试行业模板包（校验/加载/一键应用）"""
 
-import json
-from datetime import datetime, timezone
 
 import pytest
 
@@ -42,7 +40,7 @@ async def env(tmp_path, monkeypatch):
     monkeypatch.setattr(files_mod, "DATA_DIR", tmp_path)
     monkeypatch.setenv("INSFLOW_MASTER_KEY", "mk")
     from insflow.core.entities import Workspace
-    from insflow.core.store import Store, get_store, reset_store
+    from insflow.core.store import Store, reset_store
 
     s = Store(db_path=tmp_path / "test.db")
     await s.connect()

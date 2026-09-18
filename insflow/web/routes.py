@@ -44,7 +44,7 @@ class _VizNS:
 
 templates.env.globals["viz"] = _VizNS()
 # 模板常用过滤器（Jinja 无内置 zip）
-templates.env.filters["zip"] = lambda *seqs: [list(t) for t in zip(*seqs)]
+templates.env.filters["zip"] = lambda *seqs: [list(t) for t in zip(*seqs, strict=False)]
 
 router = APIRouter(prefix="/console", include_in_schema=False)
 
@@ -317,22 +317,39 @@ LIVE_METRICS = {
 }
 
 
-def _role_ctx(request: Request, settings: dict | None
-              ) -> tuple[str, list[str], set]:
-    """角色 + 行级白名单 + 能力集（模板据此隐藏入口；查询据此收敛数据）"""
+async def _role_ctx(request: Request, settings: dict | None
+                    ) -> tuple[str, list[str], set]:
+    """角色 + 行级白名单 + 能力集（模板据此隐藏入口；查询据此收敛数据）
+
+    注意：角色解析不能只在 SaaS 模式下生效——私有化部署里也有 viewer 账号，
+    若只看 `request.state.user`（仅 SaaS 守卫写入），非 SaaS 下会被当成 owner，
+    行级权限静默失效（实测踩过）。因此这里始终尝试用会话 Cookie 解析身份。
+    """
     user = getattr(request.state, "user", None)
+    if not user:
+        try:
+            from ..core.accounts import COOKIE_NAME, AccountManager
+            token = request.cookies.get(COOKIE_NAME)
+            if token:
+                user = await AccountManager().verify_session(token)
+                if user:
+                    request.state.user = user
+        except Exception:
+            user = None
     role = str((user or {}).get("role") or "owner")
     from ..engine.permissions import MATRIX, entity_allow
     caps = MATRIX.get(role, MATRIX["viewer"])
     return role, entity_allow(settings, role), set(caps)
 
 
-def _policy_ctx(request: Request, settings: dict | None):
-    """表达式级 RLS：角色策略 → (WHERE 片段, 参数)"""
+def _policy_ctx(request: Request, settings: dict | None, role: str = ""):
+    """表达式级 RLS：角色策略 → (WHERE 片段, 参数)
+
+    角色优先取调用方解析结果（已含会话 Cookie 兜底），避免非 SaaS 下退化成 owner。
+    """
     from ..engine.rls import build_policy
     user = getattr(request.state, "user", None) or {}
-    role = str(user.get("role") or "owner")
-    return build_policy(settings, role, user)
+    return build_policy(settings, role or str(user.get("role") or "owner"), user)
 
 
 def _ctx(request: Request, nav: str, workspace_id: str, **extra) -> dict:
@@ -342,6 +359,7 @@ def _ctx(request: Request, nav: str, workspace_id: str, **extra) -> dict:
         "area": NAV_AREA.get(nav, "overview"),
         "version": __version__,
         "workspace_id": workspace_id,
+        "base_path": os.environ.get("INSFLOW_BASE_PATH", "").rstrip("/"),
         # base.html 会被子模板 import，那里没有 request，故在此预计算
         "cf_active": list(cross_filters(request).items()),
         "live_metrics": LIVE_METRICS.get(nav, []),
@@ -504,11 +522,13 @@ async def cockpit_page(request: Request, name: str, workspace_id: str = Query(""
     cf = {**template_vars(request), **cross_filters(request)}
     ws_row = await (await get_store()).get_workspace(workspace_id)
     _settings = (ws_row.settings_json if ws_row else {}) or {}
-    role, allow, caps = _role_ctx(request, _settings)
-    policy = _policy_ctx(request, _settings)
+    role, allow, caps = await _role_ctx(request, _settings)
+    policy = _policy_ctx(request, _settings, role)
     if allow and entity and entity not in allow:
+        # 注意：此处 nav 尚未由 COCKPIT_PAGES 解析（原实现直接引用 nav → NameError 500）
         return templates.TemplateResponse(request, "403.html", _ctx(
-            request, nav, workspace_id, title="无权限"), status_code=403)
+            request, name, workspace_id, role=role, title="无权限"),
+            status_code=403)
     kw: dict = {}
     if name in ("traffic", "sentiment"):
         if allow:
@@ -558,8 +578,8 @@ async def sentiment_page(request: Request, workspace_id: str = Query(""),
     from .cockpit import COCKPITS
     ws_row = await (await get_store()).get_workspace(workspace_id)
     _settings = (ws_row.settings_json if ws_row else {}) or {}
-    role, allow, caps = _role_ctx(request, _settings)
-    policy = _policy_ctx(request, _settings)
+    role, allow, caps = await _role_ctx(request, _settings)
+    policy = _policy_ctx(request, _settings, role)
     data = await COCKPITS["sentiment"](workspace_id, days, channel=channel,
                                        entity=entity, entity_allow=allow,
                                        policy=policy)
@@ -618,6 +638,7 @@ async def snapshot_file(request: Request, path: str, workspace_id: str = Query("
     if not workspace_id:
         workspace_id = await _default_workspace()
     from fastapi.responses import FileResponse
+
     from ..engine.snapshot import resolve_snapshot
     # path 形如 "<workspace>/<file>"（由引擎生成的相对路径）
     name = path.split("/", 1)[1] if "/" in path else path
@@ -626,6 +647,106 @@ async def snapshot_file(request: Request, path: str, workspace_id: str = Query("
         raise HTTPException(status_code=404, detail="快照不存在")
     media = "application/pdf" if target.suffix == ".pdf" else "text/html; charset=utf-8"
     return FileResponse(str(target), media_type=media)
+
+
+@router.get("/static/{name}")
+async def console_static(name: str, request: Request):
+    """控制台静态资源（内联 CSS/JS 抽离，便于浏览器与 SW 缓存）
+
+    零构建链：文件即源码；带 ETag，命中 304，长缓存由版本号 ?v= 控制失效。
+    """
+    import hashlib
+
+    from fastapi.responses import Response
+    allowed = {"app.js": ("static_app.js", "application/javascript; charset=utf-8"),
+               "app.css": ("static_app.css", "text/css; charset=utf-8")}
+    if name not in allowed:
+        raise HTTPException(status_code=404, detail="静态资源不存在")
+    fname, media = allowed[name]
+    path = Path(__file__).parent / fname
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="静态资源不存在")
+    data = path.read_bytes()
+    etag = hashlib.sha256(data).hexdigest()[:16]
+    if request.headers.get("if-none-match") in (f'"{etag}"', etag):
+        return Response(status_code=304, headers={"ETag": f'"{etag}"'})
+    return Response(data, media_type=media,
+                    headers={"ETag": f'"{etag}"',
+                             "Cache-Control": "public, max-age=86400, must-revalidate"})
+
+
+@router.get("/alerts", response_class=HTMLResponse)
+async def alerts_page(request: Request, workspace_id: str = Query("")):
+    """阈值告警规则 + 通知策略（此前只有 API/CLI，无页面入口）"""
+    if not workspace_id:
+        workspace_id = await _default_workspace()
+    store = await get_store()
+    ws = await store.get_workspace(workspace_id)
+    from ..engine.notify_policy import policy_of
+    catalog = await store.metric_catalog(workspace_id, days=180)
+    return templates.TemplateResponse(request, "alerts.html", _ctx(
+        request, "alerts", workspace_id,
+        rules=await store.list_alert_rules(workspace_id),
+        policy=policy_of(ws.settings_json if ws else {}),
+        metrics=[m["metric"] for m in catalog[:60]],
+    ))
+
+
+@router.get("/members", response_class=HTMLResponse)
+async def members_page(request: Request, workspace_id: str = Query("")):
+    """成员与权限：角色、行级白名单、表达式 RLS、SCIM 令牌（此前只有 API）"""
+    if not workspace_id:
+        workspace_id = await _default_workspace()
+    store = await get_store()
+    ws = await store.get_workspace(workspace_id)
+    settings = (ws.settings_json if ws else {}) or {}
+    members = await store._fetchall(
+        """SELECT id, email, name, role, active, created_at FROM users
+           WHERE workspace_id = ? ORDER BY created_at""", (workspace_id,))
+    from ..engine.permissions import MATRIX, entity_allow
+    from ..engine.rls import policies_for
+    return templates.TemplateResponse(request, "members.html", _ctx(
+        request, "members", workspace_id,
+        members=[dict(m) for m in members],
+        roles=list(MATRIX.keys()),
+        caps={r: sorted(c) for r, c in MATRIX.items()},
+        entity_allow={r: entity_allow(settings, r) for r in MATRIX},
+        rls={r: policies_for(settings, r) for r in MATRIX},
+        scim_configured=bool(settings.get("scim_token")
+                             or os.environ.get("INSFLOW_SCIM_TOKEN")),
+    ))
+
+
+@router.get("/assets", response_class=HTMLResponse)
+async def assets_page(request: Request, workspace_id: str = Query("")):
+    """数据资产：GeoJSON 数据集 / 快照归档 / 导出审计（此前只有 API）"""
+    if not workspace_id:
+        workspace_id = await _default_workspace()
+    store = await get_store()
+    ws = await store.get_workspace(workspace_id)
+    from ..engine.geo import list_datasets
+    from ..engine.snapshot import list_snapshots
+    return templates.TemplateResponse(request, "assets.html", _ctx(
+        request, "assets", workspace_id,
+        datasets=list_datasets((ws.settings_json if ws else {}) or {}),
+        snapshots=list_snapshots(workspace_id, limit=20),
+    ))
+
+
+@router.get("/maturity", response_class=HTMLResponse)
+async def maturity_page(request: Request, workspace_id: str = Query("")):
+    """成熟度评估：问卷 → 五维雷达 + 阶段判定（此前只有 API）"""
+    if not workspace_id:
+        workspace_id = await _default_workspace()
+    store = await get_store()
+    ws = await store.get_workspace(workspace_id)
+    from ..engine.maturity import QUESTIONNAIRE
+    last = (ws.settings_json or {}).get("maturity_last") if ws else {}
+    return templates.TemplateResponse(request, "maturity.html", _ctx(
+        request, "maturity", workspace_id,
+        questionnaire=QUESTIONNAIRE, last=last or {},
+        stage=ws.stage.value if ws else "", level=ws.maturity_level.value if ws else "",
+    ))
 
 
 @router.get("/audit", response_class=HTMLResponse)
@@ -869,6 +990,7 @@ async def explore_page(request: Request, workspace_id: str = Query(""),
     box_groups: list[tuple[str, list[float]]] = []
     scatter_points: list[tuple[float, float, str]] = []
     waterfall_items: list[tuple[str, float]] = []
+    stacked_rows: list[tuple[str, list[tuple[str, float, str]]]] = []
     candlesticks: list[tuple[str, float, float, float, float]] = []
     candlestick_true = False
     entity_options: list[str] = []
@@ -881,9 +1003,10 @@ async def explore_page(request: Request, workspace_id: str = Query(""),
         df = dict(vars_) or None
         ws_pol = await store.get_workspace(workspace_id)
         _pol_settings = (ws_pol.settings_json if ws_pol else {}) or {}
-        policy = _policy_ctx(request, _pol_settings)
-        allow = _role_ctx(request, _pol_settings)[1]
-        from ..engine.semantics import SemanticError, calc_series, resolve_metric
+        _role, _allow, _caps = await _role_ctx(request, _pol_settings)
+        policy = _policy_ctx(request, _pol_settings, _role)
+        allow = _allow
+        from ..engine.semantics import SemanticError, resolve_metric
         defs_map = {d["name"]: d for d in await store.list_metric_defs(workspace_id)}
         calc_used, calc_error = "none", ""
         if metric in defs_map and (defs_map[metric].get("expr") or "").strip():
@@ -908,7 +1031,7 @@ async def explore_page(request: Request, workspace_id: str = Query(""),
                 table_calc(raw, calc, window=window)   # 校验
                 transformed = table_calc(raw, calc, window=window)
                 series = [{"bucket": p["bucket"], "value": v, "n": p["n"]}
-                          for p, v in zip(series, transformed)]
+                          for p, v in zip(series, transformed, strict=False)]
                 calc_used = calc
             except SemanticError as e:
                 calc_error = str(e)
@@ -948,6 +1071,18 @@ async def explore_page(request: Request, workspace_id: str = Query(""),
             else:
                 scatter_points = [(float(v), float(i + 1), str(k))
                                   for i, (k, v) in enumerate(dim_values[:40])]
+        # 堆叠：维度 × 时间构成（转置 cube：行=维度，列=时间）
+        if chart_type == "stacked":
+            cube = await store.cube(workspace_id, metric, [dim], "", days=days,
+                                    limit=8)
+            for i, rl in enumerate(cube["row_labels"]):
+                parts = [(str(c), float(v), "") for c, v in
+                         zip(cube["col_labels"], cube["matrix"][i], strict=False)]
+                if len(parts) > 24:                  # 时间点过多则合并尾部
+                    head, tail = parts[:23], parts[23:]
+                    parts = head + [("其余", sum(p[1] for p in tail), "")]
+                stacked_rows.append((rl, parts))
+
         # 瀑布：相邻维度差值归因（维度按值降序 → 差值）
         if chart_type == "waterfall":
             prev = 0.0
@@ -971,6 +1106,7 @@ async def explore_page(request: Request, workspace_id: str = Query(""),
         dim=dim, dim2=dim2, dim_values=dim_values, vars_=vars_,
         box_groups=box_groups, scatter_points=scatter_points,
         waterfall_items=waterfall_items, candlesticks=candlesticks,
+        stacked_rows=stacked_rows,
         candlestick_true=candlestick_true,
         dim_keys=await store.dim_keys(workspace_id, metric),
         defs=await store.list_metric_defs(workspace_id),

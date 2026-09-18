@@ -5,7 +5,7 @@
 进度→gauge｜事件→timeline｜热度→tag_cloud
 """
 
-from typing import Sequence
+from collections.abc import Sequence
 
 from . import theme
 from .primitives import (
@@ -20,7 +20,6 @@ from .primitives import (
     svg,
     y_grid,
 )
-
 
 # ========== KPI 卡（HTML，非 SVG）==========
 
@@ -73,7 +72,7 @@ def forecast_series(values: Sequence[float], periods: int = 7) -> tuple[list[flo
     mean_x = sum(xs) / n
     mean_y = sum(values) / n
     denom = sum((x - mean_x) ** 2 for x in xs) or 1.0
-    slope = sum((x - mean_x) * (y - mean_y) for x, y in zip(xs, values)) / denom
+    slope = sum((x - mean_x) * (y - mean_y) for x, y in zip(xs, values, strict=False)) / denom
     intercept = mean_y - slope * mean_x
     resid = [values[i] - (intercept + slope * xs[i]) for i in range(n)]
     std = (sum(r * r for r in resid) / n) ** 0.5
@@ -135,7 +134,9 @@ def anomaly_points(values: Sequence[float], *, k: float = 2.5,
         if len(seg) < 3:
             seg = vals[:i] + vals[i + 1:]
         if not seg:
-            upper.append(vals[i]); lower.append(vals[i]); continue
+            upper.append(vals[i])
+            lower.append(vals[i])
+            continue
         mean = sum(seg) / len(seg)
         var = sum((x - mean) ** 2 for x in seg) / len(seg)
         std = var ** 0.5
@@ -199,7 +200,7 @@ def anomaly_points_seasonal(values: Sequence[float], *, k: float = 3.5,
     up, low, bad = anomaly_points_robust(resid, k=k, window=max(7, season * 2))
     # 残差带 → 还原到原量纲（用于画带）
     return ([u + idx[i % season] for i, u in enumerate(up)],
-            [max(0.0, l + idx[i % season]) for i, l in enumerate(low)], bad)
+            [max(0.0, lo + idx[i % season]) for i, lo in enumerate(low)], bad)
 
 
 def line_chart(series: list[dict], labels: Sequence[str], *, width: int = 720,
@@ -323,7 +324,7 @@ def line_chart(series: list[dict], labels: Sequence[str], *, width: int = 720,
     body = [y_grid(y_max, pad_l, pad_t, plot_w, plot_h)]
     # 对比（上期）虚线
     if compare:
-        for i, s in enumerate(compare.get("series", [])):
+        for s in compare.get("series", []):
             if not s.get("values"):
                 continue
             color = s.get("color") or theme.MUTED
@@ -356,13 +357,13 @@ def line_chart(series: list[dict], labels: Sequence[str], *, width: int = 720,
             xs = [pad_l + plot_w * (len(coords) - 1 + k + 1) / max(1, len(labels) - 1 + len(f["preds"]))
                   for k in range(len(f["preds"]))]
             pts = []
-            for x, v in zip(xs, f["preds"]):
+            for x, v in zip(xs, f["preds"], strict=False):
                 y = pad_t + plot_h - (max(0.0, v) / y_max) * plot_h
                 pts.append(f"{x:.1f},{y:.1f}")
             up = [f"{x:.1f},{pad_t + plot_h - (min(y_max, v + b) / y_max) * plot_h:.1f}"
-                  for x, v, b in zip(xs, f["preds"], f["band"])]
+                  for x, v, b in zip(xs, f["preds"], f["band"], strict=False)]
             down = [f"{x:.1f},{pad_t + plot_h - (max(0.0, v - b) / y_max) * plot_h:.1f}"
-                    for x, v, b in zip(xs, f["preds"], f["band"])]
+                    for x, v, b in zip(xs, f["preds"], f["band"], strict=False)]
             band_pts = " ".join(up + list(reversed(down)))
             body.append(f'<polygon points="{band_pts}" fill="{color}" opacity="0.10"/>')
             body.append(f'<polyline points="{" ".join(pts)}" fill="none" stroke="{color}" '
@@ -544,7 +545,7 @@ def stacked_bar(rows: Sequence[tuple[str, list[tuple[str, float, str]]]], *,
     names = [nm for nm, _, _ in rows[0][1]] if rows and rows[0][1] else []
     if names:
         colors = [c for _, _, c in rows[0][1]]
-        body.append(legend(list(zip(names, colors)), pad_l, 10))
+        body.append(legend(list(zip(names, colors, strict=False)), pad_l, 10))
     return svg(width, height, "".join(body), aria=aria)
 
 
@@ -558,7 +559,6 @@ def funnel(steps: Sequence[tuple[str, float]], *, width: int = 720,
         return placeholder(width, height)
     top = steps[0][1] or 1
     n = len(steps)
-    label_h = 22
     band_h = max(24, (height - 10) / n - 6)
     aria = "漏斗图：" + "；".join(f"{k} {fmt_num(v)}" for k, v in steps[:6])
     body = []
@@ -640,7 +640,7 @@ def scatter(points: Sequence[tuple[float, float, str]], *, x_label: str = "",
             good_quadrant: str = "tr", canvas_threshold: int = 800,
             chart_id: str = "", max_points: int = 20000) -> str:
     """散点（如关键词机会：搜索量 × 排名/竞争力），支持四象限标注"""
-    pts = [(float(x or 0), float(y or 0), str(l)) for x, y, l in points]
+    pts = [(float(x or 0), float(y or 0), str(lbl)) for x, y, lbl in points]
     if not pts:
         return placeholder(width, height)
     pad_l, pad_r, pad_t, pad_b = 46, 14, 16, 28
@@ -658,7 +658,8 @@ def scatter(points: Sequence[tuple[float, float, str]], *, x_label: str = "",
             stride = (total_pts + max_points - 1) // max_points
             pts = pts[::stride]
             sampled = True
-        meta = {"kind": "scatter", "points": [[round(x, 4), round(y, 4), l] for x, y, l in pts],
+        meta = {"kind": "scatter",
+                "points": [[round(x, 4), round(y, 4), lbl] for x, y, lbl in pts],
                 "sampled": sampled, "sampled_from": total_pts,
                 "x_max": x_max, "y_max": y_max, "x_mid": xm, "y_mid": ym,
                 "x_label": x_label, "y_label": y_label, "plot": [pad_l, pad_t, plot_w, plot_h],
@@ -710,7 +711,7 @@ def radar(axes: Sequence[tuple[str, float]], *, width: int = 320, height: int = 
     if not axes:
         return placeholder(width, height)
     import math
-    cx, cy, R = width / 2, height / 2 + 6, min(width, height) / 2 - 40
+    cx, cy, R = width / 2, height / 2 + 6, min(width, height) / 2 - 40  # noqa: N806
     n = len(axes)
     body = []
     for ring in (0.25, 0.5, 0.75, 1.0):
@@ -846,12 +847,14 @@ def sankey(flows: Sequence[tuple[str, str, float]], *, width: int = 720,
     s_cursor = {k: v[0] for k, v in spos.items()}
     d_cursor = {k: v[0] for k, v in dpos.items()}
     body = []
-    for i, (a, b, v) in enumerate(sorted(items, key=lambda t: (srcs.index(t[0]),
+    for _i, (a, b, v) in enumerate(sorted(items, key=lambda t: (srcs.index(t[0]),
                                                               dsts.index(t[1])))):
         sh = max(2.0, (v / total) * (plot_h - gap * max(0, len(srcs) - 1)))
         dh = max(2.0, (v / total) * (plot_h - gap * max(0, len(dsts) - 1)))
-        y0 = s_cursor[a]; s_cursor[a] = y0 + sh
-        y1 = d_cursor[b]; d_cursor[b] = y1 + dh
+        y0 = s_cursor[a]
+        s_cursor[a] = y0 + sh
+        y1 = d_cursor[b]
+        d_cursor[b] = y1 + dh
         color = theme.series_color(srcs.index(a))
         c1 = sx + node_w + (dx - sx - node_w) * 0.42
         c2 = sx + node_w + (dx - sx - node_w) * 0.58
@@ -1200,7 +1203,6 @@ def treemap(items: Sequence[tuple[str, float]], *, width: int = 720, height: int
 def calendar_heatmap(values: Sequence[tuple[str, float]], *, width: int = 720,
                      cell: int = 14, label: str = "", unit: str = "") -> str:
     """日历热力（GitHub 风格）：values=[(YYYY-MM-DD, 值)]，周为列、周一为行首"""
-    from datetime import date as _date
     from datetime import datetime as _dt
     data: dict[str, float] = {}
     for k, v in values:
@@ -1255,7 +1257,8 @@ def calendar_heatmap(values: Sequence[tuple[str, float]], *, width: int = 720,
 def candlestick(bars: Sequence[tuple[str, float, float, float, float]], *,
                 width: int = 720, height: int = 280, label: str = "") -> str:
     """K 线：bars=[(时间, 开, 高, 低, 收)]；用于价格/竞品定价区间监控"""
-    rows = [(str(t), float(o), float(h), float(l), float(c)) for t, o, h, l, c in bars]
+    rows = [(str(t), float(o), float(h), float(low), float(c))
+            for t, o, h, low, c in bars]
     if not rows:
         return placeholder(width, height)
     pad_l, pad_r, pad_t, pad_b = 52, 12, 16, 28
@@ -1273,7 +1276,7 @@ def candlestick(bars: Sequence[tuple[str, float, float, float, float]], *,
                     f'stroke="{theme.BORDER}" opacity="0.45"/>')
         body.append(f'<text x="{pad_l - 6}" y="{y + 3:.1f}" text-anchor="end" '
                     f'style="font-size:9.5px;fill:{theme.FAINT}">{fmt_num(v)}</text>')
-    for i, (t, o, h, l, c) in enumerate(rows):
+    for i, (t, o, h, low, c) in enumerate(rows):
         cx = pad_l + step * (i + 0.5)
         up = c >= o
         color = theme.OK if up else theme.DANGER
@@ -1281,13 +1284,13 @@ def candlestick(bars: Sequence[tuple[str, float, float, float, float]], *,
         def Y(v: float) -> float:
             return pad_t + plot_h - (v - lo) / span * plot_h
 
-        body.append(f'<line x1="{cx:.1f}" y1="{Y(h):.1f}" x2="{cx:.1f}" y2="{Y(l):.1f}" '
-                    f'stroke="{color}" stroke-width="1"/>')
+        body.append(f'<line x1="{cx:.1f}" y1="{Y(h):.1f}" x2="{cx:.1f}" '
+                    f'y2="{Y(low):.1f}" stroke="{color}" stroke-width="1"/>')
         top, bottom = Y(max(o, c)), Y(min(o, c))
         body.append(f'<rect x="{cx - bw / 2:.1f}" y="{top:.1f}" width="{bw:.1f}" '
                     f'height="{max(1.0, bottom - top):.1f}" fill="{color}" class="k" '
                     f'data-tip="{esc(t)} 开{fmt_num(o)} 高{fmt_num(h)} '
-                    f'低{fmt_num(l)} 收{fmt_num(c)}" tabindex="0"/>')
+                    f'低{fmt_num(low)} 收{fmt_num(c)}" tabindex="0"/>')
         if i % max(1, len(rows) // 8) == 0:
             body.append(f'<text x="{cx:.1f}" y="{pad_t + plot_h + 14:.1f}" '
                         f'text-anchor="middle" style="font-size:9.5px;fill:{theme.FAINT}">'

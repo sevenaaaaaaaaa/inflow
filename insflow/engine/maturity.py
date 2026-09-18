@@ -240,7 +240,7 @@ class MaturityEngine:
             "| 维度 | 得分 | 满分 | 百分比 |",
             "|---|---|---|---|",
         ]
-        for dim_key, dim in radar.items():
+        for _dim_key, dim in radar.items():
             bar = "█" * int(dim["pct"] * 10) + "░" * (10 - int(dim["pct"] * 10))
             lines.append(f"| {dim['name']} | {dim['score']} | {dim['max']} | {dim['pct']:.0%} {bar} |")
 

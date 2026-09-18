@@ -93,6 +93,7 @@ async def bootstrap_scheduled_jobs() -> dict:
 
     # 5. 每日 09:15：数据备份（R1-2，data/ 是客户资产）
     async def _daily_backup(payload=None):
+        from ..core.files import EventBus
         from ..engine.backup import BackupManager
         mgr = BackupManager()
         result = mgr.run()
@@ -242,7 +243,7 @@ async def bootstrap_scheduled_jobs() -> dict:
             try:
                 out = await alert_stale(ws.id)
                 row = await store.get_workspace(ws.id)
-                auto = bool(((row.settings_json or {}).get("dq_auto_backfill")))
+                auto = bool((row.settings_json or {}).get("dq_auto_backfill"))
                 if auto:
                     res = await backfill(ws.id, days=7)
                     if res["ran"]:

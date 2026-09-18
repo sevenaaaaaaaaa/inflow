@@ -55,7 +55,23 @@ target-version = "py312"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "W", "UP", "B", "SIM", "ASYNC"]
-ignore = ["E501"]
+ignore = [
+    "E501",     # 行长由格式化负责（报告/模板字符串天然偏长）
+    "UP042",    # 保持 str+Enum：外部 JSON/DB 均以字符串比较，StrEnum 会改变行为
+    "N802",     # 历史/契约命名（如 _Metric_stub 与实体字段名保持一致）
+    "N818",     # 异常类名不带 Error 后缀（TokenRefreshError 等已在文档/API 中出现）
+    "B904",     # 故意不链异常：避免把内部异常文本透给客户端（FastAPI 仍会记录日志）
+    "E402",     # 模板环境/插件宿主需要先初始化再导入
+    "ASYNC109", # timeout 参数是业务语义（SSE/HTTP/Chrome 调用）
+    "N801",     # PermissionError_ 故意加下划线以避免与内置 PermissionError 冲突
+    "N803",     # startIndex 是 SCIM RFC 7644 规定的参数名（对外契约）
+    "N814",     # cli 里 `from pathlib import Path as _P` 为缩短局部写法
+]
+
+[tool.ruff.lint.per-file-ignores]
+# 测试代码：短小临时文件/同步 IO/盲断言/缩写导入等可读性优先，不阻塞 CI
+"tests/**" = ["SIM115", "SIM222", "E702", "E741", "N806", "N817", "UP031",
+              "ASYNC240", "B017"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

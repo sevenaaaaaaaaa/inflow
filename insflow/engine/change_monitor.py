@@ -48,10 +48,9 @@ class ChangeMonitor:
         new_prices = extract_prices(new_md)
 
         price_changes = []
-        if old_prices and new_prices:
-            # 对齐相同位置的价格（简单策略：数量相同时逐位比较）
-            if len(old_prices) == len(new_prices):
-                for old_p, new_p in zip(old_prices, new_prices):
+        # 对齐相同位置的价格（简单策略：数量相同时逐位比较）
+        if old_prices and new_prices and len(old_prices) == len(new_prices):
+                for old_p, new_p in zip(old_prices, new_prices, strict=False):
                     if old_p != new_p and old_p > 0:
                         price_changes.append({
                             "old": old_p,
@@ -67,7 +66,8 @@ class ChangeMonitor:
         diff_lines = list(difflib.unified_diff(
             old_md.splitlines(), new_md.splitlines(), lineterm="", n=1
         ))
-        changed_lines = [l for l in diff_lines if l.startswith(("+ ", "- "))][:20]
+        changed_lines = [line for line in diff_lines
+                         if line.startswith(("+ ", "- "))][:20]
 
         return {
             "price_changes": price_changes,

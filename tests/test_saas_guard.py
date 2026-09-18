@@ -12,6 +12,7 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setenv("INSFLOW_DISABLE_SCHEDULER", "1")
     monkeypatch.setenv("INSFLOW_SAAS", "1")
     from fastapi.testclient import TestClient
+
     from insflow.server.app import app
     return TestClient(app)
 
@@ -83,6 +84,7 @@ class TestCacheAndTenantIsolation:
     async def test_embed_token_scoped_to_session_workspace(self, client):
         """签发令牌使用登录用户的工作区，不取「第一个工作区」（跨租户越权回归）"""
         from fastapi.testclient import TestClient
+
         from insflow.core.accounts import COOKIE_NAME, AccountManager
         from insflow.core.store import get_store
         from insflow.server.app import app

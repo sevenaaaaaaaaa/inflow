@@ -1,7 +1,8 @@
-from datetime import timedelta, datetime, timezone
+from datetime import datetime, timedelta
+
 """测试 OAuth token 自动轮换（R1-1）"""
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC
 
 import pytest
 
@@ -51,7 +52,6 @@ class TestEnsureFresh:
 
     async def test_refresh_on_expiry_window(self, tm, monkeypatch):
         """临期（<10min）→ 自动轮换 + 保险库回写 + expires_at 更新"""
-        capture = {}
         soon = datetime.now(UTC) + timedelta(seconds=300)
         tm.save_tokens("gsc", fresh_tokens(access_token="old", expires_at=soon.isoformat()))
 
@@ -157,17 +157,16 @@ class TestExpiryAudit:
         from datetime import timedelta as td
         # ok：剩余 30 天
         tm.save_tokens("gsc", fresh_tokens(
-            expires_at=(datetime.now(timezone.utc) + timedelta(days=30)).isoformat()))
+            expires_at=(datetime.now(UTC) + timedelta(days=30)).isoformat()))
         assert tm.expiry_status("gsc")["state"] == "ok"
         # expiring_soon：剩余 3 天
-        soon = (datetime.now(timezone.utc) + td(days=3)).isoformat()
+        soon = (datetime.now(UTC) + td(days=3)).isoformat()
         tm.save_tokens("ga4", fresh_tokens(expires_at=soon))
         assert tm.expiry_status("ga4")["state"] == "expiring_soon"
 
     async def test_expired_state(self, tm):
         tm.save_tokens("gsc", fresh_tokens(
-            expires_at=(datetime.now(timezone.utc) - td(days=1) if False else
-                        datetime.now(timezone.utc) - timedelta(days=1)).isoformat()))
+            expires_at=(datetime.now(UTC) - timedelta(days=1)).isoformat()))
         assert tm.expiry_status("gsc")["state"] == "expired"
 
     async def test_missing_and_legacy(self, tm):
@@ -182,7 +181,7 @@ class TestExpiryAudit:
         events = []
         monkeypatch.setattr(tm, "bus", type("B", (), {"emit": staticmethod(lambda t, p: events.append((t, p)))})())
 
-        soon = (datetime.now(timezone.utc) + timedelta(days=3)).isoformat()
+        soon = (datetime.now(UTC) + timedelta(days=3)).isoformat()
         tm.save_tokens("gsc", fresh_tokens(expires_at=soon))
 
         statuses = tm.audit_all()

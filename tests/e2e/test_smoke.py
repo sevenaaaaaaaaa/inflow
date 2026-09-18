@@ -54,10 +54,18 @@ class TestConsolePaths:
     def test_a11y_and_interaction_hooks(self, client):
         html = client.get("/console/cockpit/traffic",
                           params={"workspace_id": WS, "days": 20}).text
+        # 页面内联部分：语义与无障碍标记
         for hook in ('role="img"', "aria-label", 'scope="col"', "sr-only",
-                     "prefers-reduced-motion", "ifToggleLive", "ifPresenceTick",
-                     "ifCrossFilter", "data-annot"):
+                     "data-annot"):
             assert hook in html, hook
+        # 交互脚本已抽到可缓存静态资源：从这里断言（并确认页面确实外链了它）
+        assert "/console/static/app.js?v=" in html
+        js = client.get("/console/static/app.js").text
+        for hook in ("ifToggleLive", "ifPresenceTick", "ifCrossFilter",
+                     "ifToggleSeries", "ifAskRun"):
+            assert hook in js, hook
+        css = client.get("/console/static/app.css").text
+        assert "prefers-reduced-motion" in css and ".sr-only" in css
 
 
 class TestApiPaths:
@@ -148,13 +156,9 @@ class TestUiHarness:
         if not node:
             pytest.skip("未安装 node")
         page = client.get("/console/m").text
-        assert "ifToggleSeries" in page
-        html = tmp_path / "console.html"
-        html.write_text(page, encoding="utf-8")
-        js = tmp_path / "inline.js"
-        import sys
-        subprocess.run([sys.executable, "scripts/extract_inline_js.py", str(html),
-                        str(js)], check=True, capture_output=True)
+        assert "/console/static/app.js" in page          # 交互脚本已外链
+        js = tmp_path / "app.js"
+        js.write_text(client.get("/console/static/app.js").text, encoding="utf-8")
         proc = subprocess.run([node, "scripts/e2e_ui.mjs", str(js)],
                               capture_output=True, text=True, timeout=90)
         assert proc.returncode == 0, proc.stdout[-800:] + proc.stderr[-400:]

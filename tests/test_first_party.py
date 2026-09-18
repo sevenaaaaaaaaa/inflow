@@ -137,7 +137,7 @@ class TestJourneyRebuild:
 
     async def test_persist_journey_events(self, env):
         fi = FirstPartyIntelligence("test-ws", client=OpenFlowMCPClient(base_url="", api_key=""))
-        now = datetime.now(UTC).isoformat()
+        datetime.now(UTC).isoformat()
         members = [{"email": f"m{i}@x.com", "registered": True} for i in range(5)]
         rebuilt = fi.rebuild_journey(members, [])
 

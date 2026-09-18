@@ -12,6 +12,7 @@ def client(monkeypatch):
     app_mod.AUTH_ENABLED = True
     app_mod.MCP_AUTH_REQUIRED = True
     from fastapi.testclient import TestClient
+
     from insflow.server.app import app
     yield TestClient(app)
     app_mod.AUTH_ENABLED = False
@@ -30,7 +31,6 @@ class TestMCPAuth:
         monkeypatch.setattr(fm, "DATA_DIR", tmp_path)
         app_mod.MCP_AUTH_REQUIRED = True
 
-        from insflow.core.auth import AuthManager
         app_mod._auth_managers.pop("test-ws", None)
         key = app_mod._get_auth("test-ws").create_key("ci", scopes=["read"])
 
@@ -45,7 +45,6 @@ class TestMCPAuth:
         monkeypatch.setattr(fm, "DATA_DIR", tmp_path)
         app_mod.MCP_AUTH_REQUIRED = True
 
-        from insflow.core.auth import AuthManager
         app_mod._auth_managers.pop("test-ws", None)
         key = app_mod._get_auth("test-ws").create_key("ro", scopes=["read"])
 

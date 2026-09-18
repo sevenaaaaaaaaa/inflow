@@ -10,6 +10,7 @@ from insflow.core.entities import Workspace
 from insflow.core.store import Store, dim_window_key, reset_store
 from insflow.viz import charts as c
 from insflow.viz.frame import datapanel
+from tests._ui_source import ui_source
 
 BASE_HTML = "insflow/web/templates/base.html"
 
@@ -27,7 +28,7 @@ class TestLegendToggle:
         assert 'data-series="上期"' in svg          # 对比序列同样可开关
 
     def test_legend_js_and_style_present(self):
-        src = open(BASE_HTML, encoding="utf-8").read()
+        src = ui_source()
         assert "function ifToggleSeries" in src
         assert "function ifLegendKey" in src        # 键盘可操作
         assert ".if-legend.off" in src
@@ -42,7 +43,7 @@ class TestAnimation:
                                              ["a", "b"], anim=False)
 
     def test_canvas_animation_respects_reduced_motion(self):
-        src = open(BASE_HTML, encoding="utf-8").read()
+        src = ui_source()
         assert "@keyframes ifRise" in src
         assert "function ifAnimate" in src
         assert "prefers-reduced-motion" in src
@@ -99,7 +100,7 @@ class TestCanvasLargeData:
         assert c.heatmap(["r"], ["c"], [[0.4]]).startswith("<svg")
 
     def test_canvas_renderers_present(self):
-        src = open(BASE_HTML, encoding="utf-8").read()
+        src = ui_source()
         assert "function ifDrawScatter" in src
         assert "function ifDrawHeatmap" in src
         assert "meta.kind === 'scatter'" in src
@@ -191,8 +192,9 @@ class TestDimBreakdownAndCockpit:
         assert rows[0] == {"key": "广东", "value": 15.0, "n": 2}
 
     async def test_demo_geo_and_traffic_panel(self, env):
-        from insflow.engine.demo import DemoSeeder
         from fastapi.testclient import TestClient
+
+        from insflow.engine.demo import DemoSeeder
         from insflow.server.app import app
         await DemoSeeder("test-ws", days=10).seed()
         store = env["store"]
@@ -210,6 +212,7 @@ class TestExportXlsxPng:
     def test_xlsx_is_valid_package(self):
         import io as _io
         import zipfile
+
         from insflow.core.xlsx import write_xlsx
         data = write_xlsx([("趋势", ["时间", "值"], [["d1", 1.5], ["d2", 2]]),
                            ("说明/补充", ["a"], [["x"]])])
@@ -231,8 +234,9 @@ class TestExportXlsxPng:
 
     def test_export_api(self, env):
         import asyncio
+
         from fastapi.testclient import TestClient
-        from insflow.core.entities import Workspace
+
         from insflow.engine.demo import DemoSeeder
         from insflow.server.app import app
 
@@ -255,7 +259,7 @@ class TestExportXlsxPng:
         assert r3.status_code == 400
 
     def test_png_export_js_present(self):
-        src = open(BASE_HTML, encoding="utf-8").read()
+        src = ui_source()
         for token in ("function ifExportPNG", "function ifInlineSvgVars",
                       "function ifCssVarMap", "function ifExportPageXlsx"):
             assert token in src
@@ -264,7 +268,9 @@ class TestExportXlsxPng:
 class TestBoardEmbed:
     def test_board_token_renders_multi_panel(self, env):
         import asyncio
+
         from fastapi.testclient import TestClient
+
         from insflow.engine.demo import DemoSeeder
         from insflow.engine.embed import mint
         from insflow.server.app import app
@@ -286,6 +292,7 @@ class TestBoardEmbed:
 
     def test_theme_override(self, env):
         from fastapi.testclient import TestClient
+
         from insflow.engine.embed import mint
         from insflow.server.app import app
         c = TestClient(app)
@@ -302,7 +309,7 @@ class TestCrossFilterLayoutPwa:
     def test_filtered_query_is_parameterized(self, env):
         """维度过滤走参数化 SQL（值来自 URL，不能拼接）"""
         import asyncio
-        from insflow.core.store import Store
+
 
         async def _run():
             store = env["store"]
@@ -325,7 +332,9 @@ class TestCrossFilterLayoutPwa:
 
     def test_cross_filter_chip_and_attrs(self, env):
         import asyncio
+
         from fastapi.testclient import TestClient
+
         from insflow.server.app import app
 
         asyncio.get_event_loop().run_until_complete(self._seeded(env))
@@ -338,8 +347,8 @@ class TestCrossFilterLayoutPwa:
         assert "data-cf=" in plain.text              # 可点击触发联动
 
     def test_layout_api_roundtrip(self, env):
-        import asyncio
         from fastapi.testclient import TestClient
+
         from insflow.server.app import app
         c = TestClient(app)
         assert c.put("/api/v1/ui/layout", json={"workspace_id": "test-ws",
@@ -352,6 +361,7 @@ class TestCrossFilterLayoutPwa:
 
     def test_pwa_endpoints(self):
         from fastapi.testclient import TestClient
+
         from insflow.server.app import app
         c = TestClient(app)
         m = c.get("/console/manifest.webmanifest")
@@ -363,7 +373,7 @@ class TestCrossFilterLayoutPwa:
         assert c.get("/console/icon.svg").status_code == 200
 
     def test_manifest_and_sw_registered_in_html(self):
-        src = open(BASE_HTML, encoding="utf-8").read()
+        src = ui_source()
         assert "/console/manifest.webmanifest" in src
         assert "/console/sw.js" in src
         assert "ifSetupLayout" in src and "draggable" in src
@@ -375,6 +385,7 @@ class TestBatch45Platform:
 
     def test_rollup_and_long_window(self, env):
         import asyncio
+
         from insflow.core.rollup import daily_series, rollup, rollup_stats
         from insflow.engine.demo import DemoSeeder
 
@@ -391,6 +402,7 @@ class TestBatch45Platform:
 
     def test_pivot_two_dims_and_time(self, env):
         import asyncio
+
         from insflow.engine.demo import DemoSeeder
 
         async def _run():
@@ -407,6 +419,7 @@ class TestBatch45Platform:
 
     def test_sql_sandbox_isolation_and_guards(self, env):
         import asyncio
+
         from insflow.engine.explore_sql import SqlError, run, validate
 
         async def _run():
@@ -451,6 +464,7 @@ class TestBatch45Platform:
 
     def test_comments_and_alerts_and_estimate(self, env):
         import asyncio
+
         from insflow.engine.alerts import evaluate_workspace, sweep_escalations
         from insflow.engine.demo import DemoSeeder
         from insflow.engine.traffic_estimate import estimate_many
@@ -478,8 +492,13 @@ class TestBatch45Platform:
         assert sweep_escalations("test-ws") is not None
 
     def test_role_matrix_and_entity_allow(self):
-        from insflow.engine.permissions import (MATRIX, PermissionError_, allowed,
-                                               entity_allow, require)
+        from insflow.engine.permissions import (
+            MATRIX,
+            PermissionError_,
+            allowed,
+            entity_allow,
+            require,
+        )
         assert allowed("owner", "anything.write")
         assert allowed("analyst", "explore.sql") and not allowed("viewer", "explore.sql")
         assert not allowed("viewer", "alert.write")
@@ -511,8 +530,9 @@ class TestBatch45Platform:
 
     def test_new_apis(self, env):
         import asyncio
+
         from fastapi.testclient import TestClient
-        from insflow.engine.demo import DemoSeeder
+
         from insflow.server.app import app
 
         asyncio.get_event_loop().run_until_complete(self._seed_demo(env))
@@ -547,6 +567,7 @@ class TestBatch45Platform:
 
     def test_union_ads_plugin(self):
         import asyncio
+
         from insflow.collectors.base import CollectContext
         from insflow.collectors.registry import get_registry
         reg = get_registry()
@@ -563,6 +584,7 @@ class TestBatch45Platform:
 
     def test_chart_subscription_dispatch(self, env):
         import asyncio
+
         from insflow.engine.demo import DemoSeeder
         from insflow.engine.subscriptions import SubscriptionService
 
@@ -579,7 +601,7 @@ class TestBatch45Platform:
         assert out["sent"] + out["failed"] >= 0      # 无外网时不抛错
 
     def test_ui_hooks_present(self):
-        base = open(BASE_HTML, encoding="utf-8").read()
+        base = ui_source()
         assert "ifLayoutHistory" in base and "data-cap" in base
         assert "/api/v1/auth/me" in base
         explore = open("insflow/web/templates/explore.html", encoding="utf-8").read()

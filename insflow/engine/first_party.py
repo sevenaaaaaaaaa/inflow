@@ -83,7 +83,7 @@ class FirstPartyIntelligence:
         anonymous（匿名）→ lead（线索）→ member（会员）→ paying（成交）→ repeat（复购）
         """
         orders = orders or []
-        now = datetime.now(UTC)
+        datetime.now(UTC)
 
         # 按身份归组订单
         orders_by_identity: dict[str, list[dict]] = {}
@@ -125,7 +125,7 @@ class FirstPartyIntelligence:
         # 断点：相邻阶段人数的异常衰减
         funnel_order = ["lead", "member", "paying", "repeat"]
         breakpoints = []
-        for prev, cur in zip(funnel_order, funnel_order[1:]):
+        for prev, cur in zip(funnel_order, funnel_order[1:], strict=False):
             prev_n, cur_n = stages_distribution.get(prev, 0), stages_distribution.get(cur, 0)
             if prev_n > 10:  # 样本足够才判断
                 conversion = cur_n / prev_n

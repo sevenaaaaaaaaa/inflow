@@ -21,7 +21,6 @@ apply(workspace)：创建监控 + 注册 DSL 规则 + 事件流审计，一键�
 import json
 from pathlib import Path
 
-from ..collectors.base import CollectContext  # noqa: 保留扩展点
 from ..core.files import EventBus
 from ..core.store import get_store
 from .dsl_models import get_dsl_registry, validate_dsl
@@ -135,7 +134,6 @@ class TemplateRegistry:
 
 def _monitor_service(workspace_id: str):
     from ..core.scheduler import get_scheduler
-    from .monitors import MonitorService
     return MonitorService(workspace_id, scheduler=get_scheduler())
 
 

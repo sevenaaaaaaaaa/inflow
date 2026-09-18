@@ -101,8 +101,15 @@ async def notify_with_policy(workspace_id: str, title: str, summary: str,
                              routes: list, escalation: dict,
                              alert: dict | None = None) -> dict:
     """按工作区通知策略发送：静默时段 → 待发；节流 → 合并计数；升级链 → 逐级通道"""
-    from .notify_policy import (QuietHours, defer, escalation_targets, group_key,
-                                pending_count, policy_of, throttle)
+    from .notify_policy import (
+        QuietHours,
+        defer,
+        escalation_targets,
+        group_key,
+        pending_count,
+        policy_of,
+        throttle,
+    )
     store = await get_store()
     ws = await store.get_workspace(workspace_id)
     policy = policy_of(ws.settings_json if ws else {})
@@ -144,7 +151,7 @@ async def _notify(workspace_id: str, title: str, summary: str,
         return {"skipped": "动作路由不可用"}
     store = await get_store()
     ws = await store.get_workspace(workspace_id)
-    defaults = dict(((ws.settings_json or {}).get("alert_targets") or {})) if ws else {}
+    defaults = dict((ws.settings_json or {}).get("alert_targets") or {}) if ws else {}
     for item in routes[:5]:
         if isinstance(item, str):
             channel, target = item, defaults.get(item, {})
@@ -188,7 +195,6 @@ async def _notify(workspace_id: str, title: str, summary: str,
 
 async def sweep_escalations(workspace_id: str) -> list[dict]:
     """升级检查：命中告警后 N 小时仍无处理动作 → 再通知升级对象"""
-    import json as _json
     store = await get_store()
     insights = await store.list_insights(workspace_id, limit=100)
     actions = await store.list_actions(workspace_id)

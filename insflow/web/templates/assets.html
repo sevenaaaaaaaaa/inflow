@@ -1,0 +1,118 @@
+{% extends "base.html" %}
+{% block title %} · 数据资产{% endblock %}
+{% block content %}
+<h1>数据资产</h1>
+<p class="sub">地理边界数据集（GeoJSON）、看板快照归档、导出与审计入口。</p>
+
+<h2>地理边界数据集</h2>
+<div class="card">
+  <p class="sub">导入 GeoJSON（FeatureCollection/Polygon，≤5MB）后，地域维度匹配到区域名时自动切换为精确边界地图。
+    内置 <code>world</code>（Natural Earth 110m，公有领域）。</p>
+  <table>
+    <tr><th>名称</th><th>来源</th><th>区域数</th><th>属性名</th><th>大小</th></tr>
+    {% for name, info in datasets.items() %}
+    <tr>
+      <td><code>{{ name }}</code>{% if info.builtin %} <span class="badge b-info">内置</span>{% endif %}</td>
+      <td>{{ info.source }}</td>
+      <td>{{ info.count or '—' }}</td>
+      <td>{{ info.name_key or 'name' }}</td>
+      <td>{{ ((info.bytes or 0) / 1024) | round(1) }} KB</td>
+    </tr>
+    {% else %}
+    <tr><td colspan="5" class="sub">暂无数据集</td></tr>
+    {% endfor %}
+  </table>
+  <div class="toolbar" style="flex-wrap:wrap;gap:8px;margin-top:10px">
+    <input id="as-name" placeholder="数据集名（如 china-provinces）" style="min-width:200px">
+    <input id="as-url" placeholder="GeoJSON URL（仅 http/https）" style="min-width:300px">
+    <input id="as-key" placeholder="属性名（默认 name）" style="width:130px">
+    <button onclick="asImport()">从 URL 导入</button>
+    <span id="as-status" class="sub"></span>
+  </div>
+  <div style="margin-top:8px">
+    <textarea id="as-content" rows="3" style="width:100%;font-family:ui-monospace,monospace"
+      placeholder="或直接粘贴 GeoJSON 内容（小文件推荐）"></textarea>
+    <button class="dp-btn" style="margin-top:6px" onclick="asImportInline()">粘贴导入</button>
+  </div>
+</div>
+
+<h2>看板快照</h2>
+<div class="card">
+  <div class="toolbar" style="gap:8px;margin-bottom:8px">
+    <button onclick="asSnapshot()">生成快照（board:traffic）</button>
+    <button class="dp-btn" onclick="asCleanup()">清理过期（90 天）</button>
+    <span id="as-snap-status" class="sub"></span>
+  </div>
+  <table>
+    <tr><th>文件</th><th>大小</th><th>生成时间</th><th>PDF</th><th></th></tr>
+    {% for s in snapshots %}
+    <tr>
+      <td><code>{{ s.name }}</code></td>
+      <td>{{ s.size_kb }} KB</td>
+      <td>{{ s.created_at[:19].replace('T', ' ') }}</td>
+      <td>{{ s.pdf or '—' }}</td>
+      <td><a href="/console/snapshots/{{ workspace_id }}/{{ s.name }}?workspace_id={{ workspace_id }}" target="_blank" rel="noopener">打开</a></td>
+    </tr>
+    {% else %}
+    <tr><td colspan="5" class="sub">暂无快照</td></tr>
+    {% endfor %}
+  </table>
+</div>
+
+<h2>导出与审计</h2>
+<div class="card">
+  <div class="toolbar" style="gap:8px;flex-wrap:wrap">
+    <a class="dp-btn" href="/api/v1/export/xlsx?workspace_id={{ workspace_id }}&panel=cockpit:traffic&days=30">导出流量舱 Excel</a>
+    <a class="dp-btn" href="/api/v1/audit/admin?workspace_id={{ workspace_id }}&format=csv">导出审计 CSV</a>
+    <a class="dp-btn" href="/console/audit?workspace_id={{ workspace_id }}">审计轨迹页</a>
+    <span class="sub">所有导出带操作者水印（Excel 附「导出信息」表、CSV 首尾水印行）</span>
+  </div>
+</div>
+
+<script>
+async function asImport(){
+  var st = document.getElementById('as-status');
+  st.textContent = '导入中…';
+  var r = await fetch('/api/v1/geo/datasets', {method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({workspace_id:'{{ workspace_id }}',
+      name: document.getElementById('as-name').value,
+      url: document.getElementById('as-url').value,
+      name_key: document.getElementById('as-key').value})});
+  var j = await r.json();
+  st.textContent = r.ok ? ('已导入 ' + j.count + ' 个区域 ✓') : (j.detail || '失败');
+  if(r.ok) setTimeout(function(){ location.reload(); }, 800);
+}
+async function asImportInline(){
+  var st = document.getElementById('as-status');
+  st.textContent = '导入中…';
+  var r = await fetch('/api/v1/geo/datasets', {method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({workspace_id:'{{ workspace_id }}',
+      name: document.getElementById('as-name').value,
+      content: document.getElementById('as-content').value,
+      name_key: document.getElementById('as-key').value})});
+  var j = await r.json();
+  st.textContent = r.ok ? ('已导入 ' + j.count + ' 个区域 ✓') : (j.detail || '失败');
+  if(r.ok) setTimeout(function(){ location.reload(); }, 800);
+}
+async function asSnapshot(){
+  var st = document.getElementById('as-snap-status');
+  st.textContent = '生成中…';
+  var r = await fetch('/api/v1/snapshots', {method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({workspace_id:'{{ workspace_id }}', panel:'board:traffic', days:30})});
+  var j = await r.json();
+  st.textContent = r.ok ? ('已生成 ' + j.size_kb + 'KB' + (j.pdf_path ? '（含 PDF）' : '')) : '失败';
+  if(r.ok) setTimeout(function(){ location.reload(); }, 900);
+}
+async function asCleanup(){
+  var st = document.getElementById('as-snap-status');
+  var r = await fetch('/api/v1/snapshots/cleanup', {method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({workspace_id:'{{ workspace_id }}', keep_days:90})});
+  var j = await r.json();
+  st.textContent = r.ok ? ('清理 ' + j.removed + ' 个（释放 ' + j.freed_mb + 'MB）') : '失败';
+}
+</script>
+{% endblock %}

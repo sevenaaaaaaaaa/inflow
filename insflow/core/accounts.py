@@ -13,7 +13,7 @@ import hashlib
 import hmac
 import os
 import secrets
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from .files import EventBus
 from .store import get_store
@@ -22,7 +22,9 @@ SESSION_TTL_DAYS = 30
 COOKIE_NAME = "if_session"
 
 # SaaS 模式开关：开启后控制台需登录
-SAAS_MODE = lambda: os.environ.get("INSFLOW_SAAS", "") == "1"
+def SAAS_MODE() -> bool:
+    """SaaS 模式开关（开启后控制台需登录）"""
+    return os.environ.get("INSFLOW_SAAS", "") == "1"
 
 
 class AccountError(Exception):
@@ -87,7 +89,7 @@ class AccountManager:
         await store.update_workspace(tenant)
 
         uid = secrets.token_hex(6)
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         await store._execute(
             """INSERT INTO users (id, email, password_hash, name, role, workspace_id, created_at)
                VALUES (?, ?, ?, ?, 'owner', ?, ?)""",
@@ -101,7 +103,7 @@ class AccountManager:
         # 自助试用（G-4）：注册即得 14 天 Growth 体验
         trial = {}
         try:
-            from ..engine.billing import BillingManager, TRIAL_DAYS, TRIAL_PLAN
+            from ..engine.billing import TRIAL_DAYS, TRIAL_PLAN, BillingManager
             trial = await BillingManager(tenant.id).start_trial()
             trial["days"] = TRIAL_DAYS
             trial["plan"] = TRIAL_PLAN
@@ -124,7 +126,7 @@ class AccountManager:
         row = await store._fetchone("SELECT * FROM users WHERE email = ?", (email,))
         if not row or not verify_password(password or "", row["password_hash"]):
             raise AccountError("邮箱或密码不正确")
-        token = await self._create_session(row["id"], datetime.now(timezone.utc))
+        token = await self._create_session(row["id"], datetime.now(UTC))
         EventBus(row["workspace_id"] or self.workspace_id).emit("account.login", {
             "user_id": row["id"], "email": email,
         })
@@ -154,7 +156,7 @@ class AccountManager:
         if not row:
             return None
         try:
-            if datetime.fromisoformat(row["expires_at"]) < datetime.now(timezone.utc):
+            if datetime.fromisoformat(row["expires_at"]) < datetime.now(UTC):
                 await self.logout(token)
                 return None
         except (ValueError, TypeError):
@@ -178,6 +180,6 @@ class AccountManager:
         store = await get_store()
         cur = await store._execute(
             "DELETE FROM sessions WHERE expires_at < ?",
-            (datetime.now(timezone.utc).isoformat(),))
+            (datetime.now(UTC).isoformat(),))
         await store._db.commit()
         return cur.rowcount

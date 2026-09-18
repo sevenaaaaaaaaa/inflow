@@ -6,10 +6,10 @@
 与真实支付系统对接时：本模块输出对账单，支付回调由云托管计费系统负责（V2）。
 """
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from ..core.files import EventBus, ReportStore
-from .billing import BillingManager, PLANS
+from .billing import PLANS, BillingManager
 
 
 class InvoiceBuilder:
@@ -33,7 +33,7 @@ class InvoiceBuilder:
         plan = PLANS[plan_id]
         price = plan["price_usd_month"]
 
-        md = self._render(month=month or datetime.now(timezone.utc).strftime("%Y-%m"),
+        md = self._render(month=month or datetime.now(UTC).strftime("%Y-%m"),
                           plan_name=summary["plan_name"], price=price,
                           usage=usage, features=summary["features"])
 
@@ -67,7 +67,7 @@ class InvoiceBuilder:
             "cost_usd": "数据源费用（USD）",
         }
         for kind, label in metric_names.items():
-            val = usage.get(kind, "—")
+            usage.get(kind, "—")
             if kind == "cost_usd" and isinstance(usage.get(kind), (int, float)):
                 usage_val = f"${usage[kind]:.2f}"
             else:

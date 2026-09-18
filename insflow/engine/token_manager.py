@@ -11,7 +11,7 @@ refresh_token 缺失时不可轮换（Google 首次授权 access_type=offline �
 """
 
 import json
-from datetime import UTC, datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import httpx
 
@@ -75,7 +75,7 @@ class TokenManager:
             exp = datetime.fromisoformat(expires_at)
         except (ValueError, TypeError):
             return {"provider": provider, "state": "legacy", "remaining_days": None}
-        remaining = (exp - datetime.now(timezone.utc)).total_seconds()
+        remaining = (exp - datetime.now(UTC)).total_seconds()
         if remaining <= 0:
             state = "expired"
         elif remaining <= 86400 * 7:

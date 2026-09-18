@@ -1,6 +1,5 @@
 """Batch6 测试：实时流（SSE）/ 在线协同 / 拖拽透视 / 表达式级 RLS / 稳健异常 / OIDC SSO"""
 
-import os
 
 import pytest
 
@@ -9,9 +8,9 @@ from insflow.core.entities import Workspace
 from insflow.core.store import Store, reset_store
 from insflow.engine import sso
 from insflow.engine.realtime import Presence, StreamHub, parse_metrics, sse_event
-from insflow.engine.rls import (DENY_ALL, PolicyError, build_policy, compile_policy,
-                                policies_for)
+from insflow.engine.rls import DENY_ALL, PolicyError, build_policy, compile_policy, policies_for
 from insflow.viz import charts as c
+from tests._ui_source import ui_source
 
 
 @pytest.fixture
@@ -56,7 +55,7 @@ class TestRealtimeStream:
             hub = StreamHub("test-ws", metrics=["ga4_sessions"], days=10,
                             interval=0.1, max_ticks=3, heartbeat=0.1)
             out = []
-            async for ev, data in hub.events():
+            async for ev, _data in hub.events():
                 out.append(ev)
             return out
 
@@ -85,7 +84,9 @@ class TestRealtimeStream:
 
     def test_stream_and_presence_http(self, env):
         import asyncio
+
         from fastapi.testclient import TestClient
+
         from insflow.server.app import app
 
         asyncio.get_event_loop().run_until_complete(self._seed(env))
@@ -111,7 +112,7 @@ class TestRealtimeStream:
         assert cli.post("/api/v1/presence", json={"workspace_id": ""}).status_code == 400
 
     def test_page_has_live_and_presence_hooks(self):
-        base = open("insflow/web/templates/base.html", encoding="utf-8").read()
+        base = ui_source()
         for token in ("ifStartLive", "EventSource", "ifPaintLive", "ifPresenceTick",
                       "if-cursor", "if-online", "sendBeacon"):
             assert token in base, token
@@ -153,7 +154,9 @@ class TestDragDropCube:
 
     def test_dims_and_cube_api(self, env):
         import asyncio
+
         from fastapi.testclient import TestClient
+
         from insflow.server.app import app
 
         asyncio.get_event_loop().run_until_complete(self._seed(env))
@@ -357,7 +360,9 @@ class TestSsoOidc:
 
     def test_routes_flow_with_state_check(self, env, monkeypatch):
         import asyncio
+
         from fastapi.testclient import TestClient
+
         from insflow.server.app import app
         monkeypatch.setenv("INSFLOW_SAAS", "1")
         calls = self._fake_idp(monkeypatch)
@@ -385,6 +390,7 @@ class TestSsoOidc:
 
     def test_route_without_config_is_explicit(self, env, monkeypatch):
         from fastapi.testclient import TestClient
+
         from insflow.server.app import app
         for key in ("INSFLOW_OIDC_ISSUER", "INSFLOW_OIDC_CLIENT_ID"):
             monkeypatch.delenv(key, raising=False)
@@ -397,12 +403,14 @@ class TestRlsEndToEnd:
 
     def _seed(self, env):
         import asyncio
+
         from insflow.engine.demo import DemoSeeder
         asyncio.get_event_loop().run_until_complete(
             DemoSeeder("test-ws", days=30).seed())
 
     def test_rls_api_validates_and_persists(self, env):
         from fastapi.testclient import TestClient
+
         from insflow.server.app import app
         self._seed(env)
         cli = TestClient(app)
@@ -426,7 +434,9 @@ class TestRlsEndToEnd:
 
     def test_policy_scopes_traffic_cockpit(self, env):
         import asyncio
+
         from fastapi.testclient import TestClient
+
         from insflow.server.app import app
         self._seed(env)
         cli = TestClient(app)
@@ -449,3 +459,49 @@ class TestRlsEndToEnd:
         nums_after = self._kpi_numbers(r.text)
         # 策略生效：可见数据的 KPI 数字集合发生变化（渠道被收敛）
         assert nums_after and nums_after != nums_before
+
+
+class TestRls403Path:
+    """回归：RLS 主体白名单拒绝时必须返回 403（此前 403 分支引用未定义的 nav → 500）"""
+
+    def test_viewer_denied_entity_gets_403(self, env):
+        import asyncio
+
+        from fastapi.testclient import TestClient
+
+        from insflow.core.accounts import COOKIE_NAME, AccountManager
+        from insflow.engine.demo import DemoSeeder
+        from insflow.server.app import app
+
+        async def _seed():
+            store = env["store"]
+            await DemoSeeder("test-ws", days=10).seed()
+            ws = await store.get_workspace("test-ws")
+            settings = dict(ws.settings_json or {})
+            settings["role_entity_allow"] = {"viewer": ["某品牌"]}
+            ws.settings_json = settings
+            await store.update_workspace(ws)
+
+        asyncio.get_event_loop().run_until_complete(_seed())
+        cli = TestClient(app)
+        # 先在非 SaaS 下（owner）不应被拦
+        assert cli.get("/console/cockpit/traffic", params={
+            "workspace_id": "test-ws", "entity": "不存在"}).status_code == 200
+        # 造一个 viewer 会话（直接改角色 + 建会话），验证被拦时是 403 而不是 500
+        async def _viewer():
+            store = env["store"]
+            mgr = AccountManager("test-ws")
+            created = await mgr.register("viewer@test.com", "password123", "V", "T")
+            await store._execute("UPDATE users SET role = 'viewer' WHERE id = ?",
+                                 (created["user_id"],))
+            await store._db.commit()
+            return await mgr._create_session(created["user_id"],
+                                             __import__("datetime").datetime.now(
+                                                 __import__("datetime").UTC))
+
+        token = asyncio.get_event_loop().run_until_complete(_viewer())
+        cli.cookies.set(COOKIE_NAME, token)
+        r = cli.get("/console/cockpit/traffic", params={
+            "workspace_id": "test-ws", "entity": "不存在"})
+        assert r.status_code == 403, r.status_code
+        assert "无权限" in r.text

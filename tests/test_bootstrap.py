@@ -47,7 +47,6 @@ class TestBootstrap:
     async def test_restores_monitors(self, env):
         """已有监控任务 → 启动时自动恢复到调度器"""
         import insflow.core.scheduler as sched_mod
-        monkeypatch = env
         store = env["store"]
 
         await store.create_monitor("test-ws", "site_change",
@@ -55,7 +54,6 @@ class TestBootstrap:
 
         from insflow.core.scheduler import get_scheduler
         get_scheduler().shutdown()
-        monkeypatch_setattr = None
         # 重置调度器单例后重新引导
         sched_mod._scheduler = None
 

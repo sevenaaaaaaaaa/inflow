@@ -1,6 +1,6 @@
 """测试可观测性（每日摘要 + 告警分级出站）"""
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -13,7 +13,7 @@ from insflow.engine.observability import ALERT_RULES, AlertDispatcher, DailyDige
 async def env(tmp_path, monkeypatch):
     monkeypatch.setattr(files_mod, "DATA_DIR", tmp_path)
     bus = EventBus("test-ws")
-    now = datetime.now(timezone.utc)
+    datetime.now(UTC)
 
     # 预置最近 24h 的事件
     bus.emit("monitor.run_finished", {"monitor_id": "m1"})
@@ -30,7 +30,7 @@ async def env(tmp_path, monkeypatch):
     lines = []
     for e in bus.read(limit=100):
         if e["payload"].get("insight_id") == "old":
-            e["ts"] = (datetime.now(timezone.utc) - timedelta(hours=48)).isoformat()
+            e["ts"] = (datetime.now(UTC) - timedelta(hours=48)).isoformat()
         lines.append(__import__("json").dumps(e, ensure_ascii=False, default=str))
     (files_mod.DATA_DIR / "events" / "test-ws" / "events.jsonl").write_text(
         "\n".join(lines) + "\n")

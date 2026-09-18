@@ -9,11 +9,12 @@ competitors 说明前缀 / monitors target demo=true / subscriptions name 前缀
 `clear()` 只删演示数据，不动真实数据。
 """
 
+import contextlib
 import random
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from ..core.files import EventBus
-from ..core.store import get_store, generate_id
+from ..core.store import generate_id, get_store
 
 RNG = random.Random(20260916)
 # 地域/渠道/设备分布（演示网格地图、箱线、透视与 cross-filter）
@@ -39,7 +40,7 @@ class DemoSeeder:
     def __init__(self, workspace_id: str, days: int = 30):
         self.workspace_id = workspace_id
         self.days = days
-        self.now = datetime.now(timezone.utc)
+        self.now = datetime.now(UTC)
         self.bus = EventBus(workspace_id)
 
     # ================= 生成 =================
@@ -142,7 +143,7 @@ class DemoSeeder:
                                        int(base * (0.85 + i / (d * 2.2))), ts,
                                        entity=name, dim={"step_name": name})
         # 竞品定价指标（含一次降价）
-        for k, (domain, price, new_price) in enumerate([
+        for _k, (domain, price, new_price) in enumerate([
                 ("competitor-a.com", 99, 99), ("competitor-b.com", 149, 119),
                 ("competitor-c.com", 49, 49)]):
             await self._ins_metric(store, "competitor_pricing", new_price, self._ts(3),
@@ -453,10 +454,8 @@ class DemoSeeder:
     async def _usage(self) -> None:
         from ..engine.billing import BillingManager
         mgr = BillingManager(self.workspace_id)
-        try:
+        with contextlib.suppress(Exception):
             await mgr.start_trial()   # 演示态：Growth 试用（配额有对比度）
-        except Exception:
-            pass
         for kind, amount in [("api_calls", 12800), ("agent_asks", 64),
                              ("deep_reports", 3), ("cost_usd", 31.4)]:
             await mgr.record_usage_persisted(kind, amount)

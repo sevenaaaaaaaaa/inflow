@@ -2,7 +2,7 @@
 
 import asyncio
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -10,7 +10,7 @@ import insflow.core.files as files_mod
 from insflow.core.cache import TTLCache
 from insflow.core.entities import Workspace
 from insflow.core.files import EventBus
-from insflow.core.store import Store, get_store, reset_store
+from insflow.core.store import Store, reset_store
 
 
 class TestTTLCache:
@@ -74,7 +74,7 @@ async def env(tmp_path, monkeypatch):
 
 
 async def _seed_metric(store, metric, value, days_ago=0, entity="main"):
-    ts = (datetime.now(timezone.utc) - timedelta(days=days_ago)).isoformat()
+    ts = (datetime.now(UTC) - timedelta(days=days_ago)).isoformat()
     await store._execute(
         """INSERT INTO metrics (id, workspace_id, entity_type, entity_id, metric, value, dim_json, ts)
            VALUES (?, 'test-ws', 'topic', ?, ?, ?, '{}', ?)""",
@@ -149,7 +149,7 @@ class TestEventRotation:
         bus = EventBus("ws", base_dir=tmp_path)
         bus.emit("new.event", {"x": 1})
         # 手动写入一条 60 天前的事件
-        old = {"ts": (datetime.now(timezone.utc) - timedelta(days=60)).isoformat(),
+        old = {"ts": (datetime.now(UTC) - timedelta(days=60)).isoformat(),
                "type": "old.event", "workspace": "ws", "payload": {}}
         with open(bus.events_file, "a", encoding="utf-8") as f:
             f.write(json.dumps(old) + "\n")
@@ -191,8 +191,8 @@ class TestFrequencyGovernor:
     async def test_monitor_create_rejects_high_frequency(self, tmp_path, monkeypatch):
         monkeypatch.setattr(files_mod, "DATA_DIR", tmp_path)
         from insflow.core.entities import Workspace
-        from insflow.core.scheduler import Scheduler
         from insflow.core.governor import CronTooFrequent as CTF
+        from insflow.core.scheduler import Scheduler
         from insflow.engine.monitors import MonitorService
         s = Store(db_path=tmp_path / "t.db")
         await s.connect(); await s.migrate(); reset_store(s)
@@ -249,6 +249,7 @@ class TestFileCacheBackend:
 
     def test_file_backend_expiry(self, tmp_path):
         import time
+
         from insflow.core.cache import FileBackend
         b = FileBackend(tmp_path)
         b.set("k", "v", 0.01)

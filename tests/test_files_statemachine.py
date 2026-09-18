@@ -23,7 +23,7 @@ class TestStateMachine:
     def test_action_flow(self):
         # pending → dispatched → done → verifying → verified
         flow = ["pending", "dispatched", "done", "verifying", "verified"]
-        for cur, nxt in zip(flow, flow[1:]):
+        for cur, nxt in zip(flow, flow[1:], strict=False):
             assert ACTION_MACHINE.can(cur, nxt)
 
     def test_failed_retry_flow(self):

@@ -5,7 +5,7 @@ import pytest
 import insflow.core.files as files_mod
 from insflow.core.entities import Insight, Workspace
 from insflow.core.files import ReportStore
-from insflow.core.store import Store, get_store, reset_store
+from insflow.core.store import Store, reset_store
 from insflow.engine.report_render import CHART_BLOCKS, ReportRenderer
 
 

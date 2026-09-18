@@ -153,8 +153,8 @@ async def backfill(workspace_id: str, *, days: int = 7, metrics: list[str] | Non
                         "gaps": item["gaps"][:10]})
     if dry_run or not planned:
         return {"planned": planned, "skipped": skipped, "ran": ran, "dry_run": dry_run}
-    from .monitors import MonitorService
     from ..core.scheduler import get_scheduler
+    from .monitors import MonitorService
     svc = MonitorService(workspace_id, scheduler=get_scheduler("default"))
     for p in planned:
         try:
@@ -173,8 +173,8 @@ async def alert_stale(workspace_id: str) -> dict:
     gappy = [i for i in report["items"] if i["status"] != "fresh" and i["gap_count"] > 0]
     if not bad and not gappy:
         return {"fired": 0}
-    from .alerts import _notify
     from ..core.files import EventBus
+    from .alerts import _notify
     names = "、".join(f"{i['metric']}({i['status']}, {i['age_hours']}h)"
                      for i in bad[:6]) or "—"
     gaps = "、".join(f"{i['metric']} 缺 {i['gap_count']} 天" for i in gappy[:6]) or "—"

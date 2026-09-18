@@ -1,5 +1,7 @@
 """测试计费与配额产品化（套餐/用量/超量告警）"""
 
+from datetime import UTC
+
 import pytest
 
 import insflow.core.files as files_mod
@@ -121,7 +123,8 @@ class TestTrial:
             await mgr.start_trial()
 
     async def test_expired_trial_falls_back(self, env):
-        from datetime import datetime, timedelta, timezone
+        from datetime import datetime, timedelta
+
         from insflow.core.store import get_store
         from insflow.engine.billing import BillingManager
 
@@ -131,7 +134,7 @@ class TestTrial:
         store = await get_store()
         ws = await store.get_workspace("test-ws")
         ws.settings_json["trial_until"] = (
-            datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
+            datetime.now(UTC) - timedelta(days=1)).isoformat()
         await store.update_workspace(ws)
 
         assert await mgr.get_plan_id() == "free"

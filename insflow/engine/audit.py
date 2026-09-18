@@ -9,10 +9,10 @@
 import csv
 import io
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
-from ..core.files import DATA_DIR, EventBus
+from ..core.files import EventBus
 
 # 审计关注的事件类别（企业合规清单）
 AUDIT_CATEGORIES = {
@@ -73,7 +73,7 @@ class AuditExporter:
 
     def export_json(self, events: list[dict]) -> str:
         return json.dumps({
-            "exported_at": datetime.now(timezone.utc).isoformat(),
+            "exported_at": datetime.now(UTC).isoformat(),
             "workspace_id": self.workspace_id,
             "count": len(events),
             "events": events,

@@ -107,9 +107,9 @@ class TestTenantBackup:
     async def test_workspace_export(self, env, tmp_path, monkeypatch):
         """租户级导出：独立 JSON + 数据结构完整"""
         import json as jsonlib
-        import insflow.core.files as fm
+
         from insflow.core.entities import Workspace
-        from insflow.core.store import get_store, reset_store
+        from insflow.core.store import reset_store
 
         monkeypatch.setenv("INSFLOW_MASTER_KEY", "mk")
         mgr = BackupManager(data_dir=env["data"], backup_dir=tmp_path / "data-backup")
@@ -128,3 +128,18 @@ class TestTenantBackup:
 
         await s.close()
         reset_store(None)
+
+
+class TestScheduledBackupJob:
+    """回归：每日备份任务曾缺 EventBus 导入（调度执行时 NameError）"""
+
+    def test_daily_backup_handler_runs(self, env_or_none=None):
+        import inspect
+
+        from insflow.core import bootstrap as bs
+        src = inspect.getsource(bs)
+        assert "async def _daily_backup(payload=None):" in src
+        # 函数体内必须自行导入 EventBus（模块级未导入）
+        start = src.index("async def _daily_backup")
+        body = src[start:start + 400]
+        assert "from ..core.files import EventBus" in body

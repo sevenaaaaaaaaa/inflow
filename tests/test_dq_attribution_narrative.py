@@ -210,6 +210,7 @@ class TestAttribution:
 
     def test_action_lift_pre_post(self, env):
         import asyncio
+
         from insflow.core.entities import Action
 
         async def _run():
@@ -241,7 +242,9 @@ class TestAttribution:
 
     def test_action_lift_lookup_by_id_endpoint(self, env):
         import asyncio
+
         from fastapi.testclient import TestClient
+
         from insflow.core.entities import Action
         from insflow.server.app import app
 
@@ -279,6 +282,7 @@ class TestNarrative:
 
     def test_narrate_sections(self, env):
         import asyncio
+
         from insflow.engine.demo import DemoSeeder
 
         async def _run():
@@ -294,6 +298,7 @@ class TestNarrative:
 
     def test_narrate_derived_metric_shows_lineage(self, env):
         import asyncio
+
         from insflow.engine.demo import DemoSeeder
 
         async def _run():
@@ -310,6 +315,7 @@ class TestNarrative:
 
     def test_ask_metrics_intents(self, env):
         import asyncio
+
         from insflow.engine.demo import DemoSeeder
 
         async def _run():
@@ -331,6 +337,7 @@ class TestNarrative:
 
     def test_auto_insight_draft(self, env):
         import asyncio
+
         from insflow.engine.demo import DemoSeeder
 
         async def _run():
@@ -346,7 +353,9 @@ class TestNarrative:
 class TestWiring:
     def test_apis(self, env):
         import asyncio
+
         from fastapi.testclient import TestClient
+
         from insflow.engine.demo import DemoSeeder
         from insflow.server.app import app
 
@@ -374,7 +383,9 @@ class TestWiring:
 
     def test_console_panels(self, env):
         import asyncio
+
         from fastapi.testclient import TestClient
+
         from insflow.engine.demo import DemoSeeder
         from insflow.server.app import app
 
@@ -395,7 +406,9 @@ class TestWiring:
 
     def test_cli(self, env):
         import asyncio
+
         from click.testing import CliRunner
+
         from insflow.cli import main
         from insflow.engine.demo import DemoSeeder
 
@@ -432,6 +445,7 @@ class TestAgentInjectionRegression:
 
     def test_workspace_id_injected_from_schema(self, env):
         import asyncio
+
         from insflow.agent.agent import InsightAgent
         from insflow.engine.demo import DemoSeeder
 
@@ -448,9 +462,9 @@ class TestAgentInjectionRegression:
 
     def test_all_schema_tools_callable_with_only_domain_args(self, env):
         import asyncio
-        import inspect
+
         from insflow.agent.agent import InsightAgent
-        from insflow.agent.tools import AGENT_TOOLS, TOOL_EXECUTORS
+        from insflow.agent.tools import AGENT_TOOLS
         from insflow.engine.demo import DemoSeeder
 
         async def _run():

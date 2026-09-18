@@ -36,7 +36,6 @@ def _credit_sequence(channels: list[str], method: str, *, half_life_days: float 
         return {c: w for c in seq}
     if method == "time_decay":
         # 越靠近转化的触点权重越高（半衰期按天）
-        import math
         weights = []
         n = len(seq)
         for i in range(n):
@@ -44,7 +43,7 @@ def _credit_sequence(channels: list[str], method: str, *, half_life_days: float 
             weights.append(2 ** (-age_days / max(0.1, half_life_days)))
         total = sum(weights) or 1.0
         out: dict[str, float] = {}
-        for c, w in zip(seq, weights):
+        for c, w in zip(seq, weights, strict=False):
             out[c] = out.get(c, 0.0) + w / total
         return out
     if method == "markov":
@@ -132,10 +131,7 @@ async def action_lift(workspace_id: str, action_id: str, *, post_days: float = 1
     baseline = dict(getattr(action, "baseline_json", None) or {})
     metric = str(baseline.get("metric") or baseline.get("baseline_metric") or
                  "ga4_conversions")
-    if action.dispatched_at:
-        t0 = action.dispatched_at
-    else:
-        t0 = action.created_at
+    t0 = action.dispatched_at or action.created_at
     if t0.tzinfo is None:
         t0 = t0.replace(tzinfo=UTC)
     now = datetime.now(UTC)

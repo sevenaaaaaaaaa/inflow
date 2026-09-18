@@ -76,7 +76,7 @@ async def run_bench(*, monitors: int = 1000, insights: int = 100_000,
                schedule_cron, state, created_at)
                VALUES (?, ?, 'keyword', ?, '0 * * * *', 'idle', ?)""",
             (generate_id(), workspace_id,
-             '{"demo": true, "name": "monitor-%d"}' % i, now.isoformat()))
+             f'{{"demo": true, "name": "monitor-{i}"}}', now.isoformat()))
     for i in range(insights):
         await store._execute(
             """INSERT INTO insights (id, workspace_id, type, title, summary, severity,

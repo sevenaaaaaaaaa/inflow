@@ -8,8 +8,7 @@
 """
 
 import html
-from dataclasses import dataclass
-from typing import Sequence
+from collections.abc import Sequence
 
 from . import theme
 
@@ -124,7 +123,7 @@ def legend(items: Sequence[tuple[str, str]], x: float, y: float,
                 f'style="font-size:10.5px;fill:{theme.MUTED}">{esc(label)}</text>')
         if interactive:
             w = 22 + len(label) * 8
-            parts.insert(0, "")  # no-op 占位（保持结构可读）
+
             parts.append(
                 f'<g class="if-legend" data-series="{esc(label)}" role="button" '
                 f'tabindex="0" aria-pressed="true" aria-label="切换 {esc(label)} 显示" '
@@ -132,7 +131,8 @@ def legend(items: Sequence[tuple[str, str]], x: float, y: float,
                 f'onkeydown="ifLegendKey(event, \'{esc(label)}\', this)">{rect}{text}</g>')
             cx += w
         else:
-            parts.append(rect); parts.append(text)
+            parts.append(rect)
+            parts.append(text)
             cx += 22 + len(label) * 8
     return "".join(parts)
 

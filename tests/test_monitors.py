@@ -63,8 +63,8 @@ class TestScheduling:
     async def test_restore_all(self, env):
         """调度持久化：DB 中的任务可恢复到调度器"""
         svc = env["service"]
-        m1 = await svc.create("site_change", {"url": "https://a.com"}, "0 1 * * *")
-        m2 = await svc.create("keyword", {"query": "增长工具"}, "0 2 * * *")
+        await svc.create("site_change", {"url": "https://a.com"}, "0 1 * * *")
+        await svc.create("keyword", {"query": "增长工具"}, "0 2 * * *")
 
         # 模拟重启：新 service + 空 scheduler
         sched2 = Scheduler("test-ws")

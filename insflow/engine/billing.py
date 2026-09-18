@@ -9,7 +9,7 @@
 配额产品化：用量可见（API）+ 超量告警（events.jsonl → webhook/飞书出站链路复用）
 """
 
-from datetime import UTC, datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from ..core.files import EventBus
@@ -121,7 +121,7 @@ class BillingManager:
         if trial_until:
             try:
                 until = datetime.fromisoformat(trial_until)
-                if until > datetime.now(timezone.utc):
+                if until > datetime.now(UTC):
                     return settings.get("trial_plan", TRIAL_PLAN)
                 # 试用过期：清理并回落到基础套餐
                 settings.pop("trial_until", None)
@@ -146,7 +146,7 @@ class BillingManager:
         if plan not in PLANS:
             raise QuotaExceededForPlan(f"未知套餐: {plan}")
 
-        until = datetime.now(timezone.utc) + timedelta(days=days)
+        until = datetime.now(UTC) + timedelta(days=days)
         settings.update({
             "plan": settings.get("plan", DEFAULT_PLAN),
             "trial_plan": plan,
@@ -172,7 +172,7 @@ class BillingManager:
             until = datetime.fromisoformat(until_raw)
         except (ValueError, TypeError):
             return {"active": False, "used": bool(settings.get("trial_used"))}
-        remaining = (until - datetime.now(timezone.utc)).total_seconds()
+        remaining = (until - datetime.now(UTC)).total_seconds()
         return {
             "active": remaining > 0,
             "used": bool(settings.get("trial_used")),
@@ -211,7 +211,7 @@ class BillingManager:
 
     async def record_usage_persisted(self, kind: str, amount: int | float = 1) -> dict:
         """记录用量并落库（settings_json.usage.<YYYY-MM>），跨进程/重启可见"""
-        month = datetime.now(timezone.utc).strftime("%Y-%m")
+        month = datetime.now(UTC).strftime("%Y-%m")
         store = await get_store()
         ws = await store.get_workspace(self.workspace_id)
         if not ws:
@@ -232,7 +232,7 @@ class BillingManager:
 
     async def load_usage(self) -> dict:
         """读取当月持久化用量"""
-        month = datetime.now(timezone.utc).strftime("%Y-%m")
+        month = datetime.now(UTC).strftime("%Y-%m")
         store = await get_store()
         ws = await store.get_workspace(self.workspace_id)
         usage = ((ws.settings_json or {}).get("usage") or {}) if ws else {}

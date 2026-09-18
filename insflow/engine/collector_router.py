@@ -7,7 +7,7 @@
 """
 
 import json
-from datetime import UTC, datetime, timezone
+from datetime import UTC, datetime
 
 from ..collectors.base import CollectContext
 from ..core.entities import Insight, InsightAction, Metric
@@ -268,7 +268,7 @@ class CollectorRouter:
                 errors["reddit"] = f"{type(e).__name__}: {e}"
 
         total = sum(len(v) for v in results.values())
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
 
         # 情绪分布（G-3：舆情核心指标）
         from .sentiment import distribution as sentiment_distribution

@@ -13,7 +13,6 @@ import os
 import time
 
 
-
 class EmbedError(Exception):
     pass
 

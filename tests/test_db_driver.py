@@ -99,7 +99,6 @@ class TestMySQLSchema:
 
     def test_indexed_columns_are_varchar_not_text(self):
         """教训：MySQL 不能对裸 TEXT 建索引 → 索引列必须 VARCHAR"""
-        import re
         for stmt in MYSQL_MIGRATIONS:
             for line in stmt.splitlines():
                 if "INDEX" in line or "UNIQUE KEY" in line:

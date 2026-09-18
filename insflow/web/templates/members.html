@@ -1,0 +1,94 @@
+{% extends "base.html" %}
+{% block title %} · 成员与权限{% endblock %}
+{% block content %}
+<h1>成员与权限</h1>
+<p class="sub">角色能力矩阵 + 行级主体白名单 + 表达式级 RLS（fail-closed：解析失败即拒绝全部行）。</p>
+
+<h2>成员</h2>
+<div class="card">
+  <table>
+    <tr><th>邮箱</th><th>姓名</th><th>角色</th><th>状态</th><th>加入时间</th><th></th></tr>
+    {% for m in members %}
+    <tr>
+      <td>{{ m.email }}</td>
+      <td>{{ m.name }}</td>
+      <td>
+        <select onchange="mbRole('{{ m.email }}', this.value)">
+          {% for r in roles %}
+          <option value="{{ r }}" {% if m.role == r %}selected{% endif %}>{{ r }}</option>
+          {% endfor %}
+        </select>
+      </td>
+      <td>{{ '启用' if m.active else '已停用' }}</td>
+      <td>{{ (m.created_at or '')[:16].replace('T', ' ') }}</td>
+      <td><span class="sub">{{ caps.get(m.role, [])[:3] | join(' · ') }}</span></td>
+    </tr>
+    {% else %}
+    <tr><td colspan="6" class="sub">暂无成员（私有化默认单账号；SCIM 可批量同步）</td></tr>
+    {% endfor %}
+  </table>
+  <div class="toolbar" style="margin-top:8px">
+    <button class="dp-btn" onclick="mbScim()">SCIM 配置说明</button>
+    <span class="sub">SCIM：{{ '已配置令牌' if scim_configured else '未配置（设置 INSFLOW_SCIM_TOKEN 或工作区 scim_token）' }}</span>
+    <span id="mb-status" class="sub"></span>
+  </div>
+</div>
+
+<h2>行级权限（主体白名单）</h2>
+<div class="card">
+  <p class="sub">格式：JSON，如 {"viewer": ["某品牌","某竞品"]}；空数组 = 不限制。保存后立即生效（查询侧收敛）。</p>
+  <textarea id="mb-allow" rows="4" style="width:100%;font-family:ui-monospace,monospace">{{ entity_allow | tojson(indent=2) }}</textarea>
+  <div class="toolbar" style="margin-top:8px">
+    <button onclick="mbSaveAllow()">保存白名单</button>
+    <span id="mb-allow-status" class="sub"></span>
+  </div>
+</div>
+
+<h2>表达式级 RLS</h2>
+<div class="card">
+  <p class="sub">每行一条表达式，支持 <code>= != &gt; &lt; &gt;= &lt;= in like and or ()</code> 与 <code>{user.email}</code>；
+    支持列：entity_id / metric / value / channel / province / device / campaign / step_name …</p>
+  <textarea id="mb-rls" rows="5" style="width:100%;font-family:ui-monospace,monospace">{{ rls | tojson(indent=2) }}</textarea>
+  <div class="toolbar" style="margin-top:8px">
+    <button onclick="mbSaveRls()">保存策略</button>
+    <span id="mb-rls-status" class="sub"></span>
+  </div>
+</div>
+
+<script>
+async function mbRole(email, role){
+  var st = document.getElementById('mb-status');
+  st.textContent = '更新中…';
+  var r = await fetch('/api/v1/members/role', {method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({workspace_id:'{{ workspace_id }}', email:email, role:role})});
+  var j = await r.json();
+  st.textContent = r.ok ? ('已更新：' + email + ' → ' + j.role) : (j.detail || '失败');
+}
+function mbScim(){
+  alert('SCIM 2.0 端点：\nGET/POST  /scim/v2/Users\nPATCH/PUT /scim/v2/Users/{id}\nDELETE   /scim/v2/Users/{id}（软删除）\nGET      /scim/v2/Groups\n\n鉴权：Authorization: Bearer <INSFLOW_SCIM_TOKEN>（仅服务端 IdP 使用，勿下发前端）');
+}
+async function mbSaveAllow(){
+  var st = document.getElementById('mb-allow-status');
+  try{
+    var allow = JSON.parse(document.getElementById('mb-allow').value);
+  }catch(e){ st.textContent = 'JSON 解析失败：' + e; return; }
+  var r = await fetch('/api/v1/rls/allow', {method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({workspace_id:'{{ workspace_id }}', allow: allow})});
+  var j = await r.json();
+  st.textContent = r.ok ? '已保存 ✓' : (j.detail || '失败');
+}
+async function mbSaveRls(){
+  var st = document.getElementById('mb-rls-status');
+  try{
+    var policies = JSON.parse(document.getElementById('mb-rls').value);
+  }catch(e){ st.textContent = 'JSON 解析失败：' + e; return; }
+  var r = await fetch('/api/v1/rls/policies', {method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({workspace_id:'{{ workspace_id }}', policies: policies})});
+  var j = await r.json();
+  st.textContent = r.ok ? '已保存 ✓（表达式已试编译）' : (j.detail || '失败');
+}
+</script>
+{% endblock %}

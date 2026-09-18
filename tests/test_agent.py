@@ -92,7 +92,7 @@ class TestAgentAsk:
         assert result["citations"][0]["title"]
 
     async def test_empty_workspace_answer(self, env):
-        agent = InsightAgent("test-ws", llm=LLMGateway(api_key=""))
+        InsightAgent("test-ws", llm=LLMGateway(api_key=""))
         # 清空洞察
         store = await get_store()
         await store.update_insight_status(env["insight"].id, "dismissed")

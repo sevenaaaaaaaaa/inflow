@@ -87,7 +87,7 @@ def _sheet_xml(columns: list, rows: list[list]) -> str:
         out.append("<cols>" + "".join(widths) + "</cols>")
     out.append("<sheetData>")
     if columns:
-        out.append(f'<row r="1">' + "".join(
+        out.append('<row r="1">' + "".join(
             _cell(i, 1, cname, bold=True) for i, cname in enumerate(columns)) + "</row>")
     start = 2 if columns else 1
     for ridx, row in enumerate(rows, start=start):

@@ -1,0 +1,109 @@
+{% extends "base.html" %}
+{% block title %} · 告警规则{% endblock %}
+{% block content %}
+<h1>告警规则与通知策略</h1>
+<p class="sub">阈值规则命中 → 生成洞察并按通知策略出站（静默时段 / 节流聚合 / 升级链）。</p>
+
+<h2>阈值规则</h2>
+<div class="card">
+  <table>
+    <tr><th>名称</th><th>指标</th><th>条件</th><th>窗口</th><th>路由</th><th>最近命中</th><th></th></tr>
+    {% for r in rules %}
+    <tr>
+      <td>{{ r.name }}</td>
+      <td><code>{{ r.metric }}</code></td>
+      <td>{{ r.op }} {{ r.threshold }}</td>
+      <td>{{ r.window_days }} 天</td>
+      <td>{{ r.routes_json }}</td>
+      <td>{{ (r.last_fired_at or '—')[:16].replace('T', ' ') }}</td>
+      <td><button class="dp-btn" onclick="alDel('{{ r.id }}')">删除</button></td>
+    </tr>
+    {% else %}
+    <tr><td colspan="7" class="sub">暂无规则 —— 在下方新建</td></tr>
+    {% endfor %}
+  </table>
+  <div class="toolbar" style="flex-wrap:wrap;gap:8px;margin-top:10px">
+    <input id="al-name" placeholder="规则名（如：会话跌破 5000）" style="min-width:220px">
+    <select id="al-metric">{% for m in metrics %}<option>{{ m }}</option>{% endfor %}</select>
+    <select id="al-op">
+      <option value="lt">低于 lt</option><option value="gt">高于 gt</option>
+      <option value="lte">≤ lte</option><option value="gte">≥ gte</option>
+    </select>
+    <input id="al-thr" type="number" step="any" placeholder="阈值" style="width:110px">
+    <input id="al-win" type="number" value="7" style="width:80px" title="窗口天数">
+    <select id="al-route"><option value="webhook">Webhook</option>
+      <option value="feishu">飞书</option><option value="email">邮件</option></select>
+    <button onclick="alCreate()">新建规则</button>
+    <button class="dp-btn" onclick="alCheck()">立即评估</button>
+    <span id="al-status" class="sub"></span>
+  </div>
+</div>
+
+<h2>通知策略</h2>
+<div class="card">
+  <div class="toolbar" style="flex-wrap:wrap;gap:8px">
+    <label class="sub">静默时段</label>
+    <input id="np-qs" value="{{ policy.quiet_hours.start if policy.quiet_hours else '22:00' }}" style="width:90px" placeholder="22:00">
+    <span class="sub">→</span>
+    <input id="np-qe" value="{{ policy.quiet_hours.end if policy.quiet_hours else '08:00' }}" style="width:90px" placeholder="08:00">
+    <label class="sub">时区偏移</label>
+    <input id="np-tz" type="number" value="{{ policy.quiet_hours.tz_offset if policy.quiet_hours else 8 }}" style="width:70px">
+    <label class="sub">节流（秒）</label>
+    <input id="np-min" type="number" value="{{ policy.grouping.min_interval_s if policy.grouping else 900 }}" style="width:90px">
+    <label class="sub">聚合维度</label>
+    <select id="np-group">
+      {% for v in ['metric','rule','none'] %}
+      <option value="{{ v }}" {% if policy.grouping and policy.grouping.group_by == v %}selected{% endif %}>{{ v }}</option>
+      {% endfor %}
+    </select>
+    <button onclick="npSave()">保存策略</button>
+    <span id="np-status" class="sub"></span>
+  </div>
+  <p class="sub" style="margin-top:8px">静默期命中的告警进入待发队列，恢复后每 15 分钟合并补发一条；升级链见规则/工作区 `escalation_chain` 配置。</p>
+</div>
+
+<script>
+async function alCreate(){
+  var st = document.getElementById('al-status');
+  st.textContent = '创建中…';
+  var r = await fetch('/api/v1/alerts/rules', {method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({workspace_id:'{{ workspace_id }}',
+      name: document.getElementById('al-name').value || '未命名规则',
+      metric: document.getElementById('al-metric').value,
+      op: document.getElementById('al-op').value,
+      threshold: Number(document.getElementById('al-thr').value || 0),
+      window_days: Number(document.getElementById('al-win').value || 7),
+      routes: [document.getElementById('al-route').value]})});
+  st.textContent = r.ok ? '已创建 ✓' : '创建失败';
+  if(r.ok) setTimeout(function(){ location.reload(); }, 700);
+}
+async function alDel(id){
+  if(!confirm('删除该规则？')) return;
+  await fetch('/api/v1/alerts/rules/' + id + '?workspace_id={{ workspace_id }}',
+              {method:'DELETE'});
+  location.reload();
+}
+async function alCheck(){
+  var st = document.getElementById('al-status');
+  st.textContent = '评估中…';
+  var r = await fetch('/api/v1/alerts/check?workspace_id={{ workspace_id }}', {method:'POST'});
+  var j = await r.json();
+  st.textContent = r.ok ? ('命中 ' + (j.fired||[]).length + ' 条 · 升级 ' + (j.escalations||[]).length) : '失败';
+}
+async function npSave(){
+  var st = document.getElementById('np-status');
+  st.textContent = '保存中…';
+  var r = await fetch('/api/v1/notify/policy', {method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({workspace_id:'{{ workspace_id }}', policy:{
+      quiet_hours:{start:document.getElementById('np-qs').value,
+                   end:document.getElementById('np-qe').value,
+                   tz_offset:Number(document.getElementById('np-tz').value||0)},
+      grouping:{group_by:document.getElementById('np-group').value,
+                min_interval_s:Number(document.getElementById('np-min').value||0)}}})});
+  var j = await r.json();
+  st.textContent = r.ok ? ('已保存 ✓ 当前' + (j.quiet_active_now ? '处于静默时段' : '非静默时段')) : '保存失败';
+}
+</script>
+{% endblock %}

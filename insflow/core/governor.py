@@ -8,10 +8,7 @@ OpenFlow 教训：生产曾积累 63 万行无意义 heartbeat/scroll 事件被�
    b. 事件流**写入降频**：同 (workspace, type, 业务键) 在窗口内重复 → 合并为一条 + count
 """
 
-import json
-import os
 import time
-from datetime import datetime, timezone
 
 from .files import EventBus
 
@@ -133,5 +130,5 @@ def emit_throttled(bus: EventBus, event_type: str, payload: dict,
 def dedupe_stats() -> dict:
     """降频统计（运维舱展示）"""
     return {"tracked_keys": len(_RECENT),
-            "merged_total": sum(c for _, c in _RECENT.values() if c > 1) - 
+            "merged_total": sum(c for _, c in _RECENT.values() if c > 1) -
                             sum(1 for _, c in _RECENT.values() if c > 1)}

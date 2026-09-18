@@ -9,6 +9,7 @@ from pydantic import BaseModel
 # 环境配置（支持仓库根目录 .env：INSFLOW_SAAS / INSFLOW_BASE_PATH / SMTP_* 等）
 try:
     from pathlib import Path as _Path
+
     from dotenv import load_dotenv as _load_dotenv
     _load_dotenv(_Path(__file__).parent.parent.parent / ".env")
 except Exception:
@@ -73,7 +74,10 @@ def _get_auth(workspace_id: str) -> AuthManager:
 AUTH_ENABLED = _os.environ.get("INSFLOW_API_AUTH", "") == "1"
 
 # Web 控制台（Jinja2 SSR，零构建链）
+from datetime import UTC
+
 from ..web.routes import router as console_router  # noqa: E402
+
 app.include_router(console_router)
 
 # ========== SaaS 多租户守卫（R4-1：INSFLOW_SAAS=1 时控制台要求登录）==========
@@ -86,6 +90,9 @@ async def no_store_middleware(request, call_next):
     """控制台/REST 响应禁止中间缓存（防跨会话命中，宝塔/Apache 默认会缓存 HTML）"""
     response = await call_next(request)
     path = request.url.path
+    # /console/static/* 是内容哈希寻址的静态资源 → 允许长缓存（必须排除在 no-store 之外）
+    if path.startswith("/console/static/"):
+        return response
     if path.startswith(("/console", "/api/")):
         response.headers["Cache-Control"] = "private, no-store, max-age=0"
         response.headers["Pragma"] = "no-cache"
@@ -99,11 +106,14 @@ async def saas_guard(request, call_next):
     path = request.url.path
     if path.startswith("/console") and not path.startswith(
             ("/console/login", "/console/register", "/console/logout",
-             "/console/sso/")):
+             "/console/sso/", "/console/static/")):
         from urllib.parse import quote
+
         from fastapi.responses import RedirectResponse
+
         from ..core.accounts import COOKIE_NAME, AccountManager
         user = await AccountManager().verify_session(request.cookies.get(COOKIE_NAME))
+        # /console/static/* 是内容哈希寻址的公开静态资源（无敏感数据，需可被 SW/浏览器缓存）
         # /console/embed 由 HMAC 令牌鉴权（第三方 iframe 无会话 Cookie）：
         # 不重定向（有会话则照常带上身份）；/console/embed/token 仍需登录。
         exempt = path in ("/console/embed", "/console/manifest.webmanifest",
@@ -644,6 +654,7 @@ async def stream(request: Request, workspace_id: str = Query(...),
     - 反代注意：需关闭响应缓冲（Nginx `proxy_buffering off`）；已带 X-Accel-Buffering: no
     """
     from fastapi.responses import StreamingResponse
+
     from ..engine.realtime import StreamHub, parse_metrics, sse_event
     names = parse_metrics(metrics) or ["ga4_sessions"]
 
@@ -707,8 +718,8 @@ async def set_rls_policies(request: Request, payload: dict):
     """
     _guard(request, "workspace.write" if _role_of(request) in ("owner", "admin")
            else "alert.write")
-    from ..engine.rls import PolicyError, compile_policy
     from ..engine.permissions import ROLES
+    from ..engine.rls import PolicyError, compile_policy
     ws = str(payload.get("workspace_id") or "")
     policies = payload.get("policies") or {}
     if not ws or not isinstance(policies, dict):
@@ -744,7 +755,7 @@ async def set_rls_policies(request: Request, payload: dict):
 async def get_rls_policies(workspace_id: str = Query(...)):
     """当前 RLS 策略（含角色）"""
     ws = await (await get_store()).get_workspace(workspace_id)
-    return {"policies": dict(((ws.settings_json or {}).get("rls_policies") or {}))
+    return {"policies": dict((ws.settings_json or {}).get("rls_policies") or {})
             if ws else {}}
 
 
@@ -950,7 +961,8 @@ async def explore_cube(request: Request, payload: dict):
 async def explore_sql_api(request: Request, payload: dict):
     """只读 SQL 沙箱（白名单表 + 强制租户隔离 + LIMIT）"""
     _guard(request, "explore.sql")
-    from ..engine.explore_sql import SqlError, run as sql_run
+    from ..engine.explore_sql import SqlError
+    from ..engine.explore_sql import run as sql_run
     try:
         return await sql_run(str(payload.get("workspace_id") or ""),
                              str(payload.get("sql") or ""))
@@ -1081,8 +1093,8 @@ async def narrative_api(payload: dict):
 @app.post("/api/v1/narrative/insight")
 async def narrative_insight(request: Request, payload: dict):
     """把叙事沉淀为洞察（经质量门写入洞察流）"""
-    from ..engine.narrative import auto_insight
     from ..core.entities import Insight
+    from ..engine.narrative import auto_insight
     ws = str(payload.get("workspace_id") or "")
     metric = str(payload.get("metric") or "")
     if not ws or not metric:
@@ -1276,7 +1288,7 @@ async def estimate_traffic(workspace_id: str = Query(...), domain: str = Query("
 async def layout_history(workspace_id: str = Query(...), path: str = Query("")):
     """布局版本历史（协作可回溯到上一版）"""
     ws = await (await get_store()).get_workspace(workspace_id)
-    history = list(((ws.settings_json or {}).get("layouts_history") or [])) if ws else []
+    history = list((ws.settings_json or {}).get("layouts_history") or []) if ws else []
     if path:
         history = [h for h in history if h.get("path") == path]
     return {"history": history[-20:][::-1]}
@@ -1321,8 +1333,8 @@ async def export_xlsx(request: Request, workspace_id: str = Query(...),
     else:
         raise HTTPException(status_code=400, detail="panel 形如 cockpit:traffic")
     # 水印 + 访问审计（企业合规：谁导出了什么）
-    from ..engine.watermark import (ACTIONS, actor_of, company_of, header as wm_header,
-                                    xlsx_watermark_sheet)
+    from ..engine.watermark import ACTIONS, actor_of, company_of, xlsx_watermark_sheet
+    from ..engine.watermark import header as wm_header
     actor = actor_of(request)
     company = await company_of(workspace_id)
     sheets.append(xlsx_watermark_sheet(actor, company))
@@ -1345,7 +1357,6 @@ async def chart_range(workspace_id: str = Query(...), from_: str = Query("", ali
 
     用途：框选时间轴 → 查看"这段时间发生了什么、动作验证结果如何"（服务闭环验证）。
     """
-    import json as _json
     store = await get_store()
     lo = (from_ or "0000")[:10]
     hi = (to or "9999")[:10]
@@ -1374,10 +1385,11 @@ async def chart_drill(workspace_id: str = Query(...), metric: str = Query(""),
                       entity_id: str = Query(""), hours: int = Query(720),
                       limit: int = Query(60)):
     """图表下钻：某主体某指标的时间序列 + 关联洞察（P0 交互）"""
-    from datetime import datetime as _dt, timedelta as _td, timezone as _tz
     import json as _json
+    from datetime import datetime as _dt
+    from datetime import timedelta as _td
     store = await get_store()
-    since = (_dt.now(_tz.utc) - _td(hours=hours)).isoformat()
+    since = (_dt.now(UTC) - _td(hours=hours)).isoformat()
 
     rows: list[dict] = []
     if metric:
@@ -1508,8 +1520,8 @@ async def admin_audit(request: Request, workspace_id: str = Query(...),
                              r.get("target_id"), r.get("ip"),
                              _json2.dumps(r.get("detail") or {},
                                           ensure_ascii=False)])
-        from ..engine.watermark import (ACTIONS, actor_of, company_of, csv_with_watermark,
-                                        header as wm_header)
+        from ..engine.watermark import ACTIONS, actor_of, company_of, csv_with_watermark
+        from ..engine.watermark import header as wm_header
         actor = actor_of(request)
         company = await company_of(workspace_id)
         await _audit_async(request, workspace_id, ACTIONS["csv"],
@@ -2048,6 +2060,123 @@ async def assess_maturity(workspace_id: str, data: MaturityAssessRequest):
         user_confirmed_stage=data.user_confirmed_stage,
         months_since_launch=data.months_since_launch,
     )
+    return result
+
+
+@app.post("/api/v1/rls/allow")
+async def set_rls_allow(request: Request, payload: dict):
+    """设置行级主体白名单（role → [entity_id,...]；空 = 不限制）"""
+    _guard(request, "workspace.write")
+    from ..engine.permissions import ROLES
+    ws_id = str(payload.get("workspace_id") or "")
+    allow = payload.get("allow") or {}
+    if not ws_id or not isinstance(allow, dict):
+        raise HTTPException(status_code=400, detail="需要 workspace_id 与 allow")
+    clean: dict[str, list[str]] = {}
+    for role, values in allow.items():
+        if role not in ROLES:
+            raise HTTPException(status_code=400, detail=f"未知角色：{role}")
+        items = [values] if isinstance(values, str) else list(values or [])
+        clean[role] = [str(v)[:80] for v in items[:50]]
+    store = await get_store()
+    ws = await store.get_workspace(ws_id)
+    if not ws:
+        raise HTTPException(status_code=404, detail="工作区不存在")
+    settings = dict(ws.settings_json or {})
+    settings["role_entity_allow"] = clean
+    ws.settings_json = settings
+    await store.update_workspace(ws)
+    await _audit_async(request, ws_id, "rls.allow_update", target_type="rls",
+                       detail={"allow": clean})
+    return {"ok": True, "allow": clean}
+
+
+@app.get("/api/v1/notify/policy")
+async def get_notify_policy(workspace_id: str = Query(...)):
+    """通知策略（静默时段 / 节流聚合 / 升级链）"""
+    ws = await (await get_store()).get_workspace(workspace_id)
+    from ..engine.notify_policy import policy_of
+    return {"policy": policy_of(ws.settings_json if ws else {})}
+
+
+@app.post("/api/v1/notify/policy")
+async def set_notify_policy(request: Request, payload: dict):
+    """保存通知策略（owner/admin）"""
+    _guard(request, "alert.write")
+    from ..engine.notify_policy import QuietHours
+    ws_id = str(payload.get("workspace_id") or "")
+    policy = payload.get("policy") or {}
+    if not ws_id or not isinstance(policy, dict):
+        raise HTTPException(status_code=400, detail="需要 workspace_id 与 policy")
+    store = await get_store()
+    ws = await store.get_workspace(ws_id)
+    if not ws:
+        raise HTTPException(status_code=404, detail="工作区不存在")
+    settings = dict(ws.settings_json or {})
+    settings["notify_policy"] = policy
+    ws.settings_json = settings
+    await store.update_workspace(ws)
+    await _audit_async(request, ws_id, "notify.policy_update", target_type="notify",
+                       detail={"policy": policy})
+    quiet = QuietHours(policy.get("quiet_hours"))
+    return {"ok": True, "policy": policy,
+            "quiet_active_now": quiet.active()}
+
+
+# ========== 旅程框架（CJ-1/CJ-2）与 Skill 市场（此前无入口） ==========
+
+@app.get("/api/v1/journey/framework")
+async def journey_framework(name: str = Query("see-think-do-care")):
+    """旅程框架定义（See-Think-Do-Care / AIDA）+ 触点→阶段映射规则"""
+    from ..engine.journey import JOURNEY_FRAMEWORKS, get_framework
+    return {"framework": get_framework(name), "available": list(JOURNEY_FRAMEWORKS)}
+
+
+@app.post("/api/v1/journey/coverage")
+async def journey_coverage(request: Request, payload: dict):
+    """触点覆盖热力（哪个阶段空心）+ 断点清单：输入触点列表，输出阶段分布"""
+    from ..engine.journey import JourneyModule
+    ws = str(payload.get("workspace_id") or "")
+    touchpoints = list(payload.get("touchpoints") or [])
+    if not ws:
+        raise HTTPException(status_code=400, detail="需要 workspace_id")
+    module = JourneyModule(ws)
+    result = module.map_touchpoints(touchpoints,
+                                    framework=str(payload.get("framework")
+                                                  or "see-think-do-care"))
+    if payload.get("create_gaps"):
+        await module.build_gap_insights(result)
+    return result
+
+
+@app.get("/api/v1/skills/market")
+async def skills_market(workspace_id: str = Query(...)):
+    """Skill 市场：可安装的 Skill 包 + 已加载清单（Agent 能力扩展）"""
+    from ..agent.skills_host import SkillsHost
+    from ..engine.skill_market import SkillMarket
+    market = SkillMarket(workspace_id)
+    return {"available": market.scan(),
+            "installed": SkillsHost().list_skills()}
+
+
+@app.post("/api/v1/skills/market/install")
+async def skills_install(request: Request, payload: dict):
+    """安装 Skill 包（目录 → skills/，热加载供 Agent 使用）"""
+    _guard(request, "workspace.write")
+    from ..engine.skill_market import SkillMarket
+    ws = str(payload.get("workspace_id") or "")
+    path = str(payload.get("path") or "")
+    if not ws or not path:
+        raise HTTPException(status_code=400, detail="需要 workspace_id 与 path")
+    try:
+        result = SkillMarket(ws).install(path)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"{type(e).__name__}: {e}")
+    if not result.get("ok"):        # 安装失败要明确报错，不能返回 200
+        raise HTTPException(status_code=400,
+                            detail=result.get("detail") or "Skill 包安装失败")
+    await _audit_async(request, ws, "skill.install", target_type="skill",
+                       target_id=str(result.get("name") or path))
     return result
 
 

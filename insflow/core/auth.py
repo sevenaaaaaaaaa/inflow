@@ -126,9 +126,7 @@ class APIKey:
         now = now or utcnow()
         if not self.enabled:
             return False
-        if self.expires_at and now > self.expires_at:
-            return False
-        return True
+        return not (self.expires_at and now > self.expires_at)
 
     def authorize(self, action: str) -> bool:
         """按 scope 授权"""

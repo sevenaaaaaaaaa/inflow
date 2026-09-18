@@ -10,6 +10,28 @@
   {{ viz.kpi_card('关键词缺口', data.kpis.gaps, color='var(--danger)') | safe }}
 </div>
 
+<h2>流量估算指数（相对量级，非绝对值）</h2>
+<div class="card">
+  {% if data.estimates %}
+  <table>
+    <tr><th>域名</th><th>指数(0-100)</th><th>区间</th><th>置信</th><th>覆盖</th><th>方法</th></tr>
+    {% for e in data.estimates %}
+    <tr>
+      <td><code>{{ e.domain }}</code></td>
+      <td>{{ e.index }}</td>
+      <td>[{{ e.range[0] }}, {{ e.range[1] }}]</td>
+      <td>{{ e.confidence }}</td>
+      <td>{{ e.coverage }}</td>
+      <td class="sub">{{ (e.method[0] if e.method else '')[:46] }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+  <p class="sub" style="margin-top:6px">无面板数据，不做绝对流量承诺；仅用于同口径横向比较与趋势判断。</p>
+  {% else %}
+  <div class="empty">暂无外部信号（引荐域/SERP/内容/社媒）—— 接入后自动估算</div>
+  {% endif %}
+</div>
+
 <h2>竞品价格波动（真实 OHLC）</h2>
 <div class="card">
   {% if data.price_ohlc %}

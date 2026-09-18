@@ -4,7 +4,7 @@ import pytest
 
 import insflow.core.files as files_mod
 from insflow.core.entities import Workspace
-from insflow.core.store import Store, get_store, reset_store
+from insflow.core.store import Store, reset_store
 from insflow.engine.demo import DemoSeeder
 from insflow.web.cockpit import COCKPITS
 

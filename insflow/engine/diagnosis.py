@@ -121,7 +121,7 @@ class DiagnosisEngine:
         aarrr = self.map_to_aarrr(metrics_map)
 
         # 3. 运行模型路由中所有可运行模型，收集洞察草稿
-        router = get_model_router()
+        get_model_router()
         insights_drafts: list[dict] = []
 
         # AARRR 模型分析
@@ -134,7 +134,7 @@ class DiagnosisEngine:
         for kind, values in metrics_map.items():
             for v in values if isinstance(values, list) else [values]:
                 if isinstance(v, dict):
-                    ts = v.get("ts") or v.get("captured_at")
+                    v.get("ts") or v.get("captured_at")
                     ctx_metrics.append(Metric(
                         workspace_id=self.workspace_id,
                         entity_type="site",

@@ -14,7 +14,6 @@
 """
 
 import re
-from datetime import UTC, datetime, timedelta
 
 IDENT = re.compile(r"[A-Za-z_][A-Za-z0-9_.]{0,63}")
 TOKEN = re.compile(r"\s*(?:(?P<num>\d+(?:\.\d+)?)|(?P<ident>[A-Za-z_][A-Za-z0-9_.]{0,63})"
@@ -181,7 +180,7 @@ async def resolve_metric(workspace_id: str, name: str, days: float = 30,
         return ([r["bucket"] for r in rows], [r["value"] for r in rows], "base")
 
     labels, vals, kind = await _series(name)
-    series = [{"bucket": b, "value": v} for b, v in zip(labels, vals)]
+    series = [{"bucket": b, "value": v} for b, v in zip(labels, vals, strict=False)]
     total = evaluate(defs[name]["expr"], {}) if False else (sum(vals) if vals else 0.0)
     # 比率型派生指标用「最新值」更有意义；其余用合计
     d = defs.get(name)

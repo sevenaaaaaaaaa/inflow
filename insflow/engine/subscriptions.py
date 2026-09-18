@@ -12,11 +12,11 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from ..actions.router import ActionContext, get_action_router
 from ..core.files import EventBus
-from ..core.store import get_store, generate_id
+from ..core.store import generate_id, get_store
 
 CHANNELS = ("feishu", "slack", "webhook", "email")
 
@@ -41,10 +41,8 @@ def _matches(insight, filters: dict) -> bool:
         blob = f"{insight.title} {insight.summary}"
         if filters["query"] not in blob:
             return False
-    if filters.get("min_confidence") is not None:
-        if float(insight.confidence) < float(filters["min_confidence"]):
-            return False
-    return True
+    return not (filters.get("min_confidence") is not None
+                and float(insight.confidence) < float(filters["min_confidence"]))
 
 
 class SubscriptionService:
@@ -69,7 +67,7 @@ class SubscriptionService:
 
         store = await get_store()
         sid = generate_id()
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         await store._execute(
             """INSERT INTO subscriptions (id, workspace_id, name, channels_json,
                target_json, filters_json, mode, enabled, created_at)
@@ -164,7 +162,6 @@ class SubscriptionService:
     async def dispatch_metric_charts(self) -> dict:
         """所有 metric_chart 订阅 → 渲染图表 HTML → 推送"""
         from ..viz.charts import line_chart
-        from ..viz.frame import datapanel
         store = await get_store()
         sent = failed = 0
         for sub in await self.list():
@@ -239,7 +236,7 @@ class SubscriptionService:
     async def dispatch_daily(self) -> dict:
         """每日模式：按最近 24h 匹配洞察聚合推送（无状态）"""
         store = await get_store()
-        since = datetime.now(timezone.utc) - timedelta(hours=24)
+        since = datetime.now(UTC) - timedelta(hours=24)
         insights = [i for i in await store.list_insights(self.workspace_id, limit=500)
                     if i.created_at >= since]
         router = get_action_router()

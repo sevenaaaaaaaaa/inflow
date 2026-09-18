@@ -48,7 +48,7 @@ class TestExport:
 
     def test_json_export(self, env, tmp_path):
         out = tmp_path / "audit.json"
-        result = AuditExporter("test-ws").run(out, fmt="json")
+        AuditExporter("test-ws").run(out, fmt="json")
         data = json.loads(out.read_text(encoding="utf-8"))
         assert data["count"] == 6
         assert data["workspace_id"] == "test-ws"

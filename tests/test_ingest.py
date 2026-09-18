@@ -134,8 +134,6 @@ class TestContentPublished:
 
     async def test_failed_marks_action(self, env):
         action, receiver = env["action"], env["receiver"]
-        await FeedbackTracker("test-ws") if False else None
-
         from insflow.actions.feedback_tracker import FeedbackTracker
         await FeedbackTracker("test-ws").mark_dispatched(action, {"gsc_clicks": 100})
         store = await get_store()

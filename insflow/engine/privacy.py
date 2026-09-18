@@ -12,6 +12,7 @@
 - 已被其它主体共享的聚合指标不含个人标识，不做删除（否则破坏统计事实）。
 """
 
+import contextlib
 from datetime import UTC, datetime, timedelta
 
 DEFAULT_RETENTION = {
@@ -126,13 +127,12 @@ async def erase_subject(workspace_id: str, email: str, *, purge: bool = False,
             """UPDATE users SET email = ?, name = ?, active = 0 WHERE id = ?""",
             (f"deleted+{abs(hash(email)) % 10**8}@invalid", ANON_AUTHOR, user["id"]))
     await store._db.commit()
-    try:                     # 审计：删除动作本身必须留痕（合规）
+    # 审计：删除动作本身必须留痕（合规）；审计失败不阻断删除
+    with contextlib.suppress(Exception):
         await store.record_admin(workspace_id, "privacy.subject_erase",
                                  actor=actor or "本地用户", target_type="subject",
                                  target_id=email.split("@")[0][:3] + "***",
                                  detail={"mode": plan["mode"], "plan": plan})
-    except Exception:
-        pass
     return {"dry_run": False, "done": plan}
 
 
@@ -174,10 +174,8 @@ async def retention_sweep(workspace_id: str, *, dry_run: bool = True,
         result[table] = {"days": days, "deleted": n}
     if not dry_run:
         await store._db.commit()
-        try:
+        with contextlib.suppress(Exception):
             await store.record_admin(workspace_id, "privacy.retention_sweep",
                                      actor="scheduler", target_type="retention",
                                      detail={"policy": policy, "result": result})
-        except Exception:
-            pass
     return {"dry_run": dry_run, "policy": policy, "result": result}

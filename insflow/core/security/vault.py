@@ -4,6 +4,7 @@ AES-GCM 加密落盘，主密钥 INSFLOW_MASTER_KEY（环境变量，未设则 f
 """
 
 import base64
+import contextlib
 import json
 import os
 from datetime import UTC, datetime
@@ -167,9 +168,6 @@ def get_vault() -> Vault:
     target = _vault_path()
     if _vault is None or _vault.vault_path != target:
         _vault = Vault(vault_path=target)
-        try:
-            _vault.load()
-        except VaultError:
-            # 首次运行可能没有保险库文件
-            pass
+        with contextlib.suppress(VaultError):
+            _vault.load()          # 首次运行可能没有保险库文件
     return _vault

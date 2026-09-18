@@ -6,7 +6,7 @@
 通知目标由环境变量配置：INSFLOW_DAILY_WEBHOOK_URL / INSFLOW_ALERT_WEBHOOK_URL
 """
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from ..actions.router import ActionContext, get_action_router
 from ..core.files import EventBus
@@ -31,7 +31,7 @@ class DailyDigestBuilder:
 
     async def build(self, window_hours: int = 24) -> dict:
         """聚合最近 N 小时的运行数据 → 摘要结构 + Markdown"""
-        since = datetime.now(timezone.utc) - timedelta(hours=window_hours)
+        since = datetime.now(UTC) - timedelta(hours=window_hours)
         events = self.bus.read(limit=2000)
 
         window = []
@@ -77,7 +77,7 @@ class DailyDigestBuilder:
 
     def _render(self, window_hours, success_rate, ok, fail, insights, blocked,
                 verified, token_failed, alerts) -> str:
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         rate_str = f"{success_rate:.0%}" if success_rate is not None else "无采集"
         return "\n".join([
             "# Insight Flow 每日运行摘要",

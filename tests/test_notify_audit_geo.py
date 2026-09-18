@@ -8,10 +8,19 @@ import insflow.core.files as files_mod
 from insflow.core.entities import Workspace
 from insflow.core.store import Store, generate_id, reset_store
 from insflow.engine import geo as geo_mod
-from insflow.engine.notify_policy import (QuietHours, Throttle, defer, drain_pending,
-                                         escalation_targets, group_key, peek_pending,
-                                         pending_count, policy_of)
+from insflow.engine.notify_policy import (
+    QuietHours,
+    Throttle,
+    defer,
+    drain_pending,
+    escalation_targets,
+    group_key,
+    peek_pending,
+    pending_count,
+    policy_of,
+)
 from insflow.viz import charts as c
+from tests._ui_source import ui_source
 
 TINY_GEOJSON = {
     "type": "FeatureCollection",
@@ -127,7 +136,9 @@ class TestAdminAudit:
 
     def test_record_and_list_and_csv(self, env):
         import asyncio
+
         from fastapi.testclient import TestClient
+
         from insflow.server.app import app
 
         asyncio.get_event_loop().run_until_complete(self._seed_demo(env))
@@ -160,9 +171,11 @@ class TestAdminAudit:
 
     def test_member_role_change_audited(self, env):
         import asyncio
+
         from fastapi.testclient import TestClient
-        from insflow.server.app import app
+
         from insflow.core.accounts import AccountManager
+        from insflow.server.app import app
 
         async def _register():
             await AccountManager("test-ws").register("u@test.com", "password123",
@@ -220,9 +233,11 @@ class TestGeoChoropleth:
 
     def test_import_api_and_page_switch(self, env):
         import asyncio
+
         from fastapi.testclient import TestClient
-        from insflow.server.app import app
+
         from insflow.engine.demo import DemoSeeder
+        from insflow.server.app import app
 
         async def _seed():
             await DemoSeeder("test-ws", days=20).seed()
@@ -256,9 +271,11 @@ class TestGeoChoropleth:
 
     def test_dataset_missing_falls_back_to_grid(self, env):
         import asyncio
+
         from fastapi.testclient import TestClient
-        from insflow.server.app import app
+
         from insflow.engine.demo import DemoSeeder
+        from insflow.server.app import app
 
         async def _seed():
             await DemoSeeder("test-ws", days=20).seed()
@@ -273,6 +290,7 @@ class TestGeoChoropleth:
 class TestBenchAndSchedules:
     def test_bench_reports_metrics(self, env):
         import asyncio
+
         from insflow.engine.bench import run_bench
 
         async def _run():
@@ -295,6 +313,7 @@ class TestBenchAndSchedules:
 
     def test_bench_cli_registered(self):
         from click.testing import CliRunner
+
         from insflow.cli import main
         res = CliRunner().invoke(main, ["bench", "--help"])
         assert res.exit_code == 0 and "--monitors" in res.output
@@ -351,6 +370,7 @@ class TestSemanticsLayer:
 
     def test_resolve_derived_and_lineage(self, env):
         import asyncio
+
         from insflow.engine.demo import DemoSeeder
         from insflow.engine.semantics import resolve_metric
 
@@ -379,6 +399,7 @@ class TestSemanticsLayer:
 
     def test_cycle_detection(self, env):
         import asyncio
+
         from insflow.engine.semantics import SemanticError, resolve_metric
 
         async def _run():
@@ -396,7 +417,9 @@ class TestSemanticsLayer:
 
     def test_def_api_validates_expr_and_explore_renders(self, env):
         import asyncio
+
         from fastapi.testclient import TestClient
+
         from insflow.engine.demo import DemoSeeder
         from insflow.server.app import app
 
@@ -452,7 +475,9 @@ class TestNewCharts:
 
     def test_explore_page_exposes_new_types(self, env):
         import asyncio
+
         from fastapi.testclient import TestClient
+
         from insflow.engine.demo import DemoSeeder
         from insflow.server.app import app
 
@@ -471,7 +496,9 @@ class TestNewCharts:
 class TestScimAndWatermark:
     def test_scim_flow(self, env, monkeypatch):
         import asyncio
+
         from fastapi.testclient import TestClient
+
         from insflow.server.app import app
         monkeypatch.setenv("INSFLOW_SCIM_TOKEN", "tok-1")
         cli = TestClient(app)
@@ -520,6 +547,7 @@ class TestScimAndWatermark:
 
     def test_group_role_mapping(self, monkeypatch):
         import os
+
         from insflow.engine.sso import group_role_map, role_from_groups
         monkeypatch.setenv("INSFLOW_OIDC_GROUP_ROLE_MAP",
                            '{"growth":"analyst","ops-leads":"admin","bad":"root"}')
@@ -535,10 +563,11 @@ class TestScimAndWatermark:
         import asyncio
         import io as _io
         import zipfile
+
         from fastapi.testclient import TestClient
+
         from insflow.engine.demo import DemoSeeder
-        from insflow.engine.watermark import (csv_with_watermark, header,
-                                              xlsx_watermark_sheet)
+        from insflow.engine.watermark import csv_with_watermark, header, xlsx_watermark_sheet
         from insflow.server.app import app
 
         assert "导出水印" in csv_with_watermark("a,b\n1,2\n", "u@x.com", "某公司")
@@ -667,7 +696,9 @@ class TestTrueOhlc:
 
     def test_demo_price_ohlc_and_cockpit(self, env):
         import asyncio
+
         from fastapi.testclient import TestClient
+
         from insflow.engine.demo import DemoSeeder
         from insflow.server.app import app
 
@@ -706,7 +737,7 @@ class TestScatterSamplingAndGL:
         assert meta["sampled"] is False and len(meta["points"]) == 1200
 
     def test_gl_renderer_hooks_present(self):
-        base = open("insflow/web/templates/base.html", encoding="utf-8").read()
+        base = ui_source()
         for token in ("ifDrawGL", "ifShouldGL", "ifGetGL", "ifProgram",
                       "VERTEX_SHADER", "FRAGMENT_SHADER", "gl.POINTS", "gl.LINES",
                       "preserveDrawingBuffer", "data-renderer", "'webgl'"):
@@ -717,7 +748,9 @@ class TestScatterSamplingAndGL:
 class TestMobileAndPwa:
     def test_mobile_page(self, env):
         import asyncio
+
         from fastapi.testclient import TestClient
+
         from insflow.engine.demo import DemoSeeder
         from insflow.server.app import app
 
@@ -732,6 +765,7 @@ class TestMobileAndPwa:
 
     def test_manifest_and_sw_mobile(self):
         from fastapi.testclient import TestClient
+
         from insflow.server.app import app
         cli = TestClient(app)
         m = cli.get("/console/manifest.webmanifest").json()
@@ -755,12 +789,11 @@ class TestWebglBehavior:
         return shutil.which("node")
 
     def test_gl_path_and_fallback(self, tmp_path):
-        import shutil
         import subprocess
         node = self._node()
         if not node:
             pytest.skip("未安装 node")
-        src = open("insflow/web/templates/base.html", encoding="utf-8").read()
+        src = ui_source()
         start = src.index("var IFGL =")
         end = src.index("function ifDrawChart(")
         block = src[start:end]
@@ -826,8 +859,8 @@ class TestGeoDimSelection:
         asyncio.get_event_loop().run_until_complete(_run())
 
     def test_country_dim_uses_builtin_world_map(self, env):
-        import asyncio
         from fastapi.testclient import TestClient
+
         from insflow.server.app import app
 
         self._seed(env, "geo-country", "country",
@@ -841,6 +874,7 @@ class TestGeoDimSelection:
 
     def test_province_dim_prefers_grid_over_world(self, env):
         from fastapi.testclient import TestClient
+
         from insflow.server.app import app
         self._seed(env, "geo-province", "province",
                    [("广东", 20), ("北京", 10)])
@@ -852,6 +886,7 @@ class TestGeoDimSelection:
 
     def test_region_dim_fallback(self, env):
         from fastapi.testclient import TestClient
+
         from insflow.server.app import app
         self._seed(env, "geo-region", "region", [("APAC", 5), ("EMEA", 3)])
         r = TestClient(app).get("/console/cockpit/traffic",

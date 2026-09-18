@@ -264,9 +264,9 @@ class JourneyGapModel(InsightModel):
                 continue
             by_entity.setdefault(m.entity_id, []).append(m)
 
-        for entity, steps in by_entity.items():
+        for _entity, steps in by_entity.items():
             ordered = sorted(steps, key=lambda m: m.ts)
-            for prev, cur in zip(ordered, ordered[1:]):
+            for prev, cur in zip(ordered, ordered[1:], strict=False):
                 prev_dim = prev.dim_json if isinstance(prev.dim_json, dict) else {}
                 cur_dim = cur.dim_json if isinstance(cur.dim_json, dict) else {}
                 prev_name = prev_dim.get("step_name", "步骤A")

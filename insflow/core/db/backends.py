@@ -8,8 +8,8 @@
 （命名对齐 OpenFlow settings.json 的 mysql_* 约定）。
 """
 
+import contextlib
 import os
-from typing import Any
 
 from .dialect import get_dialect
 
@@ -74,8 +74,9 @@ class SQLiteBackend:
         self.row_factory = None  # 由 Store 设置
 
     async def connect(self) -> None:
-        import aiosqlite
         from pathlib import Path
+
+        import aiosqlite
         Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
         self._conn = await aiosqlite.connect(str(self.db_path))
         self._conn.row_factory = aiosqlite.Row
@@ -110,11 +111,16 @@ class SQLiteBackend:
             return None
 
     async def size_bytes(self) -> tuple[int, int]:
+        import asyncio
         from pathlib import Path
-        db = Path(self.db_path)
-        size = db.stat().st_size if db.exists() else 0
-        wal = Path(str(db) + "-wal")
-        return size, (wal.stat().st_size if wal.exists() else 0)
+
+        def _measure() -> tuple[int, int]:
+            db = Path(self.db_path)
+            size = db.stat().st_size if db.exists() else 0
+            wal = Path(str(db) + "-wal")
+            return size, (wal.stat().st_size if wal.exists() else 0)
+
+        return await asyncio.to_thread(_measure)
 
 
 class MySQLBackend:
@@ -230,10 +236,8 @@ class MySQLBackend:
             while not self._pool.empty():
                 conn = self._pool.get()
                 if conn is not None:
-                    try:
+                    with contextlib.suppress(Exception):
                         conn.close()
-                    except Exception:
-                        pass
             self._pool = None
 
     async def wal_checkpoint(self, mode: str = "TRUNCATE") -> None:

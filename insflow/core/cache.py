@@ -12,9 +12,11 @@
 """
 
 import asyncio
+import contextlib
 import time
-from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
+from typing import Any
 
 
 @dataclass
@@ -59,10 +61,8 @@ class TTLCache:
     def set(self, key: str, value: Any, ttl: float | None = None) -> None:
         effective_ttl = self.default_ttl if ttl is None else ttl
         if self._backend is not None:
-            try:
+            with contextlib.suppress(Exception):
                 self._backend.set(key, value, effective_ttl)
-            except Exception:
-                pass
         if len(self._data) >= self.max_entries:
             self._evict()
         now = time.time()
@@ -127,10 +127,8 @@ class TTLCache:
             if self._backend is not None:
                 aset = getattr(self._backend, "aset", None)
                 if aset is not None:
-                    try:
+                    with contextlib.suppress(Exception):
                         await aset(key, value, ttl or self.default_ttl)
-                    except Exception:
-                        pass
             return value
 
     # ========== 失效与观测 ==========

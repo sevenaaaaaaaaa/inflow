@@ -12,8 +12,7 @@ from insflow.engine.invoice import InvoiceBuilder
 async def env(tmp_path, monkeypatch):
     monkeypatch.setattr(files_mod, "DATA_DIR", tmp_path)
     monkeypatch.setenv("INSFLOW_MASTER_KEY", "mk")
-    from insflow.core.entities import Workspace
-    from insflow.core.store import Store, get_store, reset_store
+    from insflow.core.store import Store, reset_store
 
     s = Store(db_path=tmp_path / "test.db")
     await s.connect()

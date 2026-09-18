@@ -101,12 +101,12 @@ class EventBus:
         教训（OpenFlow）：生产曾积累 63 万行无意义事件（heartbeat/scroll）导致查询慢、
         存储膨胀。事件流是审计与编排的底座，必须设置保留期。
         """
-        from datetime import datetime, timedelta, timezone
+        from datetime import datetime, timedelta
         if not self.events_file.exists():
             return {"kept": 0, "dropped": 0}
-        cutoff = (datetime.now(timezone.utc) - timedelta(days=keep_days)).isoformat()
+        cutoff = (datetime.now(UTC) - timedelta(days=keep_days)).isoformat()
         kept, dropped = [], 0
-        with open(self.events_file, "r", encoding="utf-8") as f:
+        with open(self.events_file, encoding="utf-8") as f:
             for line in f:
                 line = line.strip()
                 if not line:

@@ -1,6 +1,7 @@
 """Insight Flow CLI 入口"""
 
 import asyncio
+import contextlib
 import json
 import pathlib
 import sys
@@ -16,6 +17,7 @@ from . import __version__
 # 加载仓库 .env（CLI 也遵循同一份配置：驱动/MySQL/SMTP 等）
 try:
     from pathlib import Path as _P
+
     from dotenv import load_dotenv as _ld
     _ld(_P(__file__).parent.parent / ".env")
 except Exception:
@@ -30,10 +32,8 @@ def run_async(coro):
     try:
         return asyncio.get_event_loop().run_until_complete(coro)
     finally:
-        try:
+        with contextlib.suppress(Exception):
             asyncio.get_event_loop().run_until_complete(close_store())
-        except Exception:
-            pass
 
 
 @click.group()
@@ -399,7 +399,8 @@ def export(workspace: str, out: str, fmt: str):
         else:
             import csv
             path = out_dir / f"insflow-export-{stamp}.csv"
-            with open(path, "w", newline="", encoding="utf-8") as fh:
+            # CLI 单次导出：同步写文件可接受（不与请求并发；见 docs/11 工程规范）
+            with open(path, "w", newline="", encoding="utf-8") as fh:  # noqa: ASYNC230
                 writer = csv.writer(fh)
                 writer.writerow(["id", "type", "title", "severity", "confidence", "status", "created_at"])
                 for ins in data["insights"]:
@@ -542,13 +543,61 @@ def bench_cmd(monitors, insights, metrics, driver, keep):
                   f"（{rep['write']['rows_per_sec']:,} 行/秒）"
                   + (f" · 库大小 {rep['db_file_mb']}MB" if rep.get("db_file_mb") else ""))
     table = Table(title=f"查询延迟（{rep['driver']}）")
-    table.add_column("查询"); table.add_column("n", justify="right")
-    table.add_column("P50 (ms)", justify="right"); table.add_column("P95 (ms)", justify="right")
+    table.add_column("查询")
+    table.add_column("n", justify="right")
+    table.add_column("P50 (ms)", justify="right")
+    table.add_column("P95 (ms)", justify="right")
     table.add_column("max (ms)", justify="right")
     for name, st in rep["queries"].items():
         table.add_row(name, str(st["n"]), str(st["p50_ms"]), str(st["p95_ms"]),
                       str(st["max_ms"]))
     console.print(table)
+
+
+@main.group("skill")
+def skill_group():
+    """Agent Skill 市场（扩展问答与分析方法）"""
+    pass
+
+
+@skill_group.command("list")
+@click.option("--workspace", "-w", default="default")
+def skill_list(workspace: str):
+    """列出可安装的 Skill 包与已加载 Skill"""
+    from .agent.skills_host import SkillsHost
+    from .engine.skill_market import SkillMarket
+    market = SkillMarket(workspace).scan()
+    console.print(f"[green]市场 {len(market)} 个[/]")
+    for m in market:
+        console.print(f"  - {m.get('name')}: {str(m.get('description'))[:60]}")
+    installed = SkillsHost().list_skills()
+    console.print(f"[green]已加载 {len(installed)} 个[/]：" +
+                  "、".join(i.get("name", "") for i in installed[:10]))
+
+
+@skill_group.command("install")
+@click.argument("path")
+@click.option("--workspace", "-w", default="default")
+def skill_install(path: str, workspace: str):
+    """安装 Skill 包（目录路径；安装后 Agent 热加载）"""
+    from .engine.skill_market import SkillMarket
+    try:
+        res = run_async(SkillMarket(workspace).install(path))
+    except Exception as e:
+        console.print(f"[red]安装失败：{type(e).__name__}: {e}[/]")
+        raise SystemExit(1)
+    console.print(f"[green]已安装[/] {res.get('name')} → {res.get('path')}")
+
+
+@main.command("journey")
+@click.option("--framework", "-f", default="see-think-do-care")
+def journey_cmd(framework: str):
+    """查看旅程框架定义（阶段/信号/指标/内容类型）"""
+    from .engine.journey import get_framework
+    fw = get_framework(framework)
+    console.print(f"[green]{fw['name']}[/]（{len(fw['stages'])} 阶段）")
+    for st in fw["stages"]:
+        console.print(f"  - {st['name']}：{st['definition'][:46]}")
 
 
 @main.group("privacy")
@@ -567,7 +616,8 @@ def privacy_export(workspace: str, email: str, out: str):
     data = run_async(export_subject(workspace, email))
     text = json.dumps(data, ensure_ascii=False, indent=2, default=str)
     if out:
-        pathlib.Path(out).write_text(text, encoding="utf-8")
+        # CLI 单次导出写文件：同步即可（命令内无并发；见 docs/11 工程规范）
+        pathlib.Path(out).write_text(text, encoding="utf-8")  # noqa: ASYNC230
         console.print(f"[green]已导出[/] {out}（含个人数据，请安全交付）")
     else:
         console.print(text[:4000])
@@ -713,7 +763,8 @@ def estimate_cmd(workspace: str, domains: str, days: int):
 @click.argument("query")
 def sql_cmd(workspace: str, query: str):
     """只读 SQL 沙箱（白名单表 + 租户隔离）"""
-    from .engine.explore_sql import SqlError, run as sql_run
+    from .engine.explore_sql import SqlError
+    from .engine.explore_sql import run as sql_run
     try:
         res = run_async(sql_run(workspace, query))
     except SqlError as e:
@@ -741,7 +792,8 @@ def demo_seed(workspace: str, days: int):
         from .core.store import get_store
         store = await get_store()
         if not await store.get_workspace(workspace):
-            console.print(f"[red]Workspace 不存在: {workspace}[/]"); sys.exit(1)
+            console.print(f"[red]Workspace 不存在: {workspace}[/]")
+            sys.exit(1)
         result = await DemoSeeder(workspace, days).seed()
         console.print(f"[green]✓ 演示数据已生成[/] 洞察 {result['insights']} 条 · "
                       f"动作 {result['actions']} 个 · 竞品 {result['competitors']} 个 · "
@@ -1068,9 +1120,11 @@ def subscribe_add(workspace, name, feishu_url, webhook_url, webhook_secret,
 
     channels, target = [], {}
     if feishu_url:
-        channels.append("feishu"); target["feishu_url"] = feishu_url
+        channels.append("feishu")
+        target["feishu_url"] = feishu_url
     if webhook_url:
-        channels.append("webhook"); target["webhook_url"] = webhook_url
+        channels.append("webhook")
+        target["webhook_url"] = webhook_url
         target["webhook_secret"] = webhook_secret
     filters = {}
     if severity:
@@ -1085,7 +1139,8 @@ def subscribe_add(workspace, name, feishu_url, webhook_url, webhook_secret,
             sub = await SubscriptionService(workspace).create(name, channels, target, filters, mode)
             console.print(f"[green]✓ 订阅已创建 {sub['id']}（{','.join(channels)} / {mode}）[/]")
         except SubscriptionError as e:
-            console.print(f"[red]{e}[/]"); sys.exit(1)
+            console.print(f"[red]{e}[/]")
+            sys.exit(1)
 
     run_async(_create())
 
@@ -1099,6 +1154,6 @@ def subscribe_rm(subscription_id: str, workspace: str):
 
     async def _rm():
         ok = await SubscriptionService(workspace).delete(subscription_id)
-        console.print(f"[green]已删除[/]" if ok else "[red]订阅不存在[/]")
+        console.print("[green]已删除[/]" if ok else "[red]订阅不存在[/]")
 
     run_async(_rm())

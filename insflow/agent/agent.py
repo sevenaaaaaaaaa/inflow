@@ -134,10 +134,11 @@ class InsightAgent:
         # 先尝试"问数"（指标/数据质量/归因/增量），命中即答；否则退回洞察检索
         try:
             qa = json.loads(await self.run_tool("metric_qa", {"question": question}))
-            if qa.get("intent") != "value" or qa.get("facts", {}).get("metric"):
-                if qa.get("answer") and "没听懂" not in qa["answer"]:
-                    return {"answer": qa["answer"],
-                            "citations": qa.get("citations", [])}
+            if (qa.get("intent") != "value"
+                    or qa.get("facts", {}).get("metric")) \
+                    and qa.get("answer") and "没听懂" not in qa["answer"]:
+                return {"answer": qa["answer"],
+                        "citations": qa.get("citations", [])}
         except Exception:
             pass
         tool_output = await self.run_tool("query_insights", {"limit": 10})

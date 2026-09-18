@@ -6,7 +6,7 @@
 - 洞察类数据统一从差量接口取（limit ≤ 300），Python 侧聚合
 """
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from ...core.cache import cache
 from ...core.files import EventBus, ReportStore
@@ -38,7 +38,7 @@ def _key(cockpit: str, workspace_id: str, days: float) -> str:
 
 
 def _within(items, days: float):
-    since = datetime.now(timezone.utc) - timedelta(days=days)
+    since = datetime.now(UTC) - timedelta(days=days)
     return [i for i in items if i.created_at >= since]
 
 
@@ -266,8 +266,9 @@ async def _channel_box(store, workspace_id: str, days: float,
 
 
 def _since_iso(days: float) -> str:
-    from datetime import datetime as _dt, timedelta as _td, timezone as _tz
-    return (_dt.now(_tz.utc) - _td(days=days)).isoformat()
+    from datetime import datetime as _dt
+    from datetime import timedelta as _td
+    return (_dt.now(UTC) - _td(days=days)).isoformat()
 
 
 # ================= C4 竞品 =================
@@ -301,8 +302,25 @@ async def competitor(workspace_id: str, days: float = 14) -> dict:
                          for i in recent[:15]],
             # 价格 K 线：真实 OHLC（逐日多次采样：开=当日首采、高/低=极值、收=末采）
             "price_ohlc": await _price_ohlc(store, workspace_id, days),
+            "estimates": await _estimates(workspace_id, days),
         }
     return await cache.get_or_compute(_key("competitor", workspace_id, days), build, TTL)
+
+
+async def _estimates(workspace_id: str, days: float) -> list[dict]:
+    """竞品相对流量指数（对标 Similarweb 的"估算"，但方法与置信度透明）"""
+    try:
+        from ...core.store import get_store
+        from ...engine.traffic_estimate import estimate_many
+        store = await get_store()
+        domains = [str(r["key"]) for r in await store.metric_dim_breakdown(
+            workspace_id, "referring_domains", "domain", days=days, limit=6)]
+        if not domains:
+            domains = [str(r["entity_id"]) for r in await store.metric_breakdown(
+                workspace_id, "referring_domains", days=days, limit=6)]
+        return await estimate_many(workspace_id, domains, days) if domains else []
+    except Exception:
+        return []
 
 
 async def _price_ohlc(store, workspace_id: str, days: float) -> dict:
@@ -328,8 +346,9 @@ async def journey(workspace_id: str, days: float = 30) -> dict:
     async def build():
         store = await get_store()
         # 漏斗：各步共用 entity_id，不能按 entity 取最新，需按 dim.step_name 归并取最新
-        from datetime import datetime as _dt, timedelta as _td, timezone as _tz
-        since = (_dt.now(_tz.utc) - _td(days=days)).isoformat()
+        from datetime import datetime as _dt
+        from datetime import timedelta as _td
+        since = (_dt.now(UTC) - _td(days=days)).isoformat()
         step_rows = await store._fetchall(
             """SELECT value, dim_json, ts FROM metrics
                WHERE workspace_id = ? AND metric = 'journey_step' AND ts >= ?
@@ -425,7 +444,7 @@ async def reports(workspace_id: str) -> dict:
         for c in cats:
             files = store.list_reports(c)
             out[c] = [{"name": p.name, "size": p.stat().st_size,
-                       "mtime": datetime.fromtimestamp(p.stat().st_mtime, timezone.utc)
+                       "mtime": datetime.fromtimestamp(p.stat().st_mtime, UTC)
                        .strftime("%Y-%m-%d %H:%M")} for p in files[:20]]
         return {"categories": out,
                 "total": sum(len(v) for v in out.values())}
@@ -436,7 +455,6 @@ async def reports(workspace_id: str) -> dict:
 
 async def ops(workspace_id: str, days: float = 7) -> dict:
     async def build():
-        from datetime import datetime as _dt
         events = EventBus(workspace_id).read(limit=500)
         ok = sum(1 for e in events if e["type"] == "monitor.run_finished")
         fail = sum(1 for e in events if e["type"] == "monitor.alert")

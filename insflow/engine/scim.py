@@ -18,7 +18,6 @@ import hmac
 import re
 from datetime import UTC, datetime
 
-from ..core.accounts import AccountManager
 from ..core.store import get_store
 from .permissions import ROLES
 
@@ -132,6 +131,7 @@ async def create_user(workspace_id: str, payload: dict) -> dict:
     # 注意：SCIM 是「加入既有工作区」，不是自助注册——不能走 register()
     # （后者会新建租户并发起试用，语义与副作用都不对）。
     import secrets
+
     from ..core.accounts import hash_password
     from ..core.store import generate_id
     uid = generate_id()
