@@ -50,10 +50,11 @@ async def bootstrap_scheduled_jobs() -> dict:
 
     # 2. 每日 09:00 UTC：到期动作验证评估
     async def _evaluate_feedback(payload=None):
-        from ..actions.feedback_tracker import FeedbackTracker
+        from ..actions.feedback_tracker import FeedbackTracker, default_metrics_provider
         for ws in await store.list_workspaces():
             tracker = FeedbackTracker(ws.id)
-            results = await tracker.evaluate_due_actions()
+            results = await tracker.evaluate_due_actions(
+                metrics_provider=default_metrics_provider(ws.id))
             done = [r for r in results if r.get("evaluated")]
             if done:
                 logger.info(f"验证评估完成: {ws.id} {len(done)} 个动作")
@@ -263,6 +264,21 @@ async def bootstrap_scheduled_jobs() -> dict:
                     logger.info(f"快照清理: {ws.id} 删除 {out['removed']} 个")
             except Exception:
                 logger.exception(f"快照清理失败: {ws.id}")
+
+    async def _evolution_propose(payload=None):
+        """每周生成自进化提案（阈值/权重），默认不生效，控制台人工确认"""
+        from ..engine.evolution import propose_all
+        for ws in await store.list_workspaces():
+            try:
+                out = await propose_all(ws.id)
+                if out["threshold_tunes"] or out["model_weights"]:
+                    logger.info(f"自进化提案: {ws.id} {out}")
+            except Exception:
+                logger.exception(f"自进化提案失败: {ws.id}")
+
+    scheduler.add_job("evolution.propose", "20 5 * * 1", "evolution.propose", {})
+    scheduler.register_handler("evolution.propose", _evolution_propose)
+    registered["jobs"].append("evolution.propose@mon-05:20")
 
     scheduler.add_job("snapshot.cleanup", "0 4 * * 0", "snapshot.cleanup", {})
     scheduler.register_handler("snapshot.cleanup", _snapshot_cleanup)

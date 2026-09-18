@@ -554,6 +554,120 @@ def bench_cmd(monitors, insights, metrics, driver, keep):
     console.print(table)
 
 
+@main.group("verify")
+def verify_group():
+    """动作验证（14 天窗口）：手动触发评估与基线查看"""
+    pass
+
+
+@verify_group.command("run")
+@click.option("--workspace", "-w", required=True)
+def verify_run(workspace: str):
+    """立即评估到期动作（写入结构化验证结论）"""
+    from .actions.feedback_tracker import FeedbackTracker, default_metrics_provider
+    tracker = FeedbackTracker(workspace)
+    results = run_async(tracker.evaluate_due_actions(
+        metrics_provider=default_metrics_provider(workspace)))
+    done = [r for r in results if r.get("evaluated")]
+    console.print(f"[green]到期 {len(results)} 个 · 完成 {len(done)} 个[/]")
+    for r in results:
+        if not r.get("evaluated"):
+            console.print(f"  - {r['action_id'][:8]} 跳过：{r.get('error', '')[:50]}")
+
+
+@verify_group.command("summary")
+@click.option("--workspace", "-w", required=True)
+def verify_summary(workspace: str):
+    """结构化验证结论汇总"""
+    from .core.store import get_store
+
+    async def _run():
+        store = await get_store()
+        return await store.verification_summary(workspace)
+    s = run_async(_run())
+    console.print(f"结论 {s['total']} · 有效 {s['effective']} · 显著 {s['significant']}")
+    for k, v in s["by_action_type"].items():
+        console.print(f"  {k:<26} 总 {v['total']} 有效 {v['effective']} "
+                      f"平均效应 {v['avg_effect_pct']}")
+
+
+@main.group("evolution")
+def evolution_group():
+    """自进化：提案 / 评测门 / 生效 / 回滚（灰盒自整定）"""
+    pass
+
+
+@evolution_group.command("list")
+@click.option("--workspace", "-w", required=True)
+def evolution_list(workspace: str):
+    """查看进化账本"""
+    from .core.store import get_store
+
+    async def _run():
+        store = await get_store()
+        return await store.list_evolution_runs(workspace)
+    runs = run_async(_run())
+    for r in runs:
+        console.print(f"  {r['id'][:8]} {r['kind']:<16} {r['status']:<11} "
+                      f"{r['target'][:12]:<14} {str(r.get('after'))[:60]}")
+
+
+@evolution_group.command("propose")
+@click.option("--workspace", "-w", required=True)
+def evolution_propose(workspace: str):
+    """生成提案（阈值自整定 / 模型权重；不自动生效）"""
+    from .engine.evolution import propose_all
+    out = run_async(propose_all(workspace))
+    console.print(f"[green]阈值提案 {out['threshold_tunes']} 个 · "
+                  f"权重提案 {out['model_weights']} 个[/]")
+
+
+@evolution_group.command("apply")
+@click.argument("run_id")
+@click.option("--workspace", "-w", required=True)
+@click.option("--force", is_flag=True, help="跳过评测门（需谨慎）")
+def evolution_apply(run_id: str, workspace: str, force: bool):
+    """生效提案（先过评测门）"""
+    from .engine.evolution import EvolutionError, apply_run
+    try:
+        res = run_async(apply_run(workspace, run_id, force=force))
+    except EvolutionError as e:
+        console.print(f"[red]拒绝：{e}[/]")
+        raise SystemExit(1)
+    console.print(f"[green]已生效[/] {res['applied']}")
+
+
+@evolution_group.command("rollback")
+@click.argument("run_id")
+@click.option("--workspace", "-w", required=True)
+def evolution_rollback(run_id: str, workspace: str):
+    """回滚已生效提案"""
+    from .engine.evolution import EvolutionError, rollback_run
+    try:
+        res = run_async(rollback_run(workspace, run_id))
+    except EvolutionError as e:
+        console.print(f"[red]失败：{e}[/]")
+        raise SystemExit(1)
+    console.print(f"[green]已回滚[/] 恢复 {res['restored']}")
+
+
+@main.command("playbook")
+@click.option("--workspace", "-w", required=True)
+@click.option("--mine", is_flag=True, help="从验证结论重新挖掘")
+def playbook_cmd(workspace: str, mine: bool):
+    """配方（验证有效的经验 → 可复用模板草案）"""
+    from .engine.playbooks import list_playbooks
+    from .engine.playbooks import mine as mine_pb
+    if mine:
+        drafts = run_async(mine_pb(workspace))
+        console.print(f"[green]挖掘到 {len(drafts)} 个配方[/]")
+        for d in drafts:
+            console.print(f"  - {d['id']}：样本 {d['samples']} · "
+                          f"有效率 {d['effective_rate']} · 平均效应 {d['avg_effect_pct']}")
+    for pb in list_playbooks(workspace):
+        console.print(f"  {pb['id']:<40} {pb['name'][:30]}")
+
+
 @main.group("action")
 def action_group():
     """动作与死信（跨系统派发可靠性）"""
@@ -566,8 +680,11 @@ def action_group():
 def action_dead_letters(workspace: str, show_all: bool):
     """列出死信（失败动作的可重放载荷）"""
     from .core.store import get_store
-    store = run_async(get_store())
-    letters = run_async(store.list_dead_letters(workspace, only_pending=not show_all))
+
+    async def _run():
+        store = await get_store()
+        return await store.list_dead_letters(workspace, only_pending=not show_all)
+    letters = run_async(_run())
     console.print(f"[green]{len(letters)} 条[/]")
     for letter in letters:
         console.print(f"  - {letter['id'][:8]} {letter['action_type']:<24} "

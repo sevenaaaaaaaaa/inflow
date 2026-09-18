@@ -23,6 +23,133 @@ DEFAULT_VERIFY_WINDOW_DAYS = 14
 MAX_RETRIES = 3
 
 
+async def _structured_result(store, action, metric: str, before: float, after: float,
+                             verdict, pct: float) -> dict:
+    """把"before/after"变成可统计的结论：效应量、置信区间、样本量、混杂
+
+    - 序列来自 metrics（动作前 pre_days 天 vs 动作后 post_days 天），逐日取值
+    - 区间用自助法（种子固定可复现），与 `attribution.action_lift` 同一套口径
+    - 混杂提示（confounders）：数据质量状态、样本是否过少、是否同时段有其它动作
+    """
+    from datetime import UTC, timedelta
+    from random import Random
+
+    t0 = getattr(action, "dispatched_at", None) or action.created_at
+    if t0.tzinfo is None:
+        t0 = t0.replace(tzinfo=UTC)
+    since = (t0 - timedelta(days=14)).isoformat()
+    rows = await store._fetchall(
+        """SELECT substr(ts, 1, 10) AS d, SUM(value) AS v FROM metrics
+           WHERE workspace_id = ? AND metric = ? AND ts >= ?
+           GROUP BY d ORDER BY d""", (action.workspace_id, metric, since))
+    pre = [float(r["v"] or 0) for r in rows if str(r["d"]) < t0.date().isoformat()]
+    post = [float(r["v"] or 0) for r in rows if str(r["d"]) >= t0.date().isoformat()]
+
+    def _mean(xs: list[float]) -> float:
+        return sum(xs) / len(xs) if xs else 0.0
+
+    confounders: dict = {}
+    if not pre or not post:
+        confounders["insufficient_series"] = True
+        ci_low = ci_high = 0.0
+        significant = False
+        sample_n = len(pre) + len(post)
+    else:
+        obs = _mean(post) - _mean(pre)
+        rnd = Random(42)
+        diffs = sorted(obs - (_mean(rnd.choices(pre, k=len(pre))) - _mean(pre))
+                       for _ in range(200))
+        ci_low, ci_high = diffs[5], diffs[-6]
+        significant = ci_low > 0 or ci_high < 0
+        sample_n = len(pre) + len(post)
+        if sample_n < 6:
+            confounders["small_sample"] = sample_n
+
+    # 数据质量：窗口内该指标是否新鲜（不新鲜则结论可信度打折）
+    try:
+        from ..engine.data_quality import check_workspace
+        dq = await check_workspace(action.workspace_id, window_days=14,
+                                   staleness_only=True)
+        hit = next((i for i in dq["items"] if i["metric"] == metric), None)
+        if hit and hit["status"] != "fresh":
+            confounders["data_quality"] = hit["status"]
+    except Exception:
+        pass
+    # 同期其它动作（潜在混杂）
+    try:
+        others = await store._fetchall(
+            """SELECT COUNT(*) AS n FROM actions WHERE workspace_id = ?
+               AND id != ? AND created_at >= ?""",
+            (action.workspace_id, action.id, since))
+        n_other = int((others[0] if others else {}).get("n") or 0)
+        if n_other > 0:
+            confounders["concurrent_actions"] = n_other
+    except Exception:
+        pass
+
+    confidence = 0.8 if significant else (0.5 if sample_n >= 6 else 0.3)
+    if confounders:
+        confidence = max(0.2, confidence - 0.15)
+    return {"effect_abs": round(after - before, 6),
+            "effect_pct": round(pct, 6),
+            "ci_low": round(ci_low, 6), "ci_high": round(ci_high, 6),
+            "significant": bool(significant), "confidence": round(confidence, 3),
+            "sample_n": sample_n, "window_days": 14, "confounders": confounders,
+            "method": "前后均值差 + 自助法 200 次（种子 42，可复现）；非随机实验"}
+
+
+DEFAULT_VERIFY_METRICS = ("gsc_clicks", "ga4_sessions", "ga4_conversions")
+BASELINE_WINDOW_DAYS = 14          # 基线口径：派发前 14 天的【日均值】
+
+
+async def compute_baseline(workspace_id: str, metrics: tuple[str, ...] = (),
+                           days: int = BASELINE_WINDOW_DAYS) -> dict:
+    """派发时计算基线：派发前 N 天的日均值（口径显式写入 baseline_json）
+
+    为什么用日均：验证时窗口长度可能被截断（动作未满 14 天），日均可比。
+    """
+    from ..core.store import get_store
+    store = await get_store()
+    metrics = metrics or DEFAULT_VERIFY_METRICS
+    out: dict = {"window_days": days, "captured_at": datetime.now(UTC).isoformat()}
+    for metric in metrics:
+        total = await store.metric_total(workspace_id, metric, days=days)
+        if total:
+            out[metric] = round(total / max(1, days), 6)
+    return out
+
+
+def default_metrics_provider(workspace_id: str):
+    """默认指标来源：按 baseline 的口径（日均）计算动作后的日均值
+
+    - 只处理 baseline 里带 `window_days` 的指标（新口径）；老数据（裸数字）跳过，
+      避免拿"窗口合计"对比"日均"得出错误结论（宁可不出结论，也不出错的结论）
+    - 动作后窗口 = 派发日到今天（至少 1 天）
+    """
+
+    async def _provider(action) -> dict:
+        from ..core.store import get_store
+        store = await get_store()
+        baseline = dict(getattr(action, "baseline_json", None) or {})
+        window = float(baseline.get("window_days") or 0)
+        if not window:
+            return {}
+        t0 = getattr(action, "dispatched_at", None) or action.created_at
+        if t0.tzinfo is None:
+            t0 = t0.replace(tzinfo=UTC)
+        post_days = max(1.0, (datetime.now(UTC) - t0).total_seconds() / 86400)
+        out: dict = {}
+        for metric, value in baseline.items():
+            if not isinstance(value, (int, float)):
+                continue
+            total = await store.metric_total(workspace_id, metric, days=post_days)
+            if total:
+                out[metric] = round(total / post_days, 6)
+        return out
+
+    return _provider
+
+
 class VerificationError(Exception):
     pass
 
@@ -149,6 +276,21 @@ class FeedbackTracker:
             else:
                 verdict = ActionVerdict.NEUTRAL
             verdicts.append(verdict)
+
+            # 结构化验证结果（自进化数据基础）：效应量 + 自助法 95% 区间 + 样本量 + 混杂提示
+            try:
+                structured = await _structured_result(
+                    store, action, metric, float(baseline_value), float(after),
+                    verdict, pct)
+                await store.add_verification_result(
+                    action.workspace_id, action_id=action.id,
+                    insight_id=action.insight_id or "",
+                    insight_type=str(action.baseline_json.get("insight_type") or ""),
+                    action_type=action.action_type, metric=metric,
+                    verdict=verdict.value if hasattr(verdict, "value") else str(verdict),
+                    **structured)
+            except Exception:
+                pass                       # 结构化失败不影响主验证流程
 
             fb = await store.create_feedback(Feedback(
                 workspace_id=action.workspace_id,

@@ -362,6 +362,19 @@ class DemoSeeder:
             aid = generate_id()
             state = states[i % len(states)]
             dispatched = self._ts(RNG.uniform(1, 20))
+            # verifying 的动作给出"新口径"基线（日均 + 窗口），让 14 天验证可真正跑出结论
+            baseline: dict = {"demo": True}
+            window_until = self._ts(RNG.uniform(0, 1))
+            if state == "verifying":
+                for metric in ("gsc_clicks", "ga4_sessions", "ga4_conversions"):
+                    total = await store.metric_total(self.workspace_id, metric, days=30)
+                    if total:
+                        baseline[metric] = round(
+                            total / 30 * RNG.uniform(0.7, 1.5), 4)
+                baseline["window_days"] = 14
+                baseline["captured_at"] = dispatched
+                baseline["insight_type"] = str(ins.get("type") or "")
+                window_until = self._ts(1)        # 窗口已到期 → verify run 可评估
             await store._execute(
                 """INSERT INTO actions (id, workspace_id, insight_id, action_type, target_ref,
                    params_json, state, dispatched_at, result_json, verify_window_until,
@@ -370,8 +383,7 @@ class DemoSeeder:
                 (aid, self.workspace_id, ins["id"],
                  ["mflow.create_content", "openflow.webhook_insight",
                   "feishu.notify", "webhook.generic"][i % 4],
-                 state, dispatched,
-                 self._ts(RNG.uniform(0, 1)), _json({"demo": True}), dispatched))
+                 state, dispatched, window_until, _json(baseline), dispatched))
             n += 1
             if state == "verified":
                 await store._execute(

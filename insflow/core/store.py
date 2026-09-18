@@ -373,6 +373,54 @@ MIGRATIONS = [
         ON action_dead_letters(workspace_id, created_at);
     """,
 
+    """
+    CREATE TABLE IF NOT EXISTS verification_results (
+        id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL,
+        action_id TEXT NOT NULL DEFAULT '',
+        insight_id TEXT NOT NULL DEFAULT '',
+        insight_type TEXT NOT NULL DEFAULT '',
+        action_type TEXT NOT NULL DEFAULT '',
+        metric TEXT NOT NULL DEFAULT '',
+        verdict TEXT NOT NULL DEFAULT 'neutral',
+        effect_abs REAL NOT NULL DEFAULT 0,
+        effect_pct REAL NOT NULL DEFAULT 0,
+        ci_low REAL NOT NULL DEFAULT 0,
+        ci_high REAL NOT NULL DEFAULT 0,
+        significant INTEGER NOT NULL DEFAULT 0,
+        confidence REAL NOT NULL DEFAULT 0.5,
+        sample_n INTEGER NOT NULL DEFAULT 0,
+        window_days REAL NOT NULL DEFAULT 0,
+        confounders_json TEXT NOT NULL DEFAULT '{}',
+        method TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL
+    );
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_verification_ws_time
+        ON verification_results(workspace_id, created_at);
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS evolution_runs (
+        id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        target TEXT NOT NULL DEFAULT '',
+        status TEXT NOT NULL DEFAULT 'proposed',
+        before_json TEXT NOT NULL DEFAULT '{}',
+        after_json TEXT NOT NULL DEFAULT '{}',
+        rationale_json TEXT NOT NULL DEFAULT '{}',
+        gate_json TEXT NOT NULL DEFAULT '{}',
+        created_at TEXT NOT NULL,
+        applied_at TEXT NOT NULL DEFAULT '',
+        rolled_back_at TEXT NOT NULL DEFAULT ''
+    );
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_evolution_ws_time
+        ON evolution_runs(workspace_id, created_at);
+    """,
+
 ]
 
 # V5: users 增加 SCIM 字段（external_id / active）——SQLite ALTER 幂等
@@ -390,6 +438,17 @@ V3_METRICS_DEDUPE_SQL = [
        ON metrics(workspace_id, monitor_id, entity_type, entity_id, metric, window_key)
        WHERE window_key != ''""",
 ]
+
+
+def _decode_evolution(row: dict) -> dict:
+    d = dict(row)
+    for key, default in (("before_json", {}), ("after_json", {}),
+                         ("rationale_json", {}), ("gate_json", {})):
+        try:
+            d[key[:-5]] = json.loads(d.get(key) or "{}")
+        except Exception:
+            d[key[:-5]] = default
+    return d
 
 
 def generate_id() -> str:
@@ -1222,6 +1281,133 @@ class Store:
         return {"rows": rows, "cols": [col_dim or "时间"],
                 "row_labels": row_labels, "col_labels": col_labels, "matrix": matrix,
                 "dim_rows": rows, "dim_col": col_dim, "metric": metric, "agg": agg}
+
+    # ---- 结构化验证结果（自进化的数据基础）----
+
+    async def add_verification_result(self, workspace_id: str, **fields) -> dict:
+        vid = generate_id()
+        await self._execute(
+            """INSERT INTO verification_results (id, workspace_id, action_id,
+               insight_id, insight_type, action_type, metric, verdict, effect_abs,
+               effect_pct, ci_low, ci_high, significant, confidence, sample_n,
+               window_days, confounders_json, method, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (vid, workspace_id, str(fields.get("action_id") or ""),
+             str(fields.get("insight_id") or ""), str(fields.get("insight_type") or ""),
+             str(fields.get("action_type") or ""), str(fields.get("metric") or ""),
+             str(fields.get("verdict") or "neutral"),
+             float(fields.get("effect_abs") or 0), float(fields.get("effect_pct") or 0),
+             float(fields.get("ci_low") or 0), float(fields.get("ci_high") or 0),
+             1 if fields.get("significant") else 0,
+             float(fields.get("confidence") or 0.5), int(fields.get("sample_n") or 0),
+             float(fields.get("window_days") or 0),
+             json.dumps(fields.get("confounders") or {}, ensure_ascii=False),
+             str(fields.get("method") or ""), datetime.now(UTC).isoformat()))
+        await self._db.commit()
+        return {"id": vid, **fields}
+
+    async def list_verification_results(self, workspace_id: str, *,
+                                        action_id: str = "", limit: int = 200,
+                                        only_significant: bool = False) -> list[dict]:
+        where = "workspace_id = ?"
+        params: list = [workspace_id]
+        if action_id:
+            where += " AND action_id = ?"
+            params.append(action_id)
+        if only_significant:
+            where += " AND significant = 1"
+        rows = await self._fetchall(
+            f"""SELECT * FROM verification_results WHERE {where}
+                ORDER BY created_at DESC LIMIT ?""", tuple([*params, min(limit, 1000)]))
+        out = []
+        for r in rows:
+            d = dict(r)
+            try:
+                d["confounders"] = json.loads(d.get("confounders_json") or "{}")
+            except Exception:
+                d["confounders"] = {}
+            out.append(d)
+        return out
+
+    async def verification_summary(self, workspace_id: str) -> dict:
+        """验证结论汇总：有效率 / 显著占比 / 按动作类型（自进化的评测依据）"""
+        rows = await self._fetchall(
+            """SELECT action_type, verdict, significant, COUNT(*) AS n,
+                      AVG(effect_pct) AS avg_pct
+               FROM verification_results WHERE workspace_id = ?
+               GROUP BY action_type, verdict, significant""", (workspace_id,))
+        by_action: dict[str, dict] = {}
+        total = effective = significant = 0
+        for r in rows:
+            n = int(r["n"] or 0)
+            total += n
+            if r["verdict"] == "effective":
+                effective += n
+            if int(r["significant"] or 0):
+                significant += n
+            entry = by_action.setdefault(str(r["action_type"]), {
+                "total": 0, "effective": 0, "significant": 0, "avg_effect_pct": 0.0})
+            entry["total"] += n
+            entry["effective"] += n if r["verdict"] == "effective" else 0
+            entry["significant"] += n if int(r["significant"] or 0) else 0
+            entry["avg_effect_pct"] = round(float(r["avg_pct"] or 0), 4)
+        return {"total": total, "effective": effective, "significant": significant,
+                "effective_rate": round(effective / total, 4) if total else None,
+                "significant_rate": round(significant / total, 4) if total else None,
+                "by_action_type": by_action}
+
+    # ---- 进化账本（每次自进化改动可追溯/可回滚）----
+
+    async def create_evolution_run(self, workspace_id: str, kind: str, *,
+                                   target: str = "", before: dict | None = None,
+                                   after: dict | None = None,
+                                   rationale: dict | None = None) -> dict:
+        rid = generate_id()
+        await self._execute(
+            """INSERT INTO evolution_runs (id, workspace_id, kind, target, status,
+               before_json, after_json, rationale_json, gate_json, created_at)
+               VALUES (?, ?, ?, ?, 'proposed', ?, ?, ?, '{}', ?)""",
+            (rid, workspace_id, kind[:32], target[:191],
+             json.dumps(before or {}, ensure_ascii=False),
+             json.dumps(after or {}, ensure_ascii=False),
+             json.dumps(rationale or {}, ensure_ascii=False),
+             datetime.now(UTC).isoformat()))
+        await self._db.commit()
+        return {"id": rid, "kind": kind, "target": target, "status": "proposed"}
+
+    async def update_evolution_run(self, workspace_id: str, run_id: str, **fields) -> None:
+        sets, params = [], []
+        for key in ("status", "gate_json", "applied_at", "rolled_back_at"):
+            if key in fields and fields[key] is not None:
+                sets.append(f"{key} = ?")
+                value = fields[key]
+                params.append(json.dumps(value, ensure_ascii=False)
+                              if key == "gate_json" else str(value))
+        if not sets:
+            return
+        params.extend([workspace_id, run_id])
+        await self._execute(
+            f"UPDATE evolution_runs SET {', '.join(sets)} "
+            f"WHERE workspace_id = ? AND id = ?", tuple(params))
+        await self._db.commit()
+
+    async def get_evolution_run(self, workspace_id: str, run_id: str) -> dict | None:
+        row = await self._fetchone(
+            "SELECT * FROM evolution_runs WHERE workspace_id = ? AND id = ?",
+            (workspace_id, run_id))
+        return _decode_evolution(row) if row else None
+
+    async def list_evolution_runs(self, workspace_id: str, limit: int = 100,
+                                  *, status: str = "") -> list[dict]:
+        where = "workspace_id = ?"
+        params: list = [workspace_id]
+        if status:
+            where += " AND status = ?"
+            params.append(status)
+        rows = await self._fetchall(
+            f"""SELECT * FROM evolution_runs WHERE {where}
+                ORDER BY created_at DESC LIMIT ?""", tuple([*params, min(limit, 500)]))
+        return [_decode_evolution(r) for r in rows]
 
     # ---- 入站事件幂等（跨系统契约：同一 event_id 只处理一次）----
 

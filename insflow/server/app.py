@@ -349,11 +349,120 @@ async def cleanup_snapshots_api(request: Request, payload: dict):
     return cleanup(ws, keep_days=int(payload.get("keep_days") or 90))
 
 
+# ========== 自进化（P1）：验证结论 / 提案 / 评测门 / 生效回滚 / 配方 ==========
+
+@app.get("/api/v1/verification/results")
+async def verification_results(workspace_id: str = Query(...),
+                               action_id: str = Query(""),
+                               only_significant: bool = Query(False),
+                               limit: int = Query(200)):
+    """结构化验证结论（效应量/置信区间/样本量/混杂提示）"""
+    store = await get_store()
+    return {"results": await store.list_verification_results(
+        workspace_id, action_id=action_id, limit=limit,
+        only_significant=only_significant),
+        "summary": await store.verification_summary(workspace_id)}
+
+
+@app.get("/api/v1/evolution/runs")
+async def evolution_runs(workspace_id: str = Query(...), status: str = Query("")):
+    """进化账本（提案/生效/回滚）"""
+    return {"runs": await (await get_store()).list_evolution_runs(
+        workspace_id, status=status)}
+
+
+@app.post("/api/v1/evolution/propose")
+async def evolution_propose(request: Request, payload: dict):
+    """生成自进化提案（阈值自整定 / 模型权重；默认只提案不生效）"""
+    _guard(request, "alert.write")
+    ws = str(payload.get("workspace_id") or "")
+    if not ws:
+        raise HTTPException(status_code=400, detail="需要 workspace_id")
+    from ..engine.evolution import propose_all
+    out = await propose_all(ws)
+    await _audit_async(request, ws, "evolution.propose", target_type="evolution",
+                       detail=out)
+    return out
+
+
+@app.post("/api/v1/evolution/runs/{run_id}/gate")
+async def evolution_gate(run_id: str, workspace_id: str = Query(...)):
+    """对提案跑评测门（不降级才通过）"""
+    from ..core.store import get_store
+    from ..engine.evolution import EvolutionError, evaluate_gate
+    store = await get_store()
+    run = await store.get_evolution_run(workspace_id, run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="提案不存在")
+    try:
+        return await evaluate_gate(workspace_id, run)
+    except EvolutionError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/api/v1/evolution/runs/{run_id}/apply")
+async def evolution_apply(run_id: str, request: Request, payload: dict):
+    """生效提案（评测门未过需 force，仅 owner/admin）"""
+    _guard(request, "workspace.write" if _role_of(request) in ("owner", "admin")
+           else "alert.write")
+    from ..engine.evolution import EvolutionError, apply_run
+    try:
+        return await apply_run(str(payload.get("workspace_id") or ""), run_id,
+                               force=bool(payload.get("force")),
+                               actor=_role_of(request))
+    except EvolutionError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/api/v1/evolution/runs/{run_id}/rollback")
+async def evolution_rollback(run_id: str, request: Request, payload: dict):
+    """回滚已生效提案（恢复之前的参数）"""
+    _guard(request, "workspace.write" if _role_of(request) in ("owner", "admin")
+           else "alert.write")
+    from ..engine.evolution import EvolutionError, rollback_run
+    try:
+        return await rollback_run(str(payload.get("workspace_id") or ""), run_id,
+                                  actor=_role_of(request))
+    except EvolutionError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get("/api/v1/playbooks")
+async def list_playbooks_api(workspace_id: str = Query(...)):
+    """已挖掘的配方（验证有效的经验沉淀）"""
+    from ..engine.playbooks import list_playbooks
+    return {"playbooks": list_playbooks(workspace_id)}
+
+
+@app.post("/api/v1/playbooks/mine")
+async def mine_playbooks_api(request: Request, payload: dict):
+    """从验证结论挖掘配方（样本/有效率门槛内建）"""
+    _guard(request, "read")
+    ws = str(payload.get("workspace_id") or "")
+    if not ws:
+        raise HTTPException(status_code=400, detail="需要 workspace_id")
+    from ..engine.playbooks import mine
+    drafts = await mine(ws)
+    await _audit_async(request, ws, "playbook.mine", target_type="playbook",
+                       detail={"found": len(drafts)})
+    return {"found": len(drafts), "drafts": drafts}
+
+
 @app.get("/api/v1/integrations/status")
 async def integrations_status(workspace_id: str = Query(...)):
     """系统互操作状态（通道配置/健康/动作统计/最近事件）"""
     from ..engine.integrations_status import status
     return await status(workspace_id)
+
+
+@app.get("/api/v1/models")
+async def list_models(workspace_id: str = Query("")):
+    """模型清单（含自进化权重：高权重优先；由 /console/evolution 生效）"""
+    from ..engine.router import get_model_router
+    router = get_model_router()
+    if workspace_id:
+        await router.load_weights(workspace_id)
+    return {"models": router.list_models()}
 
 
 @app.get("/api/v1/actions/dead-letters")
@@ -2079,6 +2188,25 @@ async def dispatch_action(data: ActionDispatchRequest):
         },
         ActionContext(workspace_id=data.workspace_id, insight_id=data.insight_id),
     )
+    # 闭环必须落库：动作入表 + 记录基线 + 开验证窗口（否则 14 天验证无从执行）
+    if result.get("ok"):
+        try:
+            from ..actions.feedback_tracker import FeedbackTracker, compute_baseline
+            from ..core.entities import Action
+            insight = await store.get_insight(data.insight_id) if data.insight_id else None
+            # 先以 pending 入库，再由 mark_dispatched 走状态机迁移（pending→dispatched）
+            action = await store.create_action(Action(
+                workspace_id=data.workspace_id, insight_id=data.insight_id or "",
+                action_type=data.action_type, target_ref=data.target_ref or "",
+                params_json=data.params_json or {}))
+            baseline = await compute_baseline(data.workspace_id)
+            baseline["insight_type"] = getattr(insight, "type", "") or ""
+            await FeedbackTracker(data.workspace_id).mark_dispatched(action, baseline)
+            result["action_id"] = action.id
+            result["baseline"] = {k: v for k, v in baseline.items()
+                                  if k != "captured_at"}
+        except Exception as e:                 # 落库失败不改变已派发事实，但要说清楚
+            result["persist_error"] = f"{type(e).__name__}: {e}"
     return result
 
 

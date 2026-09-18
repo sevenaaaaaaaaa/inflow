@@ -330,4 +330,46 @@ MYSQL_MIGRATIONS = [
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
     """,
 
+    """
+    CREATE TABLE IF NOT EXISTS verification_results (
+        id VARCHAR(64) PRIMARY KEY,
+        workspace_id VARCHAR(64) NOT NULL,
+        action_id VARCHAR(64) NOT NULL DEFAULT '',
+        insight_id VARCHAR(64) NOT NULL DEFAULT '',
+        insight_type VARCHAR(64) NOT NULL DEFAULT '',
+        action_type VARCHAR(64) NOT NULL DEFAULT '',
+        metric VARCHAR(96) NOT NULL DEFAULT '',
+        verdict VARCHAR(24) NOT NULL DEFAULT 'neutral',
+        effect_abs DOUBLE NOT NULL DEFAULT 0,
+        effect_pct DOUBLE NOT NULL DEFAULT 0,
+        ci_low DOUBLE NOT NULL DEFAULT 0,
+        ci_high DOUBLE NOT NULL DEFAULT 0,
+        significant INT NOT NULL DEFAULT 0,
+        confidence DOUBLE NOT NULL DEFAULT 0.5,
+        sample_n INT NOT NULL DEFAULT 0,
+        window_days DOUBLE NOT NULL DEFAULT 0,
+        confounders_json TEXT,
+        method VARCHAR(191) NOT NULL DEFAULT '',
+        created_at VARCHAR(40) NOT NULL,
+        KEY idx_verification_ws_time (workspace_id, created_at)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS evolution_runs (
+        id VARCHAR(64) PRIMARY KEY,
+        workspace_id VARCHAR(64) NOT NULL,
+        kind VARCHAR(32) NOT NULL,
+        target VARCHAR(191) NOT NULL DEFAULT '',
+        status VARCHAR(24) NOT NULL DEFAULT 'proposed',
+        before_json TEXT,
+        after_json TEXT,
+        rationale_json TEXT,
+        gate_json TEXT,
+        created_at VARCHAR(40) NOT NULL,
+        applied_at VARCHAR(40) NOT NULL DEFAULT '',
+        rolled_back_at VARCHAR(40) NOT NULL DEFAULT '',
+        KEY idx_evolution_ws_time (workspace_id, created_at)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    """,
+
 ]

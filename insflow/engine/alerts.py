@@ -51,7 +51,16 @@ async def _evaluate_rule(store, workspace_id: str, rule: dict) -> dict | None:
     window = float(rule.get("window_days") or 7)
     value = await store.metric_total(workspace_id, rule["metric"], days=window,
                                      dim_filters=dims)
+    # 自进化落点：若该规则有已生效的阈值覆盖（evolution.apply），用覆盖值
     threshold = float(rule.get("threshold") or 0)
+    try:
+        ws_row = await store.get_workspace(workspace_id)
+        overrides = dict((ws_row.settings_json or {}).get("alert_threshold_overrides")
+                          or {}) if ws_row else {}
+        if str(rule.get("id")) in overrides:
+            threshold = float(overrides[str(rule["id"])])
+    except Exception:
+        pass
     if not OPS[op](value, threshold):
         return None
 

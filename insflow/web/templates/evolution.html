@@ -1,0 +1,121 @@
+{% extends "base.html" %}
+{% block title %} · 自进化{% endblock %}
+{% block content %}
+<h1>自进化</h1>
+<p class="sub">灰盒自整定：提案 → 评测门（不降级才通过）→ 生效 → 可回滚。只调可量化参数（告警阈值/模型权重），
+安全与合规参数永不自动改动。</p>
+
+<div class="cards">
+  {{ viz.kpi_card('验证结论', summary.total, color='var(--accent)') | safe }}
+  {{ viz.kpi_card('有效率', (summary.effective_rate | round(3)) if summary.effective_rate is not none else '—', color='var(--ok)') | safe }}
+  {{ viz.kpi_card('显著占比', (summary.significant_rate | round(3)) if summary.significant_rate is not none else '—', color='var(--muted)') | safe }}
+  {{ viz.kpi_card('待审提案', pending | length, color='var(--warn)') | safe }}
+</div>
+
+<h2>进化账本</h2>
+<div class="card">
+  <div class="toolbar" style="gap:8px;margin-bottom:8px">
+    <button onclick="evPropose()">生成提案</button>
+    <span id="ev-status" class="sub"></span>
+  </div>
+  <table>
+    <tr><th>时间</th><th>类型</th><th>目标</th><th>状态</th><th>改动</th><th>门禁</th><th></th></tr>
+    {% for r in runs %}
+    <tr>
+      <td>{{ (r.created_at or '')[:19].replace('T', ' ') }}</td>
+      <td><code>{{ r.kind }}</code></td>
+      <td>{{ r.target[:18] }}</td>
+      <td><span class="badge b-{{ 'info' if r.status == 'applied' else ('high' if r.status == 'rejected' else 'medium') }}">{{ r.status }}</span></td>
+      <td class="sub">{{ (r.before | tojson)[:40] }} → {{ (r.after | tojson)[:40] }}</td>
+      <td class="sub">{{ '通过' if r.gate.passed else ('未通过' if r.gate else '未评估') }}</td>
+      <td>
+        {% if r.status == 'proposed' %}
+        <button class="dp-btn" onclick="evGate('{{ r.id }}')">评估</button>
+        <button class="dp-btn" onclick="evApply('{{ r.id }}', false)">生效</button>
+        {% elif r.status == 'applied' %}
+        <button class="dp-btn" onclick="evApply('{{ r.id }}', true)">回滚</button>
+        {% endif %}
+      </td>
+    </tr>
+    {% else %}
+    <tr><td colspan="7" class="sub">暂无提案 —— 点「生成提案」或等待每周一 05:20 自动提案</td></tr>
+    {% endfor %}
+  </table>
+</div>
+
+<h2>配方（验证有效的经验）</h2>
+<div class="card">
+  <div class="toolbar" style="gap:8px;margin-bottom:8px">
+    <button onclick="evMine()">重新挖掘</button>
+    <span id="ev-pb-status" class="sub"></span>
+  </div>
+  <table>
+    <tr><th>配方</th><th>样本</th><th>有效率</th><th>平均效应</th><th>指标</th></tr>
+    {% for pb in playbooks %}
+    <tr>
+      <td><code>{{ pb.id }}</code></td>
+      <td>{{ pb.evidence.samples }}</td>
+      <td>{{ (pb.evidence.effective_rate * 100) | round(0) }}%</td>
+      <td>{{ (pb.evidence.avg_effect_pct * 100) | round(1) }}%</td>
+      <td class="sub">{{ (pb.evidence.metrics or []) | join('、') }}</td>
+    </tr>
+    {% else %}
+    <tr><td colspan="5" class="sub">暂无配方（需 ≥3 条验证结论且有效率 ≥50%）</td></tr>
+    {% endfor %}
+  </table>
+</div>
+
+<h2>按动作类型的验证结论</h2>
+<div class="card">
+  {% if summary.by_action_type %}
+  <table>
+    <tr><th>动作类型</th><th>总数</th><th>有效</th><th>显著</th><th>平均效应</th></tr>
+    {% for k, v in summary.by_action_type.items() %}
+    <tr><td><code>{{ k }}</code></td><td>{{ v.total }}</td><td>{{ v.effective }}</td>
+        <td>{{ v.significant }}</td><td>{{ v.avg_effect_pct }}</td></tr>
+    {% endfor %}
+  </table>
+  {% else %}
+  <div class="empty">暂无结构化验证结论 —— 动作验证后自动出现</div>
+  {% endif %}
+</div>
+
+<script>
+async function evPropose(){
+  var st = document.getElementById('ev-status');
+  st.textContent = '生成中…';
+  var r = await fetch('/api/v1/evolution/propose', {method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({workspace_id:'{{ workspace_id }}'})});
+  var j = await r.json();
+  st.textContent = r.ok ? ('阈值提案 ' + j.threshold_tunes + ' · 权重提案 ' + j.model_weights) : (j.detail || '失败');
+  if(r.ok) setTimeout(function(){ location.reload(); }, 1000);
+}
+async function evGate(id){
+  var st = document.getElementById('ev-status');
+  var r = await fetch('/api/v1/evolution/runs/' + id + '/gate?workspace_id={{ workspace_id }}', {method:'POST'});
+  var j = await r.json();
+  st.textContent = r.ok ? ('门禁：' + (j.passed ? '通过' : '未通过') + ' ' + (j.checks || []).map(function(c){return c.name;}).join(',')) : (j.detail || '失败');
+  setTimeout(function(){ location.reload(); }, 1200);
+}
+async function evApply(id, rollback){
+  var st = document.getElementById('ev-status');
+  var url = '/api/v1/evolution/runs/' + id + (rollback ? '/rollback' : '/apply');
+  var r = await fetch(url, {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({workspace_id:'{{ workspace_id }}'})});
+  var j = await r.json();
+  st.textContent = r.ok ? (rollback ? ('已回滚 ' + JSON.stringify(j.restored)) : ('已生效 ' + JSON.stringify(j.applied))) : (j.detail || '失败');
+  if(r.ok) setTimeout(function(){ location.reload(); }, 1200);
+}
+async function evMine(){
+  var st = document.getElementById('ev-pb-status');
+  st.textContent = '挖掘中…';
+  var r = await fetch('/api/v1/playbooks/mine', {method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({workspace_id:'{{ workspace_id }}'})});
+  var j = await r.json();
+  st.textContent = r.ok ? ('挖掘到 ' + j.found + ' 个配方') : (j.detail || '失败');
+  if(r.ok) setTimeout(function(){ location.reload(); }, 1000);
+}
+</script>
+{% endblock %}

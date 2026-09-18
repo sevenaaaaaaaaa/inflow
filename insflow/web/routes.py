@@ -675,6 +675,22 @@ async def console_static(name: str, request: Request):
                              "Cache-Control": "public, max-age=86400, must-revalidate"})
 
 
+@router.get("/evolution", response_class=HTMLResponse)
+async def evolution_page(request: Request, workspace_id: str = Query("")):
+    """自进化：验证结论 / 提案与账本 / 配方（灰盒自整定，可回滚）"""
+    if not workspace_id:
+        workspace_id = await _default_workspace()
+    store = await get_store()
+    from ..engine.playbooks import list_playbooks
+    return templates.TemplateResponse(request, "evolution.html", _ctx(
+        request, "evolution", workspace_id,
+        summary=await store.verification_summary(workspace_id),
+        runs=await store.list_evolution_runs(workspace_id, limit=50),
+        pending=await store.list_evolution_runs(workspace_id, status="proposed"),
+        playbooks=list_playbooks(workspace_id),
+    ))
+
+
 @router.get("/integrations", response_class=HTMLResponse)
 async def integrations_page(request: Request, workspace_id: str = Query("")):
     """系统集成状态（OpenFlow / MFlow / 入站 / MCP 通道健康）"""

@@ -57,10 +57,28 @@ class InsightModel(ABC):
 
 
 class ModelRouter:
-    """模型路由"""
+    """模型路由（含自进化权重：高权重模型优先、低权重可被过滤）"""
 
     def __init__(self):
         self._models: dict[str, InsightModel] = {}
+        self._weights: dict[str, float] = {}
+        self._weight_min = 0.0
+
+    def set_weights(self, weights: dict | None, *, min_weight: float = 0.0) -> None:
+        """设置模型权重（来自工作区设置 model_weights，由 evolution.apply 写入）"""
+        self._weights = {str(k): float(v) for k, v in (weights or {}).items()}
+        self._weight_min = float(min_weight or 0.0)
+
+    def get_weight(self, model_id: str) -> float:
+        return self._weights.get(str(model_id), 1.0)
+
+    async def load_weights(self, workspace_id: str) -> dict:
+        """从工作区设置加载权重（在跑模型前调用）"""
+        from ..core.store import get_store
+        ws = await (await get_store()).get_workspace(workspace_id)
+        weights = dict((ws.settings_json or {}).get("model_weights") or {}) if ws else {}
+        self.set_weights(weights)
+        return weights
 
     def register(self, model: InsightModel) -> None:
         """注册模型"""
@@ -78,17 +96,20 @@ class ModelRouter:
                 "name": m.name,
                 "description": m.description,
                 "required_metrics": m.required_metrics,
+                "weight": self.get_weight(m.id),
             }
             for m in self._models.values()
         ]
 
     def get_models_for_metrics(self, available_metrics: list[str]) -> list[InsightModel]:
-        """根据可用指标获取可运行的模型"""
+        """根据可用指标获取可运行的模型（按自进化权重降序；低于下限的过滤）"""
         result = []
         for model in self._models.values():
-            # 检查模型所需指标是否都可用
             if all(m in available_metrics for m in model.required_metrics):
+                if self._weight_min and self.get_weight(model.id) < self._weight_min:
+                    continue
                 result.append(model)
+        result.sort(key=lambda m: -self.get_weight(m.id))
         return result
 
 
@@ -130,3 +151,23 @@ def get_model_router() -> ModelRouter:
         _load_builtin_models(_model_router)
         _BUILTIN_MODELS_LOADED = True
     return _model_router
+
+
+SEVERITY_SCORE = {"critical": 4.0, "high": 3.0, "medium": 2.0, "low": 1.0, "info": 0.5}
+
+
+def rank_insights(insights: list, weights: dict | None = None) -> list:
+    """按「严重度 × 模型权重」排序（自进化权重影响处理优先级）
+
+    weights: {model_id: weight}；洞察的 models_json 里记录产出模型。
+    """
+    weights = weights or {}
+
+    def _score(ins) -> float:
+        sev = getattr(ins.severity, "value", str(ins.severity))
+        base = SEVERITY_SCORE.get(str(sev), 1.0)
+        models = getattr(ins, "models_json", None) or []
+        w = max((float(weights.get(str(m), 1.0)) for m in models), default=1.0)
+        return base * w
+
+    return sorted(insights, key=_score, reverse=True)
