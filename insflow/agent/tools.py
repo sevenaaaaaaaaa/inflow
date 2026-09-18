@@ -145,6 +145,61 @@ AGENT_TOOLS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "metric_qa",
+            "description": ("自然语言问数：指标数值/趋势/维度分布/数据质量/渠道归因/"
+                            "动作增量（规则解析，无 LLM 也能用）。"),
+            "parameters": {"type": "object", "properties": {
+                "workspace_id": {"type": "string"}, "question": {"type": "string"}},
+                "required": ["workspace_id", "question"]},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "narrate",
+            "description": "指标自动叙事：结论/异常/趋势/维度贡献/数据质量/建议。",
+            "parameters": {"type": "object", "properties": {
+                "workspace_id": {"type": "string"}, "metric": {"type": "string"},
+                "days": {"type": "number", "default": 30},
+                "dim": {"type": "string"}},
+                "required": ["workspace_id", "metric"]},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "data_quality",
+            "description": "数据质量体检：新鲜度/完整性/缺口/续采方式。",
+            "parameters": {"type": "object", "properties": {
+                "workspace_id": {"type": "string"},
+                "window_days": {"type": "integer", "default": 14}},
+                "required": ["workspace_id"]},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "attribution",
+            "description": "渠道归因（last_click/first_click/linear/time_decay/markov）。",
+            "parameters": {"type": "object", "properties": {
+                "workspace_id": {"type": "string"}, "days": {"type": "number", "default": 30},
+                "method": {"type": "string", "default": "linear"}},
+                "required": ["workspace_id"]},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "action_lift",
+            "description": "动作增量：前后对比 + 自助法区间（非随机实验）。",
+            "parameters": {"type": "object", "properties": {
+                "workspace_id": {"type": "string"}, "days": {"type": "number", "default": 30}},
+                "required": ["workspace_id"]},
+        },
+    },
 ]
 
 TOOL_EXECUTORS = {
@@ -153,6 +208,11 @@ TOOL_EXECUTORS = {
     "list_models": lambda args: tool_list_models(**args),
     "get_feedback_stats": lambda args: tool_get_feedback_stats(**args),
     "list_reports": lambda args: tool_list_reports(**args),
+    "metric_qa": lambda args: tool_metric_qa(**args),
+    "narrate": lambda args: tool_narrate(**args),
+    "data_quality": lambda args: tool_data_quality(**args),
+    "attribution": lambda args: tool_attribution(**args),
+    "action_lift": lambda args: tool_action_lift(**args),
 }
 
 
@@ -166,3 +226,37 @@ async def execute_tool(name: str, args: dict) -> str:
         return json.dumps(result, ensure_ascii=False, default=str)
     except Exception as e:
         return json.dumps({"error": f"{type(e).__name__}: {e}"}, ensure_ascii=False)
+
+# ========== 语义层 / 数据质量 / 归因 / 叙事（Batch10） ==========
+
+async def tool_metric_qa(workspace_id: str, question: str) -> dict:
+    """自然语言问数（规则解析指标/时间/意图，无 LLM 也可用）"""
+    from ..engine.narrative import ask_metrics
+    return await ask_metrics(workspace_id, question)
+
+
+async def tool_narrate(workspace_id: str, metric: str, days: float = 30,
+                       dim: str = "") -> dict:
+    """指标自动叙事（结论/异常/趋势/维度贡献/数据质量/建议）"""
+    from ..engine.narrative import narrate
+    res = await narrate(workspace_id, metric, days=days, dim=dim)
+    return {"markdown": res["markdown"], "facts": res["facts"]}
+
+
+async def tool_data_quality(workspace_id: str, window_days: int = 14) -> dict:
+    """数据质量体检（新鲜度/缺口/续采方式）"""
+    from ..engine.data_quality import check_workspace
+    return await check_workspace(workspace_id, window_days=window_days)
+
+
+async def tool_attribution(workspace_id: str, days: float = 30,
+                           method: str = "linear") -> dict:
+    """渠道归因（多触点）"""
+    from ..engine.attribution import channel_credit
+    return await channel_credit(workspace_id, days=days, method=method)
+
+
+async def tool_action_lift(workspace_id: str, days: float = 30) -> dict:
+    """动作增量（前后对比 + 自助法区间；非随机实验）"""
+    from ..engine.attribution import lift_summary
+    return await lift_summary(workspace_id, days=days)

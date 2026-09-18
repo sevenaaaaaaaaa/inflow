@@ -151,6 +151,17 @@ function exSet(k, v){
   {% endif %}
 </div>
 
+<h2>自动叙事与沉淀洞察</h2>
+<div class="card">
+  <p class="sub">一键生成该指标的结论/异常/趋势/维度贡献/数据质量报告；可沉淀为洞察进入动作闭环。</p>
+  <div class="toolbar">
+    <button onclick="exNarrate(false)">生成叙事</button>
+    <button onclick="exNarrate(true)">生成并沉淀为洞察</button>
+    <span id="ex-narr-status" class="sub"></span>
+  </div>
+  <div id="ex-narr-out" class="sub" style="margin-top:8px;white-space:pre-wrap"></div>
+</div>
+
 <h2>计算字段（派生指标 / 表计算）</h2>
 <div class="card">
   <p class="sub">用已有指标四则运算定义新口径（如 <code>ga4_conversions / ga4_sessions * 100</code>），
@@ -258,6 +269,19 @@ function exClearCube(){
   EXCUBE = {rows: [], cols: '', metric: ''};
   ['rows','cols','val'].forEach(function(s){ document.getElementById('slot-' + s).innerHTML = ''; });
   document.getElementById('ex-cube-out').innerHTML = '';
+}
+async function exNarrate(publish){
+  var st = document.getElementById('ex-narr-status'), out = document.getElementById('ex-narr-out');
+  if(!'{{ metric }}'){ st.textContent = '请先选择指标'; return; }
+  st.textContent = publish ? '生成并沉淀中…' : '生成中…';
+  var r = await fetch(publish ? '/api/v1/narrative/insight' : '/api/v1/narrative',
+    {method:'POST', headers:{'Content-Type':'application/json'},
+     body: JSON.stringify({workspace_id:'{{ workspace_id }}', metric:'{{ metric }}',
+                           days: {{ days }}})});
+  var j = await r.json();
+  if(!r.ok){ st.textContent = j.detail || '失败'; return; }
+  st.textContent = publish ? ('已沉淀为洞察：' + j.insight_id) : '完成';
+  out.textContent = j.markdown || '';
 }
 async function exSaveCalcDef(){
   var st = document.getElementById('ex-def-status');

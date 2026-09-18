@@ -12,6 +12,47 @@
   {{ viz.kpi_card('重试耗尽', data.kpis.dead, color='var(--danger)') | safe }}
 </div>
 
+<h2>渠道归因（多触点）</h2>
+<div class="card">
+  {% if data.attribution and data.attribution.channels %}
+  {{ viz.datapanel('渠道贡献（' ~ data.attribution.method ~ '）', ['渠道', '占比'],
+      data.attribution.channels | map(attribute='channel') | zip(
+          data.attribution.channels | map(attribute='share')) | map('list') | list,
+      viz.bar_chart(data.attribution.channels | map(attribute='channel') | zip(
+          data.attribution.channels | map(attribute='credit')) | map('list') | list,
+          value_fmt=viz.fmt_pct, filter_dim='channel'),
+      csv_name='attribution', subtitle='路径数 ' ~ data.attribution.paths_used
+             ~ ('（已降级为渠道占比：无触点序列）' if data.attribution.degraded else '')) | safe }}
+  {% else %}
+  <div class="empty">暂无归因数据 —— 接入旅程事件（journey_events 带 channel）后可用</div>
+  {% endif %}
+</div>
+
+<h2>动作增量（前后对比）</h2>
+<div class="card">
+  {% if data.lift and data.lift.actions %}
+  <p class="sub">非随机实验（无对照组）：区间只反映波动，用于排序而非宣布因果。</p>
+  <table>
+    <tr><th>动作</th><th>指标</th><th>前均值</th><th>后均值</th><th>增量</th><th>95% 区间</th><th>结论</th></tr>
+    {% for a in data.lift.actions %}
+    {% if not a.insufficient_data %}
+    <tr>
+      <td><code>{{ a.action_type }}</code></td>
+      <td>{{ a.metric }}</td>
+      <td>{{ a.pre.mean }}</td>
+      <td>{{ a.post.mean }}</td>
+      <td>{{ (a.lift_pct * 100) | round(1) ~ '%' if a.lift_pct is not none else '—' }}</td>
+      <td>[{{ a.ci95[0] }}, {{ a.ci95[1] }}]</td>
+      <td>{% if a.significant %}显著{% else %}不显著{% endif %}{% if a.verdict %} · {{ a.verdict }}{% endif %}</td>
+    </tr>
+    {% endif %}
+    {% endfor %}
+  </table>
+  {% else %}
+  <div class="empty">暂无可评估动作（需动作前后各有数据点）</div>
+  {% endif %}
+</div>
+
 <h2>验证结论构成</h2>
 <div class="card">
   {% set v = data.verdicts %}

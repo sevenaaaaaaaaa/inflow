@@ -523,6 +523,85 @@ def bench_cmd(monitors, insights, metrics, driver, keep):
     console.print(table)
 
 
+@main.group("dq")
+def dq_group():
+    """数据质量 SLA：体检与断点续采"""
+    pass
+
+
+@dq_group.command("check")
+@click.option("--workspace", "-w", required=True)
+@click.option("--days", default=14)
+def dq_check(workspace: str, days: int):
+    """新鲜度/完整性体检"""
+    from .engine.data_quality import check_workspace
+    rep = run_async(check_workspace(workspace, window_days=days))
+    s = rep["summary"]
+    console.print(f"[green]指标 {s['metrics']}[/] 新鲜 {s['fresh']} · 延迟 {s['late']} · "
+                  f"停更 {s['stale']} · 缺失 {s['missing']} · 有缺口 {s['with_gaps']}")
+    for i in rep["items"]:
+        if i["status"] != "fresh":
+            console.print(f"  - {i['metric']:<28} {i['status']:<8} {i['age_hours']}h "
+                          f"缺口 {i['gap_count']} · {i['recoverable']}")
+
+
+@dq_group.command("backfill")
+@click.option("--workspace", "-w", required=True)
+@click.option("--days", default=7)
+@click.option("--dry-run", is_flag=True)
+def dq_backfill(workspace: str, days: int, dry_run: bool):
+    """断点续采：重跑有缺口指标对应的监控"""
+    from .engine.data_quality import backfill
+    res = run_async(backfill(workspace, days=days, dry_run=dry_run))
+    console.print(f"计划 {len(res['planned'])} · 执行 {len(res['ran'])} · 跳过 {len(res['skipped'])}"
+                  + ("（dry-run）" if res["dry_run"] else ""))
+
+
+@main.command("attribution")
+@click.option("--workspace", "-w", required=True)
+@click.option("--method", default="linear",
+              type=click.Choice(["last_click", "first_click", "linear", "time_decay",
+                                 "markov"]))
+@click.option("--days", default=30)
+def attribution_cmd(workspace: str, method: str, days: int):
+    """渠道归因（多触点）"""
+    from .engine.attribution import channel_credit
+    res = run_async(channel_credit(workspace, days=days, method=method))
+    console.print(f"方法 {res['method']} · 路径 {res['paths_used']}"
+                  + ("[yellow]（已降级为占比）[/]" if res["degraded"] else ""))
+    for c in res["channels"]:
+        console.print(f"  {c['channel']:<14} {c['share']}")
+
+
+@main.command("lift")
+@click.option("--workspace", "-w", required=True)
+@click.option("--days", default=30)
+def lift_cmd(workspace: str, days: int):
+    """动作增量（前后对比 + 自助法区间）"""
+    from .engine.attribution import lift_summary
+    res = run_async(lift_summary(workspace, days=days))
+    console.print(f"可评估 {res['total']} · 显著 {res['significant']} · "
+                  f"数据不足 {res['insufficient_data']}")
+    for a in res["actions"]:
+        if a.get("insufficient_data"):
+            continue
+        console.print(f"  {a['action_type']:<24} {a['metric']:<20} "
+                      f"{a.get('lift_pct') and format(a['lift_pct'], '+.1%')} "
+                      f"CI {a['ci95']} {'显著' if a['significant'] else '不显著'}")
+
+
+@main.command("narrate")
+@click.option("--workspace", "-w", required=True)
+@click.option("--metric", "-m", required=True)
+@click.option("--days", default=30)
+@click.option("--polish", is_flag=True, help="有 LLM 时润色（只用给定数字）")
+def narrate_cmd(workspace: str, metric: str, days: int, polish: bool):
+    """自动叙事：结论/证据/数据质量/建议"""
+    from .engine.narrative import narrate
+    res = run_async(narrate(workspace, metric, days=days, polish=polish))
+    console.print(res["markdown"])
+
+
 @main.group("alerts")
 def alerts_group():
     """阈值告警规则：评估与升级"""

@@ -892,6 +892,99 @@ async def explore_sql_api(request: Request, payload: dict):
         raise HTTPException(status_code=400, detail=str(e))
 
 
+# ========== 数据质量 / 归因 / 叙事（P1：让"可信"和"验证"更硬） ==========
+
+@app.get("/api/v1/data-quality")
+async def data_quality(workspace_id: str = Query(...), window_days: int = Query(14),
+                       sla_hours: float = Query(0), staleness_only: bool = Query(False)):
+    """数据质量 SLA 体检：新鲜度 / 完整性 / 缺口 / 续采方式"""
+    from ..engine.data_quality import check_workspace
+    return await check_workspace(workspace_id, window_days=max(1, min(window_days, 365)),
+                                 sla_hours=sla_hours or None,
+                                 staleness_only=staleness_only)
+
+
+@app.post("/api/v1/data-quality/backfill")
+async def data_quality_backfill(request: Request, payload: dict):
+    """断点续采：对缺口指标重跑对应监控（deferred 由幂等窗口键保证不重复）"""
+    _guard(request, "monitor.write")
+    from ..engine.data_quality import backfill
+    ws = str(payload.get("workspace_id") or "")
+    if not ws:
+        raise HTTPException(status_code=400, detail="需要 workspace_id")
+    result = await backfill(ws, days=int(payload.get("days") or 7),
+                            metrics=list(payload.get("metrics") or []) or None,
+                            dry_run=bool(payload.get("dry_run")))
+    await _audit_async(request, ws, "dq.backfill", target_type="dq",
+                       detail={"days": payload.get("days") or 7,
+                               "planned": len(result.get("planned") or []),
+                               "dry_run": bool(payload.get("dry_run"))})
+    return result
+
+
+@app.get("/api/v1/attribution/channels")
+async def attribution_channels(workspace_id: str = Query(...), days: float = Query(30),
+                               method: str = Query("linear")):
+    """多触点归因：last_click/first_click/linear/time_decay/markov"""
+    from ..engine.attribution import AttributionError, channel_credit
+    try:
+        return await channel_credit(workspace_id, days=days, method=method)
+    except AttributionError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get("/api/v1/attribution/lift")
+async def attribution_lift(workspace_id: str = Query(...), days: float = Query(30)):
+    """动作增量概览（前后对比 + 自助法区间 + 非实验警告）"""
+    from ..engine.attribution import lift_summary
+    return await lift_summary(workspace_id, days=days)
+
+
+@app.get("/api/v1/attribution/lift/{action_id}")
+async def attribution_lift_one(action_id: str, workspace_id: str = Query(...)):
+    """单个动作的增量估计"""
+    from ..engine.attribution import AttributionError, action_lift
+    try:
+        return await action_lift(workspace_id, action_id)
+    except AttributionError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@app.post("/api/v1/narrative")
+async def narrative_api(payload: dict):
+    """自动叙事：确定性结论 + 可选 LLM 润色（只用给定数字）"""
+    from ..engine.narrative import narrate
+    ws = str(payload.get("workspace_id") or "")
+    metric = str(payload.get("metric") or "")
+    if not ws or not metric:
+        raise HTTPException(status_code=400, detail="需要 workspace_id 与 metric")
+    return await narrate(ws, metric, days=float(payload.get("days") or 30),
+                         dim=str(payload.get("dim") or ""),
+                         polish=bool(payload.get("polish")))
+
+
+@app.post("/api/v1/narrative/insight")
+async def narrative_insight(request: Request, payload: dict):
+    """把叙事沉淀为洞察（经质量门写入洞察流）"""
+    from ..engine.narrative import auto_insight
+    from ..core.entities import Insight
+    ws = str(payload.get("workspace_id") or "")
+    metric = str(payload.get("metric") or "")
+    if not ws or not metric:
+        raise HTTPException(status_code=400, detail="需要 workspace_id 与 metric")
+    draft = await auto_insight(ws, metric, days=float(payload.get("days") or 30))
+    store = await get_store()
+    insight = await store.create_insight(Insight(
+        workspace_id=ws, type=draft["type"], title=draft["title"],
+        summary=draft["summary"] or draft["markdown"][:200],
+        severity=draft["severity"], confidence=draft["confidence"],
+        evidence_json=draft["evidence_json"]))
+    await _audit_async(request, ws, "narrative.publish", target_type="insight",
+                       target_id=insight.id, detail={"metric": metric})
+    return {"insight_id": insight.id, "title": insight.title,
+            "markdown": draft["markdown"]}
+
+
 @app.get("/api/v1/metrics/defs")
 async def list_metric_defs(workspace_id: str = Query(...)):
     """语义层：指标口径清单（含版本/责任人）"""

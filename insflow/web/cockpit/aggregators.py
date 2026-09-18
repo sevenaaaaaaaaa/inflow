@@ -391,8 +391,27 @@ async def action_loop(workspace_id: str, days: float = 30) -> dict:
                                                                           e["type"]),
                           "severity": "info", "meta": e["type"]}
                          for e in act_events[-15:]][::-1],
+            # 归因 + 增量（让"验证"更硬：渠道贡献与动作前后对比）
+            "attribution": await _attr_snapshot(workspace_id, days),
+            "lift": await _lift_snapshot(workspace_id, days),
         }
     return await cache.get_or_compute(_key("action_loop", workspace_id, days), build, TTL)
+
+
+async def _attr_snapshot(workspace_id: str, days: float) -> dict:
+    try:
+        from ...engine.attribution import channel_credit
+        return await channel_credit(workspace_id, days=days, method="linear")
+    except Exception:
+        return {}
+
+
+async def _lift_snapshot(workspace_id: str, days: float) -> dict:
+    try:
+        from ...engine.attribution import lift_summary
+        return await lift_summary(workspace_id, days=days, limit=8)
+    except Exception:
+        return {}
 
 
 # ================= C7 报告中心 =================
@@ -465,8 +484,17 @@ async def ops(workspace_id: str, days: float = 7) -> dict:
                         "meta": str(e.get("payload", {}))[:80]}
                        for e in alerts[-15:]][::-1],
             "backups": backups,
+            "dq": await _dq_snapshot(workspace_id, days),
         }
     return await cache.get_or_compute(_key("ops", workspace_id, days), build, TTL)
+
+
+async def _dq_snapshot(workspace_id: str, days: float) -> dict:
+    """运维舱用的数据质量快照（异常项优先展示）"""
+    from ...engine.data_quality import check_workspace
+    rep = await check_workspace(workspace_id, window_days=int(max(7, days)))
+    bad = [i for i in rep["items"] if i["status"] != "fresh"]
+    return {**rep, "bad": bad}
 
 
 # ================= C9 商业化 =================

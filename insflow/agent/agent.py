@@ -36,9 +36,22 @@ class InsightAgent:
     # ========== 工具执行 ==========
 
     async def run_tool(self, name: str, args: dict) -> str:
-        """执行 Agent 工具（自动注入 workspace_id）"""
-        if name in ("query_insights", "get_feedback_stats", "list_reports"):
-            args = {"workspace_id": self.workspace_id, **args}
+        """执行 Agent 工具（按 function-calling schema 自动注入 workspace_id）
+
+        之前用硬编码白名单，新增工具（metric_qa/narrate/data_quality/attribution/
+        action_lift）漏加 → 调用缺参静默失败、问数退化成洞察检索。改为查 schema 的
+        required 字段，新增工具不会再有这个坑。
+        """
+        args = dict(args or {})
+        try:
+            from .tools import AGENT_TOOLS
+            spec = next((t["function"] for t in AGENT_TOOLS
+                         if t["function"]["name"] == name), None)
+            required = (spec or {}).get("parameters", {}).get("required", [])
+        except Exception:
+            required = []
+        if "workspace_id" in required and "workspace_id" not in args:
+            args["workspace_id"] = self.workspace_id
         return await execute_tool(name, args)
 
     # ========== ask 主入口 ==========
@@ -118,6 +131,15 @@ class InsightAgent:
 
         这是 Agent 的"降级可用"保障：没有 LLM 也能回答"最近有什么洞察"。
         """
+        # 先尝试"问数"（指标/数据质量/归因/增量），命中即答；否则退回洞察检索
+        try:
+            qa = json.loads(await self.run_tool("metric_qa", {"question": question}))
+            if qa.get("intent") != "value" or qa.get("facts", {}).get("metric"):
+                if qa.get("answer") and "没听懂" not in qa["answer"]:
+                    return {"answer": qa["answer"],
+                            "citations": qa.get("citations", [])}
+        except Exception:
+            pass
         tool_output = await self.run_tool("query_insights", {"limit": 10})
         data = json.loads(tool_output)
         insights = data.get("insights", [])

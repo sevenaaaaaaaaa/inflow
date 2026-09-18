@@ -214,6 +214,27 @@ async def bootstrap_scheduled_jobs() -> dict:
             except Exception:
                 logger.exception(f"告警评估失败: {ws.id}")
 
+    async def _dq_daily(payload=None):
+        """每日数据质量体检：停更/缺口告警（命中才通知），可选自动续采"""
+        from ..engine.data_quality import alert_stale, backfill
+        for ws in await store.list_workspaces():
+            try:
+                out = await alert_stale(ws.id)
+                row = await store.get_workspace(ws.id)
+                auto = bool(((row.settings_json or {}).get("dq_auto_backfill")))
+                if auto:
+                    res = await backfill(ws.id, days=7)
+                    if res["ran"]:
+                        logger.info(f"自动续采: {ws.id} 执行 {len(res['ran'])} 个监控")
+                if out.get("fired"):
+                    logger.info(f"数据质量告警: {ws.id} x{out['fired']}")
+            except Exception:
+                logger.exception(f"数据质量体检失败: {ws.id}")
+
+    scheduler.add_job("dq.daily", "45 9 * * *", "dq.daily", {})
+    scheduler.register_handler("dq.daily", _dq_daily)
+    registered["jobs"].append("dq.daily@daily-09:45")
+
     scheduler.add_job("alerts.hourly", "40 * * * *", "alerts.hourly", {})
     scheduler.register_handler("alerts.hourly", _alerts_hourly)
     registered["jobs"].append("alerts.hourly@hourly-40")

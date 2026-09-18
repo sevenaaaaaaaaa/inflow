@@ -13,6 +13,57 @@
   {{ viz.kpi_card('分级告警', data.kpis.alerts, color='var(--danger)' if data.kpis.alerts else 'var(--ok)') | safe }}
 </div>
 
+<h2>数据质量 SLA（新鲜度 / 缺口 / 续采）</h2>
+<div class="card">
+  {% if dq %}
+  <div class="cards">
+    {{ viz.kpi_card('指标总数', dq.summary.metrics, color='var(--accent)') | safe }}
+    {{ viz.kpi_card('新鲜', dq.summary.fresh, color='var(--ok)') | safe }}
+    {{ viz.kpi_card('延迟', dq.summary.late, color='var(--warn)') | safe }}
+    {{ viz.kpi_card('停更', dq.summary.stale, color='var(--danger)') | safe }}
+    {{ viz.kpi_card('有缺口', dq.summary.with_gaps, color='var(--danger)') | safe }}
+  </div>
+  {% if dq_bad %}
+  <table style="margin-top:10px">
+    <tr><th>指标</th><th>状态</th><th>距今</th><th>SLA</th><th>缺口天数</th><th>续采方式</th></tr>
+    {% for i in dq_bad %}
+    <tr>
+      <td><code>{{ i.metric }}</code></td>
+      <td><span class="badge b-{{ 'critical' if i.status == 'stale' else 'high' }}">{{ i.status }}</span></td>
+      <td>{{ i.age_hours }}h</td>
+      <td>{{ i.sla_hours }}h</td>
+      <td>{{ i.gap_count }}</td>
+      <td>{{ i.recoverable }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+  <div class="toolbar" style="margin-top:8px">
+    <button onclick="dqsBackfill(true)">预演续采</button>
+    <button onclick="dqsBackfill(false)">立即续采</button>
+    <span id="dqs-status" class="sub"></span>
+  </div>
+  {% else %}
+  <div class="empty">所有指标均在 SLA 内 ✅</div>
+  {% endif %}
+  {% else %}
+  <div class="empty">暂无数据质量信息</div>
+  {% endif %}
+</div>
+<script>
+async function dqsBackfill(dry){
+  var st = document.getElementById('dqs-status');
+  st.textContent = '执行中…';
+  var r = await fetch('/api/v1/data-quality/backfill', {method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({workspace_id:'{{ workspace_id }}', days:7, dry_run:dry})});
+  var j = await r.json();
+  if(!r.ok){ st.textContent = j.detail || '失败'; return; }
+  st.textContent = (dry ? '预演：' : '已执行：') + '计划 ' + (j.planned||[]).length +
+    ' · 执行 ' + (j.ran||[]).length + ' · 跳过 ' + (j.skipped||[]).length;
+  if(!dry) setTimeout(function(){ location.reload(); }, 1200);
+}
+</script>
+
 <h2>性能与容量（对齐 OpenFlow：看写放大/p95/增长，不只看表大小）</h2>
 <div class="cards">
   {% if data.perf %}

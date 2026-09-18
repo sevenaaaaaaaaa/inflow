@@ -539,10 +539,12 @@ async def cockpit_page(request: Request, name: str, workspace_id: str = Query(""
             if geo_dataset is None:
                 geo_dataset_name = ""
     template, nav, title = COCKPIT_PAGES[name]
+    dq_bad = ((data or {}).get("dq") or {}).get("bad") if name == "ops" else None
     return templates.TemplateResponse(request, template, _ctx(
         request, nav, workspace_id, data=data, title=title, days=days or 14,
         entity=entity, channel=channel, geo_dataset=geo_dataset,
         geo_dataset_name=geo_dataset_name, geo_dim=(data.get("geo_dim") or "province"),
+        dq_bad=dq_bad, dq=((data or {}).get("dq") if name == "ops" else None),
     ))
 
 
