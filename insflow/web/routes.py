@@ -350,6 +350,7 @@ NAV_AREA = {
     "evolution": "ecosystem",
     "snapshots": "report",
     "agent": "agent",
+    "boards": "insight",
 }
 
 
@@ -399,7 +400,21 @@ def _policy_ctx(request: Request, settings: dict | None, role: str = ""):
     return build_policy(settings, role or str(user.get("role") or "owner"), user)
 
 
-def _ctx(request: Request, nav: str, workspace_id: str, **extra) -> dict:
+async def _ctx(request: Request, nav: str, workspace_id: str, **extra) -> dict:
+    from ..engine.custom_boards import list_from_settings
+    from ..engine.theme_tokens import normalize_tokens, tokens_to_css
+    settings = extra.pop("ws_settings", None)
+    if settings is None and workspace_id:
+        try:
+            ws = await (await get_store()).get_workspace(workspace_id)
+            settings = (ws.settings_json if ws else {}) or {}
+        except Exception:
+            settings = {}
+    tokens = extra.pop("theme_tokens", None) or normalize_tokens(
+        (settings or {}).get("theme_tokens"))
+    extra.setdefault("theme_tokens", tokens)
+    extra.setdefault("theme_css", tokens_to_css(tokens))
+    extra.setdefault("custom_boards", list_from_settings(settings or {}))
     return {
         "request": request,
         "nav": nav,
@@ -473,7 +488,7 @@ async def dashboard(request: Request, workspace_id: str = Query("")):
     except Exception:
         roi = {}
 
-    return templates.TemplateResponse(request, "dashboard.html", _ctx(
+    return templates.TemplateResponse(request, "dashboard.html", await _ctx(
         request, "dashboard", workspace_id,
         checklist=checklist, checklist_done=checklist_done,
         todos=todos, due_actions=due_actions[:5], roi=roi,
@@ -505,10 +520,12 @@ async def insights_page(request: Request, workspace_id: str = Query(""),
     total = await store.count_insights(workspace_id, status=status or None,
                                        severity=severity or None)
     pages = (total + page_size - 1) // page_size or 1
-    return templates.TemplateResponse(request, "insights.html", _ctx(
+    from ..actions.router import get_action_router
+    return templates.TemplateResponse(request, "insights.html", await _ctx(
         request, "insights", workspace_id,
         insights=insights, severity=severity, status=status,
         page=page, pages=pages, total=total,
+        action_types=get_action_router().list_adapters(),
     ))
 
 
@@ -518,7 +535,7 @@ async def monitors_page(request: Request, workspace_id: str = Query("")):
         workspace_id = await _default_workspace()
     from ..engine.monitors import MonitorService
     monitors = await MonitorService(workspace_id).list()
-    return templates.TemplateResponse(request, "monitors.html", _ctx(
+    return templates.TemplateResponse(request, "monitors.html", await _ctx(
         request, "monitors", workspace_id, monitors=monitors,
     ))
 
@@ -531,7 +548,7 @@ async def reports_page(request: Request, workspace_id: str = Query("")):
     all_reports = {cat: [p.name for p in store.list_reports(cat)]
                    for cat in ("weekly", "diagnosis", "competitors", "maturity", "verification")}
     deep = [p.name for p in store.list_reports("deep-dive")]
-    return templates.TemplateResponse(request, "reports.html", _ctx(
+    return templates.TemplateResponse(request, "reports.html", await _ctx(
         request, "reports", workspace_id,
         all_reports=all_reports, deep_reports=deep, cat_names=CAT_NAMES,
     ))
@@ -573,7 +590,7 @@ async def view_report(request: Request, category: str, filename: str,
         workspace_id = await _default_workspace()
     store = ReportStore(workspace_id)
     content = store.get_report(category, filename) or "报告不存在"
-    return templates.TemplateResponse(request, "report_view.html", _ctx(
+    return templates.TemplateResponse(request, "report_view.html", await _ctx(
         request, "reports", workspace_id,
         category=category, filename=filename, content=content,
         cat_name=CAT_NAMES.get(category, category),
@@ -584,11 +601,45 @@ async def view_report(request: Request, category: str, filename: str,
 async def plugins_page(request: Request, workspace_id: str = Query("")):
     if not workspace_id:
         workspace_id = await _default_workspace()
+    from ..actions.router import get_action_router
     from ..engine.marketplace import Marketplace
     market = Marketplace(workspace_id)
-    return templates.TemplateResponse(request, "plugins.html", _ctx(
+    return templates.TemplateResponse(request, "plugins.html", await _ctx(
         request, "plugins", workspace_id,
         installed=market.installed(), market=market.scan(),
+        action_types=get_action_router().list_adapters(),
+    ))
+
+
+@router.get("/boards", response_class=HTMLResponse)
+async def boards_page(request: Request, workspace_id: str = Query("")):
+    """自定义看板：选面板、存工作区、一键嵌入。"""
+    if not workspace_id:
+        workspace_id = await _default_workspace()
+    from ..engine.custom_boards import PANEL_CATALOG, list_boards
+    return templates.TemplateResponse(request, "boards.html", await _ctx(
+        request, "boards", workspace_id,
+        catalog=PANEL_CATALOG, boards=await list_boards(workspace_id),
+    ))
+
+
+@router.get("/boards/{board_id}", response_class=HTMLResponse)
+async def board_view(request: Request, board_id: str, workspace_id: str = Query(""),
+                     days: float = Query(14)):
+    if not workspace_id:
+        workspace_id = await _default_workspace()
+    from ..engine.custom_boards import get_board, list_from_settings, render_panels
+    store = await get_store()
+    ws = await store.get_workspace(workspace_id)
+    settings = (ws.settings_json if ws else {}) or {}
+    board = get_board(settings, board_id)
+    if not board:
+        raise HTTPException(status_code=404, detail="看板不存在")
+    panels = await render_panels(workspace_id, board, days=days or 14)
+    return templates.TemplateResponse(request, "board.html", await _ctx(
+        request, "boards", workspace_id, ws_settings=settings,
+        board=board, panels=panels, days=days or 14,
+        boards=list_from_settings(settings),
     ))
 
 
@@ -601,7 +652,7 @@ async def agent_page(request: Request, workspace_id: str = Query("")):
     from ..engine.agent_memory import list_notes
     from ..engine.proposals import list_pending
     store = await get_store()
-    return templates.TemplateResponse(request, "agent.html", _ctx(
+    return templates.TemplateResponse(request, "agent.html", await _ctx(
         request, "agent", workspace_id,
         skills=get_skills_host().list_skills(),
         notes=await list_notes(workspace_id, limit=50),
@@ -640,7 +691,7 @@ async def cockpit_page(request: Request, name: str, workspace_id: str = Query(""
     policy = _policy_ctx(request, _settings, role)
     if allow and entity and entity not in allow:
         # 注意：此处 nav 尚未由 COCKPIT_PAGES 解析（原实现直接引用 nav → NameError 500）
-        return templates.TemplateResponse(request, "403.html", _ctx(
+        return templates.TemplateResponse(request, "403.html", await _ctx(
             request, name, workspace_id, role=role, title="无权限"),
             status_code=403)
     kw: dict = {}
@@ -679,7 +730,7 @@ async def cockpit_page(request: Request, name: str, workspace_id: str = Query(""
     if name == "action-loop":
         from ..engine.proposals import list_pending
         pending = await list_pending(workspace_id, limit=20)
-    return templates.TemplateResponse(request, template, _ctx(
+    return templates.TemplateResponse(request, template, await _ctx(
         request, nav, workspace_id, data=data, title=title, days=days or 14,
         entity=entity, channel=channel, geo_dataset=geo_dataset,
         geo_dataset_name=geo_dataset_name, geo_dim=(data.get("geo_dim") or "province"),
@@ -703,7 +754,7 @@ async def sentiment_page(request: Request, workspace_id: str = Query(""),
     data = await COCKPITS["sentiment"](workspace_id, days, channel=channel,
                                        entity=entity, entity_allow=allow,
                                        policy=policy)
-    return templates.TemplateResponse(request, "sentiment.html", _ctx(
+    return templates.TemplateResponse(request, "sentiment.html", await _ctx(
         request, "sentiment", workspace_id, data=data, title="舆情驾驶舱", days=days,
         entity=entity, channel=channel,
     ))
@@ -735,7 +786,7 @@ async def mobile_view(request: Request, workspace_id: str = Query("")):
         "workspace_id": workspace_id, "kpis": kpis,
         "insights": [{"title": i.title[:60], "severity": i.severity.value,
                       "summary": i.summary[:110]} for i in insights]}
-    return templates.TemplateResponse(request, "m.html", _ctx(
+    return templates.TemplateResponse(request, "m.html", await _ctx(
         request, "dashboard", workspace_id, kpis=kpis, insights=insights,
         snapshot=snapshot, offline_note=""))
 
@@ -747,7 +798,7 @@ async def snapshots_page(request: Request, workspace_id: str = Query("")):
         workspace_id = await _default_workspace()
     from ..engine.snapshot import list_snapshots
     items = list_snapshots(workspace_id)
-    return templates.TemplateResponse(request, "snapshots.html", _ctx(
+    return templates.TemplateResponse(request, "snapshots.html", await _ctx(
         request, "reports", workspace_id, items=items,
     ))
 
@@ -802,7 +853,7 @@ async def evolution_page(request: Request, workspace_id: str = Query("")):
         workspace_id = await _default_workspace()
     store = await get_store()
     from ..engine.playbooks import list_playbooks
-    return templates.TemplateResponse(request, "evolution.html", _ctx(
+    return templates.TemplateResponse(request, "evolution.html", await _ctx(
         request, "evolution", workspace_id,
         summary=await store.verification_summary(workspace_id),
         runs=await store.list_evolution_runs(workspace_id, limit=50),
@@ -818,7 +869,7 @@ async def integrations_page(request: Request, workspace_id: str = Query("")):
         workspace_id = await _default_workspace()
     from ..engine.integrations_status import status as _st
     store = await get_store()
-    return templates.TemplateResponse(request, "integrations.html", _ctx(
+    return templates.TemplateResponse(request, "integrations.html", await _ctx(
         request, "integrations", workspace_id,
         data=await _st(workspace_id),
         letters=await store.list_dead_letters(workspace_id, limit=30),
@@ -834,7 +885,7 @@ async def alerts_page(request: Request, workspace_id: str = Query("")):
     ws = await store.get_workspace(workspace_id)
     from ..engine.notify_policy import policy_of
     catalog = await store.metric_catalog(workspace_id, days=180)
-    return templates.TemplateResponse(request, "alerts.html", _ctx(
+    return templates.TemplateResponse(request, "alerts.html", await _ctx(
         request, "alerts", workspace_id,
         rules=await store.list_alert_rules(workspace_id),
         policy=policy_of(ws.settings_json if ws else {}),
@@ -855,7 +906,7 @@ async def members_page(request: Request, workspace_id: str = Query("")):
            WHERE workspace_id = ? ORDER BY created_at""", (workspace_id,))
     from ..engine.permissions import MATRIX, entity_allow
     from ..engine.rls import policies_for
-    return templates.TemplateResponse(request, "members.html", _ctx(
+    return templates.TemplateResponse(request, "members.html", await _ctx(
         request, "members", workspace_id,
         members=[dict(m) for m in members],
         roles=list(MATRIX.keys()),
@@ -876,7 +927,7 @@ async def assets_page(request: Request, workspace_id: str = Query("")):
     ws = await store.get_workspace(workspace_id)
     from ..engine.geo import list_datasets
     from ..engine.snapshot import list_snapshots
-    return templates.TemplateResponse(request, "assets.html", _ctx(
+    return templates.TemplateResponse(request, "assets.html", await _ctx(
         request, "assets", workspace_id,
         datasets=list_datasets((ws.settings_json if ws else {}) or {}),
         snapshots=list_snapshots(workspace_id, limit=20),
@@ -892,7 +943,7 @@ async def maturity_page(request: Request, workspace_id: str = Query("")):
     ws = await store.get_workspace(workspace_id)
     from ..engine.maturity import QUESTIONNAIRE
     last = (ws.settings_json or {}).get("maturity_last") if ws else {}
-    return templates.TemplateResponse(request, "maturity.html", _ctx(
+    return templates.TemplateResponse(request, "maturity.html", await _ctx(
         request, "maturity", workspace_id,
         questionnaire=QUESTIONNAIRE, last=last or {},
         stage=ws.stage.value if ws else "", level=ws.maturity_level.value if ws else "",
@@ -908,7 +959,7 @@ async def audit_page(request: Request, workspace_id: str = Query(""),
     store = await get_store()
     logs = await store.list_admin_audit(workspace_id, action=action, actor=actor,
                                         limit=300)
-    return templates.TemplateResponse(request, "audit.html", _ctx(
+    return templates.TemplateResponse(request, "audit.html", await _ctx(
         request, "audit", workspace_id, logs=logs, action=action, actor=actor,
     ))
 
@@ -1101,6 +1152,20 @@ async def embed_view(request: Request, token: str = Query("")):
                 "rows": [{"bucket": p["bucket"], "value": p["value"]} for p in series],
                 "total": sum(p["value"] for p in series)}
         panels = build_board_panels(name, data)
+    elif kind == "custom":
+        from ..engine.custom_boards import get_board, render_panels
+        from ..engine.theme_tokens import normalize_tokens, tokens_to_css
+        ws_row = await store.get_workspace(workspace_id)
+        settings = (ws_row.settings_json if ws_row else {}) or {}
+        board = get_board(settings, name)
+        if board:
+            panels = await render_panels(workspace_id, board)
+            data = {"kpis": {"看板": board.get("name") or name,
+                             "面板": len(panels)}}
+            branding = {**dict(settings.get("branding") or {}), **branding}
+            theme_css = tokens_to_css(normalize_tokens(settings.get("theme_tokens")))
+        else:
+            theme_css = ""
     elif kind in ("cockpit", "board"):
         from .cockpit import COCKPITS
         fn = COCKPITS.get(name)
@@ -1109,11 +1174,23 @@ async def embed_view(request: Request, token: str = Query("")):
             panels = build_board_panels(name, data)
             if kind == "cockpit" and panels:
                 panels = panels[:2]        # 单面板嵌入：给最相关的 1-2 块
+    if kind != "custom":
+        theme_css = ""
+        try:
+            from ..engine.theme_tokens import normalize_tokens, tokens_to_css
+            ws_row = await store.get_workspace(workspace_id)
+            settings = (ws_row.settings_json if ws_row else {}) or {}
+            theme_css = tokens_to_css(normalize_tokens(settings.get("theme_tokens")))
+            if not branding.get("accent_color"):
+                branding = {**dict(settings.get("branding") or {}), **branding}
+        except Exception:
+            theme_css = theme_css or ""
     return templates.TemplateResponse(request, "embed.html", {
         "request": request, "version": __version__, "workspace_id": workspace_id,
         "panel": panel, "kind": kind, "name": name, "data": data, "metric": metric,
         "branding": branding, "panels": panels,
         "theme": (request.query_params.get("theme") or "").lower(),
+        "theme_css": theme_css,
     })
 
 
@@ -1249,7 +1326,7 @@ async def explore_page(request: Request, workspace_id: str = Query(""),
                                      float(r["high"]), float(r["low"]),
                                      float(r["close"])))
             candlestick_true = bool(ohlc) and any(r["n"] > 1 for r in ohlc)
-    return templates.TemplateResponse(request, "explore.html", _ctx(
+    return templates.TemplateResponse(request, "explore.html", await _ctx(
         request, "explore", workspace_id,
         catalog=catalog[:60], chart=chart, pivot=pivot, metric=metric, entity=entity,
         days=days, agg=agg, entity_options=entity_options, chart_type=chart_type,
@@ -1271,7 +1348,7 @@ async def subscriptions_page(request: Request, workspace_id: str = Query("")):
         workspace_id = await _default_workspace()
     from ..engine.subscriptions import SubscriptionService
     subs = await SubscriptionService(workspace_id).list()
-    return templates.TemplateResponse(request, "subscriptions.html", _ctx(
+    return templates.TemplateResponse(request, "subscriptions.html", await _ctx(
         request, "subscriptions", workspace_id, subs=subs,
     ))
 
@@ -1284,7 +1361,7 @@ async def usage_page(request: Request, workspace_id: str = Query("")):
     billing = BillingManager(workspace_id)
     summary = await billing.usage_summary()
     trial = await billing.trial_status()
-    return templates.TemplateResponse(request, "usage.html", _ctx(
+    return templates.TemplateResponse(request, "usage.html", await _ctx(
         request, "usage", workspace_id,
         plan_id=summary["plan_id"],
         plan_name=summary["plan_name"],
@@ -1306,7 +1383,7 @@ async def onboarding_page(request: Request, workspace_id: str = Query("")):
     health = []
     for provider in ("gsc", "ga4", "crux"):
         health.append(await svc.check_health(provider))
-    return templates.TemplateResponse(request, "onboarding.html", _ctx(
+    return templates.TemplateResponse(request, "onboarding.html", await _ctx(
         request, "onboarding", workspace_id, health=health,
     ))
 

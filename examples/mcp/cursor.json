@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "insight-flow": {
+      "command": "insflow",
+      "args": ["mcp"],
+      "env": {
+        "INSFLOW_MASTER_KEY": "<same-as-server>"
+      }
+    }
+  }
+}

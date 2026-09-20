@@ -44,6 +44,10 @@ class ActionResult(dict):
 class ActionAdapter(ABC):
     """动作适配器基类"""
 
+    source: str = "builtin"
+    plugin_id: str = ""
+    plugin_name: str = ""
+
     @property
     @abstractmethod
     def action_type(self) -> str:
@@ -259,8 +263,23 @@ class ActionRouter:
     def get(self, action_type: str) -> ActionAdapter | None:
         return self._adapters.get(action_type)
 
-    def list_types(self) -> list[str]:
-        return sorted(self._adapters.keys())
+    def list_types(self, source: str | None = None) -> list[str]:
+        items = self._adapters.items()
+        if source:
+            items = [(k, a) for k, a in items if getattr(a, "source", "builtin") == source]
+        return sorted(k for k, _ in items)
+
+    def list_adapters(self) -> list[dict]:
+        out = []
+        for action_type, adapter in sorted(self._adapters.items()):
+            src = getattr(adapter, "source", "builtin")
+            out.append({
+                "action_type": action_type,
+                "source": src,
+                "plugin_id": getattr(adapter, "plugin_id", "") or "",
+                "name": getattr(adapter, "plugin_name", "") or action_type,
+            })
+        return out
 
     async def dispatch(self, action: dict, ctx: ActionContext) -> dict:
         """派发动作：查找适配器 → 执行 → 记录事件流"""
@@ -311,4 +330,16 @@ def get_action_router() -> ActionRouter:
         _router.register(EmailNotifyAdapter())
         _router.register(MFlowCreateContentAdapter())
         _router.register(MFlowRegisterTopicAdapter())
+        try:
+            from .plugins import load_action_plugins
+            load_action_plugins(_router)
+        except Exception:
+            import logging
+            logging.getLogger("insflow.actions").exception("动作插件加载失败")
     return _router
+
+
+def reset_action_router() -> None:
+    """测试用：丢掉单例，下次 get_action_router 重新装载。"""
+    global _router
+    _router = None

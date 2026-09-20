@@ -51,8 +51,12 @@ insflow workspace create "我的工作区"
 # 洞察管理
 insflow insight list -w <workspace-id>
 
-# 插件检查
-insflow plugin check plugins/sources/serper
+# 插件脚手架 + 检查
+insflow plugin new source my-blog
+insflow plugin check plugins/sources/my-blog
+
+# 事件目录（与 GET /api/v1/events/catalog 同源）
+insflow events catalog --write
 
 # 启动服务
 insflow serve [--port 8400] [--reload]
@@ -64,6 +68,7 @@ insflow serve [--port 8400] [--reload]
 |------|------|------|
 | GET | /api/v1/workspaces | 列出工作区 |
 | POST | /api/v1/workspaces | 创建工作区 |
+| GET | /api/v1/events/catalog | 事件目录（type/方向/字段/示例） |
 | GET | /api/v1/insights | 列出洞察 |
 | POST | /api/v1/insights | 创建洞察 |
 | POST | /api/v1/insights/{id}/ack | 确认洞察 |

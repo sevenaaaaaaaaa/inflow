@@ -14,6 +14,11 @@
 | [04-OpenFlow 与 MFlow 集成方案](docs/04-OpenFlow与MFlow集成方案.md) | 基于两套自研系统真实代码架构的落地集成设计 | v1.0 |
 | [05-竞品与生态调研](docs/05-竞品与生态调研.md) | 海内外竞品对标、市场空档分析、增长方法论框架库 | v1.0 |
 | [06-路线图与里程碑](docs/06-路线图与里程碑.md) | M0–M5 六个里程碑、验收标准、依赖与风险 | v1.0 |
+| [13-十维进化评审](docs/13-十维进化评审.md) | 易用/开放/Agent 等十维差距与批次 A–E | 进行中 |
+| [14-事件目录](docs/14-事件目录.md) | 入站/出站/内部事件（与 API 同源，勿手改） | 自动生成 |
+| [15-插件开发指南](docs/15-插件开发指南.md) | manifest、约定函数、plugin new/check、上架 | v1.0 |
+| [examples/](examples/README.md) | curl / Python / TypeScript / n8n / Dify / MCP | v1.0 |
+| [contracts/openapi.json](contracts/openapi.json) | OpenAPI 3.1 快照（CI 锁定破坏性变更） | 锁定 |
 
 ## 一图看懂
 

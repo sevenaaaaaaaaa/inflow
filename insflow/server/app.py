@@ -2240,6 +2240,18 @@ async def first_party_analyze(workspace_id: str, data: FirstPartyAnalysisRequest
     )
 
 
+# ========== 事件目录（伙伴契约，公开只读）==========
+
+@app.get("/api/v1/events/catalog")
+async def events_catalog_api(direction: str | None = Query(None)):
+    """机器可读事件目录（type / 方向 / 必填字段 / 示例）。与 docs/14 同源。"""
+    from ..core.event_catalog import DIRECTIONS, catalog
+    if direction and direction not in DIRECTIONS:
+        raise HTTPException(status_code=400,
+                            detail=f"direction 必须是 {list(DIRECTIONS)}")
+    return catalog(direction)
+
+
 # ========== 入站事件（HMAC 验签）==========
 
 @app.post("/api/v1/ingest")
@@ -2343,9 +2355,79 @@ async def dispatch_action(data: ActionDispatchRequest):
 
 @app.get("/api/v1/actions/types")
 async def list_action_types():
-    """列出已注册的动作适配器类型"""
+    """列出已注册的动作适配器（含插件，装完即出现）。"""
     from ..actions.router import get_action_router
-    return {"action_types": get_action_router().list_types()}
+    router = get_action_router()
+    return {"action_types": router.list_types(), "adapters": router.list_adapters()}
+
+
+class ThemeUpdate(BaseModel):
+    workspace_id: str
+    accent: str = ""
+    radius: str = "default"
+    density: str = "default"
+
+
+@app.get("/api/v1/theme")
+async def get_theme(workspace_id: str = Query(...)):
+    from ..engine.theme_tokens import load_tokens, tokens_to_css
+    tokens = await load_tokens(workspace_id)
+    return {"tokens": tokens, "css": tokens_to_css(tokens)}
+
+
+@app.put("/api/v1/theme")
+async def put_theme(data: ThemeUpdate):
+    from ..engine.theme_tokens import save_tokens, tokens_to_css
+    store = await get_store()
+    if not await store.get_workspace(data.workspace_id):
+        raise HTTPException(status_code=404, detail="工作区不存在")
+    tokens = await save_tokens(data.workspace_id, data.model_dump())
+    return {"ok": True, "tokens": tokens, "css": tokens_to_css(tokens)}
+
+
+class BoardSave(BaseModel):
+    workspace_id: str
+    name: str
+    panel_ids: list[str]
+    id: str = ""
+
+
+@app.get("/api/v1/boards/catalog")
+async def boards_catalog():
+    from ..engine.custom_boards import PANEL_CATALOG
+    return {"panels": PANEL_CATALOG}
+
+
+@app.get("/api/v1/boards")
+async def boards_list(workspace_id: str = Query(...)):
+    from ..engine.custom_boards import list_boards
+    try:
+        return {"boards": await list_boards(workspace_id)}
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+
+
+@app.post("/api/v1/boards")
+async def boards_create(data: BoardSave):
+    from ..engine.custom_boards import save_board
+    try:
+        board = await save_board(data.workspace_id, name=data.name,
+                                 panel_ids=data.panel_ids, board_id=data.id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    return {"ok": True, "board": board}
+
+
+@app.delete("/api/v1/boards/{board_id}")
+async def boards_delete(board_id: str, workspace_id: str = Query(...)):
+    from ..engine.custom_boards import delete_board
+    try:
+        ok = await delete_board(workspace_id, board_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    if not ok:
+        raise HTTPException(status_code=404, detail="看板不存在")
+    return {"ok": True}
 
 
 # ---- 待审批动作（Agent 提案 → 人工批准/拒绝；批次 C 的审批门）----

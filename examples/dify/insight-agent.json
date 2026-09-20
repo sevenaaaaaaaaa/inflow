@@ -1,0 +1,22 @@
+{
+  "name": "Insight Flow Agent",
+  "description": "Dify → 工具 → 自定义：把 IF MCP HTTP 当作工具源。先 GET /api/v1/mcp/tools 看清单，再 POST /api/v1/mcp/tools/call。",
+  "connection": {
+    "type": "openapi_or_http",
+    "base_url": "http://<if-host>:8400",
+    "list_tools": "GET /api/v1/mcp/tools",
+    "call_tool": "POST /api/v1/mcp/tools/call",
+    "auth": { "header": "X-API-Key", "env": "IF_API_KEY" }
+  },
+  "call_body": {
+    "name": "list_insights",
+    "arguments": { "workspace_id": "<ws>", "limit": 5 }
+  },
+  "recommended_tools": [
+    { "name": "list_insights", "usage": "检索最新洞察" },
+    { "name": "get_insight", "usage": "展开证据与推荐动作" },
+    { "name": "ask_analyst", "usage": "自然语言问答（带引用）" },
+    { "name": "propose_action", "usage": "起草待审批动作，不直接派发" }
+  ],
+  "system_prompt": "你是增长顾问。先调用 ask_analyst；对 top 洞察调用 get_insight；建议必须引用洞察 ID；数据不足就说不够，不编数字。写操作只允许 propose_action。"
+}

@@ -6,6 +6,7 @@
 <title>{% if branding.get('company') %}{{ branding.get('company') }} · {% endif %}Insight Flow 嵌入视图</title>
 <style>
 {{ viz.tokens_css | safe }}
+{% if theme_css %}{{ theme_css | safe }}{% endif %}
 body{padding:14px;max-width:none}
 .emb-head{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:12px}
 .emb-brand{font-weight:800;color:{{ branding.get('accent_color') or 'var(--accent)' }};display:flex;align-items:center;gap:8px}

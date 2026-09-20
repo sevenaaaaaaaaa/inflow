@@ -18,6 +18,15 @@
     {% endfor %}
   </select>
   <span class="sub">共 {{ total }} 条（第 {{ page }}/{{ pages }} 页）</span>
+  <label class="sub">派发类型
+    <select id="act-type">
+      {% for t in action_types or [] %}
+      <option value="{{ t.action_type }}" {% if t.action_type == 'feishu.notify' %}selected{% endif %}>
+        {{ t.action_type }}{% if t.source == 'plugin' %} · 插件{% endif %}
+      </option>
+      {% endfor %}
+    </select>
+  </label>
 </div>
 
 {% if insights %}
@@ -55,12 +64,14 @@ async function setStatus(id, action) {
   location.reload();
 }
 async function triggerAction(id) {
+  var sel = document.getElementById('act-type');
+  var actionType = (sel && sel.value) || 'feishu.notify';
   const r = await fetch('/api/v1/actions', {method: 'POST', headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({
       workspace_id: '{{ workspace_id }}', insight_id: id,
-      action_type: 'feishu.notify',
+      action_type: actionType,
       title: document.getElementById(id).querySelector('strong').textContent,
-      description: '控制台手动派发（飞书通知）',
+      description: '控制台手动派发（' + actionType + '）',
     })});
   const d = await r.json();
   alert(d.ok ? '动作已派发 ✓' : '派发失败: ' + d.detail);

@@ -67,6 +67,14 @@ def check_plugin(plugin_dir: Path) -> dict:
             errors.append(f"entry 不可读: {e}")
         if ptype == "source" and "def create_plugin" not in src and "create_plugin =" not in src:
             errors.append("source 插件缺少 create_plugin() 工厂函数")
+        elif ptype == "model" and not any(
+            token in src for token in ("def create_model", "create_model =", "def evaluate")
+        ):
+            errors.append("model 插件缺少 create_model() 或 evaluate()")
+        elif ptype == "action" and not any(
+            token in src for token in ("def create_adapter", "create_adapter =", "def execute")
+        ):
+            errors.append("action 插件缺少 create_adapter() 或 execute()")
 
     # 4. 目录名 = id
     if manifest.get("id") and plugin_dir.name != manifest["id"]:
@@ -148,6 +156,9 @@ class Marketplace:
                     "detail": f"插件已安装: {plugin_id}（先卸载再重装）"}
 
         shutil.copytree(src, dest)
+        if ptype == "action":
+            from ..actions.plugins import reload_action_plugins
+            reload_action_plugins()
         self.bus.emit("plugin.installed", {
             "plugin_id": plugin_id, "type": ptype,
             "check_passed": report["passed"], "from": str(src),
@@ -164,6 +175,9 @@ class Marketplace:
             dest = PLUGINS_DIR / type_dir / plugin_id
             if dest.exists():
                 shutil.rmtree(dest)
+                if type_dir == "actions":
+                    from ..actions.plugins import reload_action_plugins
+                    reload_action_plugins()
                 self.bus.emit("plugin.uninstalled", {"plugin_id": plugin_id, "type": type_dir})
                 return {"ok": True, "removed": str(dest)}
         return {"ok": False, "detail": f"未找到插件: {plugin_id}"}

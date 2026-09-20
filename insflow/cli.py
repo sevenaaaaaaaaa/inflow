@@ -168,6 +168,13 @@ def serve(port: int, host: str, reload: bool):
     )
 
 
+@main.command("mcp")
+def mcp_stdio():
+    """启动 MCP Server（stdio，给 Claude Desktop / Cursor 用）"""
+    from .mcp_server.server import main as mcp_main
+    mcp_main()
+
+
 @main.group()
 def workspace():
     """工作区管理"""
@@ -267,67 +274,72 @@ def plugin():
     pass
 
 
+@main.group()
+def events():
+    """事件目录（伙伴契约）"""
+    pass
+
+
+@events.command("catalog")
+@click.option("--write", "do_write", is_flag=True, help="回写 docs/14-事件目录.md")
+@click.option("--direction", default="", help="inbound|outbound|internal")
+@click.option("--json", "as_json", is_flag=True, help="输出 JSON")
+def events_catalog(do_write: bool, direction: str, as_json: bool):
+    """打印或回写事件目录（与 GET /api/v1/events/catalog 同源）"""
+    from .core.event_catalog import DIRECTIONS, catalog, render_markdown, write_docs
+    if direction and direction not in DIRECTIONS:
+        console.print(f"[red]direction 必须是 {list(DIRECTIONS)}[/]")
+        sys.exit(1)
+    if do_write:
+        path = write_docs()
+        console.print(f"[green]已写入[/] {path}")
+        return
+    if as_json or direction:
+        console.print_json(data=catalog(direction or None))
+        return
+    console.print(render_markdown())
+
+
 @plugin.command("check")
 @click.argument("plugin_path")
 def plugin_check(plugin_path: str):
-    """检查插件是否合规"""
-    path = Path(plugin_path)
-    if not path.exists():
-        console.print(f"[red]Plugin path not found: {path}[/]")
-        sys.exit(1)
-
-    manifest_path = path / "manifest.json"
-    if not manifest_path.exists():
-        console.print(f"[red]manifest.json not found in {path}[/]")
-        sys.exit(1)
-
-    import json
-    manifest = json.loads(manifest_path.read_text())
-
-    errors = []
-    warnings = []
-
-    # 检查必填字段
-    required_fields = ["id", "type", "name", "version", "entry"]
-    for field in required_fields:
-        if field not in manifest:
-            errors.append(f"Missing required field: {field}")
-
-    # 检查 type 枚举
-    valid_types = ["source", "model", "action", "template"]
-    if manifest.get("type") not in valid_types:
-        errors.append(f"Invalid type: {manifest.get('type')}. Must be one of {valid_types}")
-
-    # 检查 entry 文件是否存在
-    entry_file = path / manifest.get("entry", "")
-    if not entry_file.exists():
-        errors.append(f"Entry file not found: {entry_file}")
-
-    # 检查目录名是否等于 id
-    if path.name != manifest.get("id"):
-        warnings.append(f"Directory name '{path.name}' does not match plugin id '{manifest.get('id')}'")
-
-    # 检查权限声明
-    if "permissions" in manifest:
-        for perm in manifest["permissions"]:
-            if perm.startswith("credentials:"):
-                # 检查是否有明文密钥
-                config = manifest.get("config", {})
-                for key, val in config.items():
-                    if val.get("secret") and "default" in val:
-                        errors.append(f"Secret config '{key}' must not have default value")
-
-    # 输出结果
-    if errors:
+    """检查插件是否合规（与市场安装同源校验器）"""
+    from .engine.marketplace import check_plugin
+    report = check_plugin(Path(plugin_path))
+    if report["passed"]:
+        console.print("[bold green]Plugin check PASSED[/]")
+        for warn in report.get("warnings") or []:
+            console.print(f"  [yellow]⚠[/] {warn}")
+    else:
         console.print("[bold red]Plugin check FAILED[/]")
-        for err in errors:
+        for err in report.get("errors") or []:
             console.print(f"  [red]✗[/] {err}")
         sys.exit(1)
+
+
+@plugin.command("new")
+@click.argument("ptype", type=click.Choice(["source", "model", "action", "template"]))
+@click.argument("plugin_id")
+@click.option("--out", "out_dir", default="", help="父目录（默认 plugins/<type>s）")
+@click.option("--name", default="", help="显示名")
+@click.option("--force", is_flag=True, help="覆盖已存在目录")
+def plugin_new(ptype: str, plugin_id: str, out_dir: str, name: str, force: bool):
+    """生成插件脚手架（manifest + entry，可通过 plugin check）"""
+    from .engine.plugin_scaffold import create_plugin, default_dest
+    dest = default_dest(ptype, plugin_id, Path(out_dir) if out_dir else None)
+    result = create_plugin(ptype, plugin_id, dest=dest, name=name, force=force)
+    if not result["ok"]:
+        console.print(f"[red]{result.get('error')}[/]")
+        sys.exit(1)
+    check = result["check"]
+    console.print(f"[green]已生成[/] {result['path']}")
+    if check.get("passed"):
+        console.print("[green]plugin check PASSED[/]")
     else:
-        console.print("[bold green]Plugin check PASSED[/]")
-        if warnings:
-            for warn in warnings:
-                console.print(f"  [yellow]⚠[/] {warn}")
+        console.print("[yellow]plugin check 未通过（目录已写出，请按错误改）[/]")
+        for err in check.get("errors") or []:
+            console.print(f"  [red]✗[/] {err}")
+        sys.exit(1)
 
 
 @plugin.command("install")

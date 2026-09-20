@@ -16,6 +16,21 @@
 <div class="empty"><span>未安装任何插件</span><a class="dp-btn" href="/console/integrations?workspace_id={{ workspace_id }}">查看已接入通道</a></div>
 {% endif %}
 
+<h2>已注册动作类型（{{ action_types | length if action_types else 0 }}）</h2>
+<p class="sub">内置 + <code>plugins/actions/*</code> 过检后热加载；装完刷新即出现在洞察派发列表。</p>
+{% if action_types %}
+<table>
+  <tr><th>动作类型</th><th>来源</th><th>名称</th></tr>
+  {% for t in action_types %}
+  <tr>
+    <td><code>{{ t.action_type }}</code></td>
+    <td>{% if t.source == 'plugin' %}<span class="badge b-ok">插件 {{ t.plugin_id }}</span>{% else %}内置{% endif %}</td>
+    <td>{{ t.name }}</td>
+  </tr>
+  {% endfor %}
+</table>
+{% endif %}
+
 <h2>本地市场（marketplace/）</h2>
 {% if market %}
 <table>

@@ -22,6 +22,8 @@ jobs:
         run: python -m compileall -q insflow
       - name: Lint（ruff，阻塞）
         run: python -m ruff check insflow tests scripts
+      - name: OpenAPI 契约锁定
+        run: python scripts/export_openapi.py --check
       - name: 单元测试（排除 e2e）
         run: pytest -q -m "not e2e" --no-header
       - name: E2E 冒烟（进程内 HTTP）

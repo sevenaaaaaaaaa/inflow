@@ -1,0 +1,64 @@
+{% extends "base.html" %}
+{% block title %} · 自定义看板{% endblock %}
+{% block content %}
+<h1>自定义看板</h1>
+<p class="sub">从现有驾驶舱挑选面板，存成工作区看板；可嵌入交付。布局拖拽沿用各页同一套。</p>
+
+{% if boards %}
+<h2>已保存（{{ boards | length }}）</h2>
+<table>
+  <tr><th>名称</th><th>面板</th><th>操作</th></tr>
+  {% for b in boards %}
+  <tr>
+    <td><a href="/console/boards/{{ b.id }}?workspace_id={{ workspace_id }}">{{ b.name }}</a></td>
+    <td class="sub">{{ b.panel_ids | join(' · ') }}</td>
+    <td>
+      <a class="dp-btn" href="/console/boards/{{ b.id }}?workspace_id={{ workspace_id }}">打开</a>
+      <button class="dp-btn" onclick="ifBoardDel('{{ b.id }}')">删除</button>
+    </td>
+  </tr>
+  {% endfor %}
+</table>
+{% else %}
+<div class="empty"><span>还没有自定义看板</span><span class="sub">勾选下方面板后保存</span></div>
+{% endif %}
+
+<h2>新建看板</h2>
+<div class="card">
+  <div class="toolbar" style="margin-bottom:12px">
+    <input id="board-name" placeholder="看板名称，如 增长周会" style="min-width:240px">
+    <button onclick="ifBoardSave()">保存看板</button>
+  </div>
+  <div class="cl-items">
+    {% for p in catalog %}
+    <label class="cl-item" style="cursor:pointer">
+      <input type="checkbox" name="panel" value="{{ p.id }}">
+      <span class="cl-label">{{ p.title }}</span>
+      <code class="sub">{{ p.id }}</code>
+    </label>
+    {% endfor %}
+  </div>
+</div>
+
+<script>
+async function ifBoardSave(){
+  var name = (document.getElementById('board-name').value || '').trim();
+  var ids = Array.from(document.querySelectorAll('input[name=panel]:checked')).map(function(el){ return el.value; });
+  if(!name){ toast('请填写看板名称', 'warn'); return; }
+  if(!ids.length){ toast('请至少选一块面板', 'warn'); return; }
+  var r = await fetch('/api/v1/boards', {method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({workspace_id:'{{ workspace_id }}', name:name, panel_ids:ids})});
+  var d = await r.json();
+  if(d.ok){ location.href = '/console/boards/' + d.board.id + '?workspace_id={{ workspace_id }}'; }
+  else toast(d.detail || '保存失败', 'error');
+}
+async function ifBoardDel(id){
+  if(!confirm('删除看板 ' + id + '？')) return;
+  var r = await fetch('/api/v1/boards/' + encodeURIComponent(id) + '?workspace_id={{ workspace_id }}', {method:'DELETE'});
+  var d = await r.json();
+  toast(d.ok ? '已删除' : (d.detail || '删除失败'), d.ok ? 'ok' : 'error');
+  if(d.ok) location.reload();
+}
+</script>
+{% endblock %}

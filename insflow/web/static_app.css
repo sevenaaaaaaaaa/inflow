@@ -24,6 +24,14 @@
   --ease-spring:cubic-bezier(.32,.72,0,1);
   color-scheme:light;
 }
+[data-density="compact"]{
+  --fs-xs:10px; --fs-sm:11px; --fs-md:12px; --fs-lg:12.5px;
+  --fs-xl:14px; --fs-2xl:16px; --fs-metric:26px; --chrome-h:50px;
+}
+[data-density="comfortable"]{
+  --fs-xs:11.5px; --fs-sm:12.5px; --fs-md:13.5px; --fs-lg:15px;
+  --fs-xl:16px; --fs-2xl:18px; --fs-metric:34px; --chrome-h:60px;
+}
 [data-theme="dark"]{
   --bg:oklch(19% .014 70); --bg-soft:oklch(22.5% .014 72);
   --surface:oklch(27% .016 75 / .55); --surface-strong:oklch(30% .016 75 / .82);

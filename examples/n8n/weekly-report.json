@@ -1,0 +1,47 @@
+{
+  "name": "Insight Flow · 每周增长简报",
+  "meta": {
+    "description": "每周一 09:00 调 IF 生成周报。导入 n8n 后把 <if-host> / <ws> 换成真实值，并设置 IF_API_KEY、FEISHU_WEBHOOK。",
+    "env": ["IF_API_KEY", "FEISHU_WEBHOOK"]
+  },
+  "nodes": [
+    {
+      "id": "cron",
+      "name": "每周一 09:00",
+      "type": "n8n-nodes-base.cron",
+      "parameters": { "triggerTimes": { "item": [{ "hour": 9, "minute": 0 }] } },
+      "position": [0, 0]
+    },
+    {
+      "id": "weekly",
+      "name": "生成 IF 周报",
+      "type": "n8n-nodes-base.httpRequest",
+      "parameters": {
+        "method": "POST",
+        "url": "http://<if-host>:8400/api/v1/reports/weekly?workspace_id=<ws>",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [{ "name": "X-API-Key", "value": "={{$env.IF_API_KEY}}" }]
+        }
+      },
+      "position": [260, 0]
+    },
+    {
+      "id": "feishu",
+      "name": "飞书卡片",
+      "type": "n8n-nodes-base.httpRequest",
+      "parameters": {
+        "method": "POST",
+        "url": "https://open.feishu.cn/open-apis/bot/v2/hook/{{$env.FEISHU_WEBHOOK}}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { msg_type: 'text', content: { text: 'Insight Flow 周报已生成：' + $json.report_path } } }}"
+      },
+      "position": [520, 0]
+    }
+  ],
+  "connections": {
+    "每周一 09:00": { "main": [[{ "node": "生成 IF 周报", "type": "main", "index": 0 }]] },
+    "生成 IF 周报": { "main": [[{ "node": "飞书卡片", "type": "main", "index": 0 }]] }
+  }
+}

@@ -39,6 +39,42 @@
   <tr><td>白标报告</td><td>{% if usage.white_label %}✓ 支持{% else %}✗ 需 Scale 档{% endif %}</td></tr>
 </table>
 
+<h2>控制台外观</h2>
+<p class="sub">主色 / 圆角 / 密度写入工作区 <code>theme_tokens</code>，全站 CSS 变量立刻生效（报告白标主色同步）。</p>
+<div class="card" style="margin-bottom:18px">
+  <div class="toolbar" style="flex-wrap:wrap;gap:10px">
+    <label>主色 <input type="color" id="th-accent" value="{{ theme_tokens.accent if theme_tokens.accent and theme_tokens.accent.startswith('#') else '#2563eb' }}"></label>
+    <label>圆角
+      <select id="th-radius">
+        {% for r in ['compact','default','relaxed'] %}
+        <option value="{{ r }}" {% if theme_tokens.radius == r %}selected{% endif %}>{{ r }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>密度
+      <select id="th-density">
+        {% for d in ['compact','default','comfortable'] %}
+        <option value="{{ d }}" {% if theme_tokens.density == d %}selected{% endif %}>{{ d }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <button onclick="ifSaveTheme()">应用</button>
+  </div>
+</div>
+<script>
+async function ifSaveTheme(){
+  var r = await fetch('/api/v1/theme', {method:'PUT',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({workspace_id:'{{ workspace_id }}',
+      accent: document.getElementById('th-accent').value,
+      radius: document.getElementById('th-radius').value,
+      density: document.getElementById('th-density').value})});
+  var d = await r.json();
+  if(d.ok) location.reload();
+  else toast(d.detail || '保存失败', 'error');
+}
+</script>
+
 <h2>切换套餐（演示）</h2>
 <div class="toolbar">
   <select id="plan">

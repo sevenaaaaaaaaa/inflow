@@ -1,11 +1,12 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="zh-CN"{% if theme_tokens and theme_tokens.density and theme_tokens.density != 'default' %} data-density="{{ theme_tokens.density }}"{% endif %}>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{% block title %}{% endblock %} | Insight Flow 情报台</title>
 <script>try{var t=localStorage.getItem('if_theme');if(t==='dark')document.documentElement.setAttribute('data-theme','dark');}catch(e){}</script>
 <link rel="stylesheet" href="/console/static/app.css?v={{ asset_v }}">
+{% if theme_css %}<style id="if-theme-tokens">{{ theme_css | safe }}</style>{% endif %}
 </head>
 <body data-ws="{{ workspace_id }}" data-base-path="{{ base_path }}" data-live-metrics="{{ (live_metrics or []) | join(',') }}">
 <div id="if-live" hidden class="card" style="padding:10px 14px;margin-bottom:12px">
@@ -29,7 +30,7 @@
 {% set groups = {
   'overview': {'label':'总览', 'links':[('overview','/console/cockpit/overview','📊 情报总览')]},
   'monitor': {'label':'数据监测', 'links':[('onboarding','/console/onboarding','🔌 接入向导'),('monitors','/console/monitors','📡 监控任务')]},
-  'insight': {'label':'洞察', 'links':[('insights','/console/insights','💡 洞察流'),('sentiment','/console/sentiment','🌡️ 舆情驾驶舱'),('traffic','/console/cockpit/traffic','📈 流量驾驶舱'),('explore','/console/explore','🔬 即席探索')]},
+  'insight': {'label':'洞察', 'links':[('insights','/console/insights','💡 洞察流'),('sentiment','/console/sentiment','🌡️ 舆情驾驶舱'),('traffic','/console/cockpit/traffic','📈 流量驾驶舱'),('explore','/console/explore','🔬 即席探索'),('boards','/console/boards','🖼 自定义看板')]},
   'growth': {'label':'增长面', 'links':[('competitor','/console/cockpit/competitor','🔍 竞品驾驶舱'),('journey','/console/cockpit/journey','🧭 旅程驾驶舱'),('maturity','/console/maturity','📈 成熟度评估')]},
   'loop': {'label':'闭环', 'links':[('action-loop','/console/cockpit/action-loop','✅ 行动验证')]},
   'agent': {'label':'Agent', 'links':[('agent','/console/agent','🤖 Agent 工作台')]},
@@ -87,6 +88,8 @@ async function ifEmbed(){
     var m = new URL(location.href).searchParams.get('metric');
     if (!m) { alert('请先选择一个指标，再生成嵌入链接'); return; }
     panel = 'metric:' + m;
+  } else if (p.indexOf('boards/') === 0) {
+    panel = 'custom:' + p.split('/')[1];
   }
   if (!panel) { alert('当前页面暂不支持嵌入'); return; }
   try {

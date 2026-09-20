@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block title %} · {{ board.name }}{% endblock %}
+{% import "base.html" as base %}
+{% block content %}
+<h1>{{ board.name }}</h1>
+<p class="sub">自定义看板 · <code>{{ board.id }}</code> ·
+  <a href="/console/boards?workspace_id={{ workspace_id }}">全部看板</a>
+</p>
+
+{{ base.filter_bar(days) }}
+
+{% if panels %}
+{% for p in panels %}
+  {{ viz.datapanel(p.title, p.columns, p.rows, p.chart, csv_name=p.csv) | safe }}
+{% endfor %}
+{% else %}
+<div class="empty"><span>这块看板还没有可渲染的面板（对应驾驶舱可能没数据）</span>
+  <a class="dp-btn" href="/console/boards?workspace_id={{ workspace_id }}">改选面板</a></div>
+{% endif %}
+{% endblock %}

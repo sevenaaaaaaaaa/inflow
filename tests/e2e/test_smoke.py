@@ -24,6 +24,8 @@ class TestConsolePaths:
             assert ('class="dp"' in r.text or "card" in r.text), name
         assert client.get("/console/sentiment",
                           params={"workspace_id": WS}).status_code == 200
+        boards = client.get("/console/boards", params={"workspace_id": WS})
+        assert boards.status_code == 200 and "自定义看板" in boards.text
 
     def test_explore_variants(self, client):
         for chart in ("line", "bar", "box", "scatter", "map", "treemap",
@@ -89,6 +91,8 @@ class TestApiPaths:
                           params={"token": "bad"}).status_code == 403
 
     def test_dataset_and_analytics_apis(self, client):
+        catalog = client.get("/api/v1/events/catalog")
+        assert catalog.status_code == 200 and catalog.json()["events"]
         assert client.get("/api/v1/metrics/catalog",
                           params={"workspace_id": WS}).status_code == 200
         assert client.get("/api/v1/dims", params={"workspace_id": WS}).status_code == 200
