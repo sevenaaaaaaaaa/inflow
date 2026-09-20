@@ -276,6 +276,21 @@ async def bootstrap_scheduled_jobs() -> dict:
             except Exception:
                 logger.exception(f"自进化提案失败: {ws.id}")
 
+    async def _evolution_review(payload=None):
+        """每日复盘：生效满 14 天的提案回写效果 → 形成提案准确率"""
+        from ..engine.evolution import review_due
+        for ws in await store.list_workspaces():
+            try:
+                out = await review_due(ws.id)
+                if out["reviewed"]:
+                    logger.info(f"自进化复盘: {ws.id} {out}")
+            except Exception:
+                logger.exception(f"自进化复盘失败: {ws.id}")
+
+    scheduler.add_job("evolution.review", "50 5 * * *", "evolution.review", {})
+    scheduler.register_handler("evolution.review", _evolution_review)
+    registered["jobs"].append("evolution.review@daily-05:50")
+
     scheduler.add_job("evolution.propose", "20 5 * * 1", "evolution.propose", {})
     scheduler.register_handler("evolution.propose", _evolution_propose)
     registered["jobs"].append("evolution.propose@mon-05:20")
@@ -307,6 +322,14 @@ async def bootstrap_scheduled_jobs() -> dict:
     scheduler.add_job("alerts.hourly", "40 * * * *", "alerts.hourly", {})
     scheduler.register_handler("alerts.hourly", _alerts_hourly)
     registered["jobs"].append("alerts.hourly@hourly-40")
+
+    # 10b. DSL 规则恢复（规则是配置，存 settings_json；此前只在内存 → 重启即丢）
+    from ..engine.dsl_models import restore_rules
+    try:
+        registered["dsl_rules_restored"] = await restore_rules()
+    except Exception:
+        logger.exception("DSL 规则恢复失败")
+        registered["dsl_rules_restored"] = 0
 
     # 11. Agent 定时任务（把一次问答固化为 cron；恢复启用中的任务）
     from ..engine.agent_tasks import TASK_TYPE as AGENT_TASK_TYPE

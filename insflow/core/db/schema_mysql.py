@@ -368,8 +368,17 @@ MYSQL_MIGRATIONS = [
         created_at VARCHAR(40) NOT NULL,
         applied_at VARCHAR(40) NOT NULL DEFAULT '',
         rolled_back_at VARCHAR(40) NOT NULL DEFAULT '',
+        review_json TEXT,
+        reviewed_at VARCHAR(40) NOT NULL DEFAULT '',
         KEY idx_evolution_ws_time (workspace_id, created_at)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    """,
+    # 老库补列（新库上会报 Duplicate column，由 migrate 的幂等容忍吞掉）
+    """
+    ALTER TABLE evolution_runs ADD COLUMN review_json TEXT
+    """,
+    """
+    ALTER TABLE evolution_runs ADD COLUMN reviewed_at VARCHAR(40) NOT NULL DEFAULT ''
     """,
     """
     CREATE TABLE IF NOT EXISTS agent_notes (
@@ -420,6 +429,18 @@ MYSQL_MIGRATIONS = [
         updated_at VARCHAR(40) NOT NULL,
         UNIQUE KEY uq_embeddings_ref (workspace_id, kind, ref_id),
         KEY idx_embeddings_ws_model (workspace_id, model)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS behavior_signals (
+        id VARCHAR(64) PRIMARY KEY,
+        workspace_id VARCHAR(64) NOT NULL,
+        kind VARCHAR(32) NOT NULL,
+        signal_key VARCHAR(191) NOT NULL,
+        hits INT NOT NULL DEFAULT 0,
+        first_at VARCHAR(40) NOT NULL DEFAULT '',
+        last_at VARCHAR(40) NOT NULL DEFAULT '',
+        UNIQUE KEY uq_behavior_key (workspace_id, kind, signal_key)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
     """,
 

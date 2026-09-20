@@ -57,6 +57,7 @@ app = FastAPI(
 
 # ========== API Key 认证（可选启用，M4）==========
 
+import contextlib
 import json
 import os as _os
 import time
@@ -435,6 +436,56 @@ async def evolution_rollback(run_id: str, request: Request, payload: dict):
                                   actor=_role_of(request))
     except EvolutionError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/api/v1/evolution/structures")
+async def evolution_structures(request: Request, payload: dict):
+    """只生成结构提案（规则/监控/看板草案；默认只提案不生效）"""
+    _guard(request, "alert.write")
+    ws = str(payload.get("workspace_id") or "")
+    if not ws:
+        raise HTTPException(status_code=400, detail="需要 workspace_id")
+    from ..engine.structure_evolution import propose_structures
+    out = await propose_structures(ws)
+    await _audit_async(request, ws, "evolution.propose_structures",
+                       target_type="evolution", detail=out)
+    return out
+
+
+@app.post("/api/v1/evolution/review")
+async def evolution_review(request: Request, payload: dict):
+    """复盘：把生效满 N 天的提案效果写回账本"""
+    _guard(request, "alert.write")
+    ws = str(payload.get("workspace_id") or "")
+    if not ws:
+        raise HTTPException(status_code=400, detail="需要 workspace_id")
+    from ..engine.evolution import REVIEW_AFTER_DAYS, review_due
+    days = int(payload.get("days") or REVIEW_AFTER_DAYS)
+    return await review_due(ws, days=max(1, min(90, days)))
+
+
+@app.get("/api/v1/evolution/accuracy")
+async def evolution_accuracy(workspace_id: str = Query(...)):
+    """提案准确率（improved / 已判定；样本不足不计入分母）"""
+    from ..engine.evolution import accuracy
+    return await accuracy(workspace_id)
+
+
+@app.get("/api/v1/behavior/signals")
+async def behavior_signals(request: Request, workspace_id: str = Query(...)):
+    """行为信号汇总（浏览/导出/订阅；本地统计，不外传）"""
+    from ..engine.behavior import summary
+    _guard(request, "read")
+    return await summary(workspace_id)
+
+
+@app.get("/api/v1/behavior/suggest")
+async def behavior_suggest(request: Request, workspace_id: str = Query(...),
+                           min_views: int = Query(3, ge=1, le=100)):
+    """默认舱 / 常用面板建议（样本不足会明说 enough=false）"""
+    from ..engine.behavior import suggest_defaults
+    _guard(request, "read")
+    return await suggest_defaults(workspace_id, min_views=min_views)
 
 
 @app.get("/api/v1/playbooks")
@@ -1524,6 +1575,9 @@ async def export_xlsx(request: Request, workspace_id: str = Query(...),
     company = await company_of(workspace_id)
     sheets.append(xlsx_watermark_sheet(actor, company))
     data_bytes = write_xlsx([(t, cols, rows) for t, cols, rows in sheets])
+    with contextlib.suppress(Exception):
+        from ..engine.behavior import record as _behavior_record
+        await _behavior_record(workspace_id, "export", name)
     await _audit_async(request, workspace_id, ACTIONS["xlsx"], target_type="export",
                        target_id=panel, detail={"rows": sum(len(r) for _, _, r in sheets)})
     return Response(
@@ -1629,10 +1683,14 @@ async def list_subscriptions(workspace_id: str = Query(...)):
 async def create_subscription(workspace_id: str, data: SubscriptionCreate):
     from ..engine.subscriptions import SubscriptionError, SubscriptionService
     try:
-        return await SubscriptionService(workspace_id).create(
+        out = await SubscriptionService(workspace_id).create(
             data.name, data.channels, data.target, data.filters, data.mode)
     except SubscriptionError as e:
         raise HTTPException(status_code=422, detail=str(e))
+    with contextlib.suppress(Exception):
+        from ..engine.behavior import record as _behavior_record
+        await _behavior_record(workspace_id, "subscribe", data.mode or data.name)
+    return out
 
 
 @app.delete("/api/v1/subscriptions/{subscription_id}")
@@ -2192,9 +2250,14 @@ class DSLRuleRequest(BaseModel):
 @app.post("/api/v1/models/dsl")
 async def register_dsl_rule(workspace_id: str, data: DSLRuleRequest):
     """注册自定义规则模型（无代码配置）"""
-    from ..engine.dsl_models import DSLValidationError, get_dsl_registry
+    from ..engine.dsl_models import (
+        DSLValidationError,
+        get_dsl_registry,
+        save_rule,
+    )
     try:
-        model = get_dsl_registry().register(workspace_id, data.spec)
+        spec = await save_rule(workspace_id, data.spec)
+        model = get_dsl_registry().get(workspace_id, spec["id"])
         return {"ok": True, "rule_id": model.id, "name": model.name}
     except DSLValidationError as e:
         raise HTTPException(status_code=422, detail=str(e))
@@ -2202,14 +2265,19 @@ async def register_dsl_rule(workspace_id: str, data: DSLRuleRequest):
 
 @app.get("/api/v1/models/dsl")
 async def list_dsl_rules(workspace_id: str = Query(...)):
-    from ..engine.dsl_models import get_dsl_registry
-    return {"rules": get_dsl_registry().list_for(workspace_id)}
+    """内存注册表 ∪ 落库规则（刚重启还没 restore 时也不会显示成空）"""
+    from ..engine.dsl_models import get_dsl_registry, persisted_rules
+    rules = list(get_dsl_registry().list_for(workspace_id))
+    known = {r.get("id") for r in rules}
+    rules.extend(r for r in await persisted_rules(workspace_id)
+                 if r.get("id") not in known)
+    return {"rules": rules}
 
 
 @app.delete("/api/v1/models/dsl/{rule_id}")
 async def delete_dsl_rule(workspace_id: str, rule_id: str):
-    from ..engine.dsl_models import get_dsl_registry
-    ok = get_dsl_registry().unregister(workspace_id, rule_id)
+    from ..engine.dsl_models import remove_rule
+    ok = await remove_rule(workspace_id, rule_id)
     if not ok:
         raise HTTPException(status_code=404, detail="Rule not found")
     return {"ok": True}

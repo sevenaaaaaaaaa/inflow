@@ -86,7 +86,11 @@ async def mine(workspace_id: str, *, min_samples: int = MIN_SAMPLES) -> list[dic
         path = playbook_dir(workspace_id) / f"{pid}.json"
         path.write_text(json.dumps(draft, ensure_ascii=False, indent=2),
                         encoding="utf-8")
-        drafts.append({"id": pid, "path": str(path), **draft["playbook"]["evidence"]})
+        # 结构提案要按 insight_type/action_type 建规则，之前只返回 evidence
+        # （类型只能从 id 里反解，多词类型必然解错）→ 一并带出来
+        drafts.append({"id": pid, "path": str(path),
+                       "insight_type": insight_type, "action_type": action_type,
+                       **draft["playbook"]["evidence"]})
     drafts.sort(key=lambda d: (-d["effective_rate"], -d["samples"]))
     return drafts
 

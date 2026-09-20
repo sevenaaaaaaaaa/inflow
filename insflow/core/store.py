@@ -484,8 +484,31 @@ MIGRATIONS = [
     CREATE INDEX IF NOT EXISTS idx_embeddings_ws_model
         ON embeddings(workspace_id, model);
     """,
+    # V7: 行为信号（面板浏览/导出/订阅计数）—— 本地统计，不外传
+    """
+    CREATE TABLE IF NOT EXISTS behavior_signals (
+        id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        signal_key TEXT NOT NULL,
+        hits INTEGER NOT NULL DEFAULT 0,
+        first_at TEXT NOT NULL DEFAULT '',
+        last_at TEXT NOT NULL DEFAULT ''
+    );
+    """,
+    """
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_behavior_key
+        ON behavior_signals(workspace_id, kind, signal_key);
+    """,
 
 ]
+
+# V7: evolution_runs 增加复盘列（apply 后 N 天回写效果，形成"提案准确率"）
+V7_EVOLUTION_REVIEW = [
+    "ALTER TABLE evolution_runs ADD COLUMN review_json TEXT NOT NULL DEFAULT '{}'",
+    "ALTER TABLE evolution_runs ADD COLUMN reviewed_at TEXT NOT NULL DEFAULT ''",
+]
+
 
 # V5: users 增加 SCIM 字段（external_id / active）——SQLite ALTER 幂等
 V5_USERS_COLUMNS = [
@@ -507,7 +530,8 @@ V3_METRICS_DEDUPE_SQL = [
 def _decode_evolution(row: dict) -> dict:
     d = dict(row)
     for key, default in (("before_json", {}), ("after_json", {}),
-                         ("rationale_json", {}), ("gate_json", {})):
+                         ("rationale_json", {}), ("gate_json", {}),
+                         ("review_json", {})):
         try:
             d[key[:-5]] = json.loads(d.get(key) or "{}")
         except Exception:
@@ -638,6 +662,14 @@ class Store:
                 col_name = statement.split("ADD COLUMN")[1].strip().split(" ")[0]
                 if col_name in cols:
                     continue
+            await self._execute(statement)
+        # V7：evolution_runs 复盘列（按列存在性跳过）
+        ecols = {row[1] for row in
+                 await (await self._execute("PRAGMA table_info(evolution_runs)")).fetchall()}
+        for statement in V7_EVOLUTION_REVIEW:
+            col_name = statement.split("ADD COLUMN")[1].strip().split(" ")[0]
+            if col_name in ecols:
+                continue
             await self._execute(statement)
         # V5：users 的 SCIM 字段（按列存在性跳过）
         ucols = {row[1] for row in
@@ -1370,7 +1402,9 @@ class Store:
              float(fields.get("confidence") or 0.5), int(fields.get("sample_n") or 0),
              float(fields.get("window_days") or 0),
              json.dumps(fields.get("confounders") or {}, ensure_ascii=False),
-             str(fields.get("method") or ""), datetime.now(UTC).isoformat()))
+             str(fields.get("method") or ""),
+             # 允许显式 created_at：历史回填与复盘窗口测试都需要指定时间
+             str(fields.get("created_at") or datetime.now(UTC).isoformat())))
         await self._db.commit()
         return {"id": vid, **fields}
 
@@ -1445,12 +1479,13 @@ class Store:
 
     async def update_evolution_run(self, workspace_id: str, run_id: str, **fields) -> None:
         sets, params = [], []
-        for key in ("status", "gate_json", "applied_at", "rolled_back_at"):
+        for key in ("status", "gate_json", "applied_at", "rolled_back_at",
+                    "review_json", "reviewed_at"):
             if key in fields and fields[key] is not None:
                 sets.append(f"{key} = ?")
                 value = fields[key]
                 params.append(json.dumps(value, ensure_ascii=False)
-                              if key == "gate_json" else str(value))
+                              if key.endswith("_json") else str(value))
         if not sets:
             return
         params.extend([workspace_id, run_id])

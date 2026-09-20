@@ -63,6 +63,12 @@ insflow search "竞品降价" -w <workspace-id>
 insflow index rebuild -w <workspace-id>     # 换 embedding 模型后跑
 insflow index stats -w <workspace-id>
 
+# 自进化（参数 + 结构）与复盘
+insflow evolution propose -w <workspace-id>      # 阈值/权重 + 规则/监控/看板草案
+insflow evolution review -w <workspace-id>       # 生效满 14 天的提案回写效果
+insflow evolution accuracy -w <workspace-id>     # 提案准确率
+insflow behavior -w <workspace-id>               # 行为信号与默认布局建议
+
 # Prompt 版本与回归
 insflow prompt list
 insflow prompt show agent_system -v 1
@@ -89,6 +95,11 @@ insflow serve [--port 8400] [--reload]
 | POST | /api/v1/search/reindex | 同步或重建向量索引 |
 | GET | /api/v1/agent/stream | 问数 SSE 流（stage/delta/done） |
 | GET | /api/v1/agent/routing | 模型路由配置与预算水位 |
+| POST | /api/v1/evolution/structures | 生成结构草案（规则/监控/看板） |
+| POST | /api/v1/evolution/review | 复盘生效满 N 天的提案 |
+| GET | /api/v1/evolution/accuracy | 提案准确率 |
+| GET | /api/v1/behavior/signals | 行为信号汇总（本地统计） |
+| GET | /api/v1/behavior/suggest | 默认舱与常用面板建议 |
 
 ## 开发
 

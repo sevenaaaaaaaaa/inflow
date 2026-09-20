@@ -23,7 +23,7 @@ from pathlib import Path
 
 from ..core.files import EventBus
 from ..core.store import get_store
-from .dsl_models import get_dsl_registry, validate_dsl
+from .dsl_models import get_dsl_registry, save_rule, validate_dsl
 from .monitors import MonitorService
 
 VALID_KINDS = ("site_change", "keyword", "brand_mention", "topic", "journey")
@@ -65,7 +65,6 @@ class TemplatePack:
         store = await get_store()
         bus = EventBus(workspace_id)
         svc = _monitor_service(workspace_id)
-        dsl = get_dsl_registry()
 
         created_monitors = []
         skipped_monitors = []
@@ -82,7 +81,8 @@ class TemplatePack:
 
         registered_rules = []
         for rule in self.spec.get("dsl_rules", []):
-            dsl.register(workspace_id, rule)
+            # 落库（此前只 register 进内存 → 重启后模板带来的规则全丢）
+            await save_rule(workspace_id, rule)
             registered_rules.append(rule["id"])
 
         bus.emit("template.applied", {
@@ -144,7 +144,6 @@ async def export_from_workspace(workspace_id: str, *, template_id: str = "",
                                 include_dsl: bool = True) -> dict:
     """把某个工作区的监控/DSL 规则沉淀成可复用模板包（脱敏：不含数据与账号）"""
     from ..core.store import get_store
-    from .dsl_models import get_dsl_registry
     store = await get_store()
     monitors = await store.list_monitors_full(workspace_id)
     spec = {
@@ -163,13 +162,15 @@ async def export_from_workspace(workspace_id: str, *, template_id: str = "",
             "schedule_cron": m.get("schedule_cron") or "0 */6 * * *",
         })
     if include_dsl:
-        try:
-            registry = get_dsl_registry()
-            for rule in registry.list(workspace_id):
-                spec["dsl_rules"].append(rule if isinstance(rule, dict)
-                                         else {"id": str(rule)})
-        except Exception:
-            pass
+        # 曾写成 registry.list(workspace_id)（方法名是 list_for）→ AttributeError
+        # 被 except 吞掉，导出的模板包里 dsl_rules 永远是空的，且没有任何提示
+        from .dsl_models import persisted_rules
+        registry = get_dsl_registry()
+        seen = {r.get("id") for r in registry.list_for(workspace_id)}
+        spec["dsl_rules"].extend(registry.list_for(workspace_id))
+        for rule in await persisted_rules(workspace_id):
+            if rule.get("id") not in seen:
+                spec["dsl_rules"].append(rule)
     errors = validate_template(spec)
     return {"spec": spec, "errors": errors,
             "monitors": len(spec["monitors"]), "dsl_rules": len(spec["dsl_rules"])}

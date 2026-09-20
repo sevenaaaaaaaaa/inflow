@@ -2,24 +2,30 @@
 {% block title %} · 自进化{% endblock %}
 {% block content %}
 <h1>自进化</h1>
-<p class="sub">灰盒自整定：提案 → 评测门（不降级才通过）→ 生效 → 可回滚。只调可量化参数（告警阈值/模型权重），
-安全与合规参数永不自动改动。</p>
+<p class="sub">灰盒自整定：提案 → 评测门（不降级才通过）→ 生效 → 可回滚 → 第 14 天复盘。
+参数（告警阈值/模型权重）与结构（规则/监控/看板草案）都只提案，安全与合规参数永不自动改动。</p>
 
 <div class="cards">
   {{ viz.kpi_card('验证结论', summary.total, color='var(--accent)') | safe }}
   {{ viz.kpi_card('有效率', (summary.effective_rate | round(3)) if summary.effective_rate is not none else '—', color='var(--ok)') | safe }}
   {{ viz.kpi_card('显著占比', (summary.significant_rate | round(3)) if summary.significant_rate is not none else '—', color='var(--muted)') | safe }}
   {{ viz.kpi_card('待审提案', pending | length, color='var(--warn)') | safe }}
+  {{ viz.kpi_card('提案准确率', (accuracy.accuracy * 100) | round(0) | int ~ '%' if accuracy.accuracy is not none else '—', color='var(--accent)') | safe }}
 </div>
+<p class="sub">准确率 = 复盘判定 improved / 已判定（{{ accuracy.judged }} 条）；样本不足的提案不计入分母。
+已复盘 {{ accuracy.reviewed }} 条{% if accuracy.tally %}（{{ accuracy.tally.improved }} 改善 / {{ accuracy.tally.neutral }} 无差别 /
+{{ accuracy.tally.worse }} 变差 / {{ accuracy.tally.reverted }} 被回滚 / {{ accuracy.tally.insufficient }} 样本不足）{% endif %}。</p>
 
 <h2>进化账本</h2>
 <div class="card">
   <div class="toolbar" style="gap:8px;margin-bottom:8px">
     <button onclick="evPropose()">生成提案</button>
+    <button class="secondary" onclick="evStructures()">只提结构草案</button>
+    <button class="secondary" onclick="evReview()">复盘到期提案</button>
     <span id="ev-status" class="sub"></span>
   </div>
   <table>
-    <tr><th>时间</th><th>类型</th><th>目标</th><th>状态</th><th>改动</th><th>门禁</th><th></th></tr>
+    <tr><th>时间</th><th>类型</th><th>目标</th><th>状态</th><th>改动</th><th>门禁</th><th>复盘</th><th></th></tr>
     {% for r in runs %}
     <tr>
       <td>{{ (r.created_at or '')[:19].replace('T', ' ') }}</td>
@@ -28,6 +34,7 @@
       <td><span class="badge b-{{ 'info' if r.status == 'applied' else ('high' if r.status == 'rejected' else 'medium') }}">{{ r.status }}</span></td>
       <td class="sub">{{ (r.before | tojson)[:40] }} → {{ (r.after | tojson)[:40] }}</td>
       <td class="sub">{{ '通过' if r.gate.passed else ('未通过' if r.gate else '未评估') }}</td>
+      <td class="sub">{% if r.review and r.review.verdict %}{{ r.review.verdict }}{% if r.review.delta_effective_rate is not none %}（{{ (r.review.delta_effective_rate * 100) | round(1) }}pp）{% endif %}{% else %}—{% endif %}</td>
       <td>
         {% if r.status == 'proposed' %}
         <button class="dp-btn" onclick="evGate('{{ r.id }}')">评估</button>
@@ -38,9 +45,29 @@
       </td>
     </tr>
     {% else %}
-    <tr><td colspan="7" class="sub">暂无提案 —— 点「生成提案」或等待每周一 05:20 自动提案</td></tr>
+    <tr><td colspan="8" class="sub">暂无提案 —— 点「生成提案」或等待每周一 05:20 自动提案</td></tr>
     {% endfor %}
   </table>
+</div>
+
+<h2>行为信号（本地统计，不上传）</h2>
+<div class="card">
+  <p class="sub">只记「工作区 + 页面/面板名 + 次数」，不记人、不记 IP、不外发。用于建议默认布局，
+  并作为看板结构提案（<code>structure_board</code>）的唯一依据。</p>
+  {% if behavior.enough %}
+  <p>建议默认舱：<code>{{ behavior.default_cockpit }}</code> ·
+     常用面板：{% for p in behavior.panel_ids %}<code>{{ p }}</code> {% else %}—{% endfor %}</p>
+  <p class="sub">{{ behavior.basis }}</p>
+  <table>
+    <tr><th>驾驶舱</th><th>浏览次数</th></tr>
+    {% for v in behavior.top_views %}
+    <tr><td><code>{{ v.key }}</code></td><td>{{ v.hits }}</td></tr>
+    {% endfor %}
+  </table>
+  {% else %}
+  <div class="empty"><span>{{ behavior.basis }}</span>
+    <a class="dp-btn" href="/console/cockpit/overview?workspace_id={{ workspace_id }}">去看看板</a></div>
+  {% endif %}
 </div>
 
 <h2>配方（验证有效的经验）</h2>
@@ -88,7 +115,30 @@ async function evPropose(){
     headers:{'Content-Type':'application/json'},
     body: JSON.stringify({workspace_id:'{{ workspace_id }}'})});
   var j = await r.json();
-  st.textContent = r.ok ? ('阈值提案 ' + j.threshold_tunes + ' · 权重提案 ' + j.model_weights) : (j.detail || '失败');
+  st.textContent = r.ok ? ('阈值 ' + j.threshold_tunes + ' · 权重 ' + j.model_weights
+      + ' · 规则 ' + j.structure_dsl + ' · 监控 ' + j.structure_monitor
+      + ' · 看板 ' + j.structure_board) : (j.detail || '失败');
+  if(r.ok) setTimeout(function(){ location.reload(); }, 1000);
+}
+async function evStructures(){
+  var st = document.getElementById('ev-status');
+  st.textContent = '起草结构草案…';
+  var r = await fetch('/api/v1/evolution/structures', {method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({workspace_id:'{{ workspace_id }}'})});
+  var j = await r.json();
+  st.textContent = r.ok ? ('规则 ' + j.structure_dsl + ' · 监控 ' + j.structure_monitor
+      + ' · 看板 ' + j.structure_board + '（都需人工生效）') : (j.detail || '失败');
+  if(r.ok) setTimeout(function(){ location.reload(); }, 1000);
+}
+async function evReview(){
+  var st = document.getElementById('ev-status');
+  st.textContent = '复盘中…';
+  var r = await fetch('/api/v1/evolution/review', {method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({workspace_id:'{{ workspace_id }}'})});
+  var j = await r.json();
+  st.textContent = r.ok ? ('复盘 ' + j.reviewed + ' 条') : (j.detail || '失败');
   if(r.ok) setTimeout(function(){ location.reload(); }, 1000);
 }
 async function evGate(id){

@@ -2324,6 +2324,94 @@
         "summary": "Whoami"
       }
     },
+    "/api/v1/behavior/signals": {
+      "get": {
+        "description": "行为信号汇总（浏览/导出/订阅；本地统计，不外传）",
+        "operationId": "behavior_signals_api_v1_behavior_signals_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "workspace_id",
+            "required": true,
+            "schema": {
+              "title": "Workspace Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Behavior Signals"
+      }
+    },
+    "/api/v1/behavior/suggest": {
+      "get": {
+        "description": "默认舱 / 常用面板建议（样本不足会明说 enough=false）",
+        "operationId": "behavior_suggest_api_v1_behavior_suggest_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "workspace_id",
+            "required": true,
+            "schema": {
+              "title": "Workspace Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "min_views",
+            "required": false,
+            "schema": {
+              "default": 3,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Min Views",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Behavior Suggest"
+      }
+    },
     "/api/v1/billing/invoice": {
       "post": {
         "description": "生成月度对账单（R3-3，客户可读 Markdown）",
@@ -3397,6 +3485,44 @@
         "summary": "Events Catalog Api"
       }
     },
+    "/api/v1/evolution/accuracy": {
+      "get": {
+        "description": "提案准确率（improved / 已判定；样本不足不计入分母）",
+        "operationId": "evolution_accuracy_api_v1_evolution_accuracy_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "workspace_id",
+            "required": true,
+            "schema": {
+              "title": "Workspace Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Evolution Accuracy"
+      }
+    },
     "/api/v1/evolution/propose": {
       "post": {
         "description": "生成自进化提案（阈值自整定 / 模型权重；默认只提案不生效）",
@@ -3434,6 +3560,45 @@
           }
         },
         "summary": "Evolution Propose"
+      }
+    },
+    "/api/v1/evolution/review": {
+      "post": {
+        "description": "复盘：把生效满 N 天的提案效果写回账本",
+        "operationId": "evolution_review_api_v1_evolution_review_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "title": "Payload",
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Evolution Review"
       }
     },
     "/api/v1/evolution/runs": {
@@ -3629,6 +3794,45 @@
           }
         },
         "summary": "Evolution Rollback"
+      }
+    },
+    "/api/v1/evolution/structures": {
+      "post": {
+        "description": "只生成结构提案（规则/监控/看板草案；默认只提案不生效）",
+        "operationId": "evolution_structures_api_v1_evolution_structures_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "title": "Payload",
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Evolution Structures"
       }
     },
     "/api/v1/explore/cube": {
@@ -4766,6 +4970,7 @@
     },
     "/api/v1/models/dsl": {
       "get": {
+        "description": "内存注册表 ∪ 落库规则（刚重启还没 restore 时也不会显示成空）",
         "operationId": "list_dsl_rules_api_v1_models_dsl_get",
         "parameters": [
           {

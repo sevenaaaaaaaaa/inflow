@@ -4,6 +4,7 @@
 服务端直读数据渲染，操作经原生 JS fetch 调 REST API（htmx 同构可替换）。
 """
 
+import contextlib
 import os
 from pathlib import Path
 
@@ -635,6 +636,9 @@ async def board_view(request: Request, board_id: str, workspace_id: str = Query(
     board = get_board(settings, board_id)
     if not board:
         raise HTTPException(status_code=404, detail="看板不存在")
+    with contextlib.suppress(Exception):
+        from ..engine.behavior import record as _behavior_record
+        await _behavior_record(workspace_id, "view", f"board:{board_id}")
     panels = await render_panels(workspace_id, board, days=days or 14)
     return templates.TemplateResponse(request, "board.html", await _ctx(
         request, "boards", workspace_id, ws_settings=settings,
@@ -723,6 +727,10 @@ async def cockpit_page(request: Request, name: str, workspace_id: str = Query(""
                 names, loaded, [k for k, _ in (data.get("geo") or [])])
             if geo_dataset is None:
                 geo_dataset_name = ""
+    # 行为信号（本地计数，失败不影响页面；用于默认布局建议与看板结构提案）
+    with contextlib.suppress(Exception):
+        from ..engine.behavior import record as _behavior_record
+        await _behavior_record(workspace_id, "view", name)
     template, nav, title = COCKPIT_PAGES[name]
     dq_bad = ((data or {}).get("dq") or {}).get("bad") if name == "ops" else None
     # 待审批动作（Agent 提案）：绕开 TTL 缓存，批准后刷新立即消失
@@ -852,6 +860,8 @@ async def evolution_page(request: Request, workspace_id: str = Query("")):
     if not workspace_id:
         workspace_id = await _default_workspace()
     store = await get_store()
+    from ..engine.behavior import suggest_defaults
+    from ..engine.evolution import accuracy
     from ..engine.playbooks import list_playbooks
     return templates.TemplateResponse(request, "evolution.html", await _ctx(
         request, "evolution", workspace_id,
@@ -859,6 +869,8 @@ async def evolution_page(request: Request, workspace_id: str = Query("")):
         runs=await store.list_evolution_runs(workspace_id, limit=50),
         pending=await store.list_evolution_runs(workspace_id, status="proposed"),
         playbooks=list_playbooks(workspace_id),
+        accuracy=await accuracy(workspace_id),
+        behavior=await suggest_defaults(workspace_id),
     ))
 
 

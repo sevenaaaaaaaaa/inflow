@@ -18,6 +18,8 @@ GUARDRAIL_BANDS = (0.2, 0.5, 1.0, 2.0)   # 渐进档位：阈值远离分布时�
 COOLDOWN_HOURS = 72             # 同目标冷却期
 MIN_SAMPLES = 3                 # 最小样本（验证结果条数）
 ALERT_TARGET_PER_90D = 3.0      # 告警目标频率（90 天内期望命中次数）
+REVIEW_AFTER_DAYS = 14          # 生效后多少天做复盘（与动作验证窗口同步）
+REVIEW_IMPROVE_PCT = 0.05       # 复盘判定阈值：±5% 以内算"没差别"
 
 
 class EvolutionError(Exception):
@@ -253,6 +255,11 @@ async def evaluate_gate(workspace_id: str, run: dict) -> dict:
                 * max(1e-9, float(before.get(k, 1.0))) + 1e-6]
         checks.append({"name": "delta_within_guardrail", "passed": not over,
                        "violations": over})
+    elif kind.startswith("structure_"):
+        from .structure_evolution import gate_structure
+        checks.extend(await gate_structure(workspace_id, run))
+        if not checks:
+            checks.append({"name": "known_kind", "passed": False})
     else:
         checks.append({"name": "known_kind", "passed": False})
     passed = all(c["passed"] for c in checks)
@@ -278,8 +285,28 @@ async def apply_run(workspace_id: str, run_id: str, *, force: bool = False,
         gate = await evaluate_gate(workspace_id, run)
     if not gate.get("passed") and not force:
         raise EvolutionError(f"评测门未通过，拒绝生效：{gate.get('checks')}")
-    settings, _ = await _settings(workspace_id)
     after = run.get("after") or {}
+    if run["kind"].startswith("structure_"):
+        from .structure_evolution import apply_structure
+        applied_ref = await apply_structure(workspace_id, run)
+        await store.update_evolution_run(
+            workspace_id, run_id, status="applied",
+            applied_at=datetime.now(UTC).isoformat(),
+            gate_json={**gate, "forced": bool(force), "actor": actor,
+                       "applied_ref": applied_ref})
+        with contextlib.suppress(Exception):
+            await store.record_admin(workspace_id, "evolution.apply", actor=actor,
+                                     target_type=run["kind"], target_id=run["target"],
+                                     detail={"after": after, "ref": applied_ref,
+                                             "forced": bool(force)})
+        from ..core.files import EventBus
+        EventBus(workspace_id).emit("evolution.applied", {
+            "run_id": run_id, "kind": run["kind"], "target": run["target"],
+            "ref": applied_ref})
+        return {"ok": True, "run_id": run_id, "status": "applied",
+                "applied": after, "ref": applied_ref, "gate": gate}
+
+    settings, _ = await _settings(workspace_id)
     if run["kind"] == "threshold_tune":
         overrides = dict(settings.get("alert_threshold_overrides") or {})
         overrides[run["target"]] = float(after.get("threshold") or 0)
@@ -314,6 +341,18 @@ async def rollback_run(workspace_id: str, run_id: str, *,
         raise EvolutionError("提案不存在")
     if run.get("status") != "applied":
         raise EvolutionError(f"只能回滚已生效的提案（当前 {run.get('status')}）")
+    if run["kind"].startswith("structure_"):
+        from .structure_evolution import rollback_structure
+        undo = await rollback_structure(workspace_id, run)
+        await store.update_evolution_run(
+            workspace_id, run_id, status="rolled_back",
+            rolled_back_at=datetime.now(UTC).isoformat())
+        with contextlib.suppress(Exception):
+            await store.record_admin(workspace_id, "evolution.rollback", actor=actor,
+                                     target_type=run["kind"], target_id=run["target"],
+                                     detail=undo)
+        return {"ok": True, "run_id": run_id, "status": "rolled_back", "undo": undo}
+
     settings, _ = await _settings(workspace_id)
     before = run.get("before") or {}
     if run["kind"] == "threshold_tune":
@@ -337,10 +376,184 @@ async def rollback_run(workspace_id: str, run_id: str, *,
             "restored": before}
 
 
-async def propose_all(workspace_id: str) -> dict:
-    """一次性生成所有可提案（供调度/CLI/控制台按钮）"""
+async def propose_all(workspace_id: str, *, structures: bool = True) -> dict:
+    """一次性生成所有可提案（参数 + 结构；供调度/CLI/控制台按钮）"""
     thresholds = await propose_threshold_tunes(workspace_id)
     weights = await propose_model_weights(workspace_id)
-    return {"threshold_tunes": len(thresholds),
-            "model_weights": 1 if weights else 0,
-            "runs": [r["id"] for r in thresholds] + ([weights["id"]] if weights else [])}
+    out = {"threshold_tunes": len(thresholds),
+           "model_weights": 1 if weights else 0,
+           "structure_dsl": 0, "structure_monitor": 0, "structure_board": 0,
+           "runs": [r["id"] for r in thresholds] + ([weights["id"]] if weights else [])}
+    if structures:
+        from .structure_evolution import propose_structures
+        struct = await propose_structures(workspace_id)
+        out.update({k: struct[k] for k in
+                    ("structure_dsl", "structure_monitor", "structure_board")})
+        out["runs"] = out["runs"] + struct["runs"]
+    return out
+
+
+# ================= 复盘闭环（apply 后 N 天回写账本）=================
+#
+# 此前 apply 完就结束了：没人知道那次调整到底有没有用，账本只记"改了什么"，
+# 不记"改得对不对"。这里补上第 14 天的回看，并由此得出**提案准确率**——
+# 自进化第一次有了自己的成绩单（而不是只会自我表扬）。
+#
+# 判定口径（写在这里，避免事后各说各话）：
+# - 北极星取**验证结论有效率**（effective / 总数），因为这是全系统在优化的量
+# - 两侧窗口任一侧样本 < MIN_SAMPLES → verdict = insufficient，**不判**，不计入准确率
+# - 被人工回滚 → verdict = reverted（算失败样本：人用脚投票了）
+# - 指标均值变化只作为**上下文**呈现，不参与判定：阈值/结构类提案的"好"方向
+#   本来就不唯一（错误率越低越好、会话数越高越好），硬判会是编故事
+
+
+def _parse_iso(value: str):
+    try:
+        dt = datetime.fromisoformat(str(value or ""))
+    except ValueError:
+        return None
+    return dt.replace(tzinfo=UTC) if dt.tzinfo is None else dt
+
+
+def _run_metric(run: dict) -> str:
+    """提案关联的指标（拿不到就空——空就只做北极星对比）"""
+    kind = str(run.get("kind"))
+    if kind == "structure_dsl":
+        return str(((run.get("after") or {}).get("spec") or {}).get("metric") or "")
+    return str((run.get("rationale") or {}).get("metric") or "")
+
+
+async def _verification_rate(workspace_id: str, start, end) -> tuple[float | None, int]:
+    from ..core.store import get_store
+    store = await get_store()
+    rows = await store.list_verification_results(workspace_id, limit=2000)
+    picked = []
+    for r in rows:
+        ts = _parse_iso(r.get("created_at", ""))
+        if ts and start <= ts < end:
+            picked.append(r)
+    if not picked:
+        return None, 0
+    eff = sum(1 for r in picked if r.get("verdict") == "effective")
+    return eff / len(picked), len(picked)
+
+
+async def _metric_mean(workspace_id: str, metric: str, start, end) -> float | None:
+    if not metric:
+        return None
+    from ..core.store import get_store
+    store = await get_store()
+    span = max(1.0, (datetime.now(UTC) - start).total_seconds() / 86400 + 1)
+    series = await store.metric_series(workspace_id, metric, days=span)
+    values = [float(s["value"] or 0) for s in series
+              if (_parse_iso(s.get("ts", "")) or datetime.now(UTC)) >= start
+              and (_parse_iso(s.get("ts", "")) or datetime.now(UTC)) < end]
+    return sum(values) / len(values) if values else None
+
+
+async def review_run(workspace_id: str, run: dict, *,
+                     days: int = REVIEW_AFTER_DAYS, now=None) -> dict:
+    """对一条已生效提案做复盘（纯计算，不写库）"""
+    now = now or datetime.now(UTC)
+    applied = _parse_iso(run.get("applied_at", ""))
+    if not applied:
+        return {"verdict": "insufficient", "reason": "没有 applied_at（未生效）"}
+    window = timedelta(days=days)
+    before_rate, before_n = await _verification_rate(
+        workspace_id, applied - window, applied)
+    after_rate, after_n = await _verification_rate(
+        workspace_id, applied, applied + window)
+    metric = _run_metric(run)
+    before_mean = await _metric_mean(workspace_id, metric, applied - window, applied)
+    after_mean = await _metric_mean(workspace_id, metric, applied, applied + window)
+    change_pct = None
+    if before_mean not in (None, 0) and after_mean is not None:
+        change_pct = round((after_mean - before_mean) / abs(before_mean), 4)
+
+    rolled_back = str(run.get("status")) == "rolled_back"
+    delta = None
+    if rolled_back:
+        verdict = "reverted"
+    elif before_n >= MIN_SAMPLES and after_n >= MIN_SAMPLES:
+        delta = round((after_rate or 0) - (before_rate or 0), 4)
+        verdict = ("improved" if delta >= REVIEW_IMPROVE_PCT else
+                   "worse" if delta <= -REVIEW_IMPROVE_PCT else "neutral")
+    else:
+        verdict = "insufficient"
+
+    return {
+        "window_days": days,
+        "applied_at": run.get("applied_at"),
+        "rolled_back": rolled_back,
+        "verdict": verdict,
+        "north_star": "verification_effective_rate",
+        "before": {"effective_rate": before_rate, "samples": before_n,
+                   "metric": metric or None, "metric_mean": before_mean},
+        "after": {"effective_rate": after_rate, "samples": after_n,
+                  "metric_mean": after_mean},
+        "delta_effective_rate": delta,
+        "metric_change_pct": change_pct,
+        "basis": (f"生效前后各 {days} 天：验证样本 {before_n} → {after_n}，"
+                  + (f"有效率 {before_rate:.0%} → {after_rate:.0%}"
+                     if before_rate is not None and after_rate is not None
+                     else "样本不足，不判定")),
+        "reviewed_at": now.isoformat(),
+    }
+
+
+async def review_due(workspace_id: str, *, days: int = REVIEW_AFTER_DAYS,
+                     limit: int = 50, now=None) -> dict:
+    """把所有"生效满 N 天且还没复盘"的提案跑一遍并回写账本"""
+    from ..core.store import get_store
+    store = await get_store()
+    now = now or datetime.now(UTC)
+    cutoff = now - timedelta(days=days)
+    reviewed = []
+    for run in await store.list_evolution_runs(workspace_id, limit=500):
+        if run.get("reviewed_at"):
+            continue
+        if str(run.get("status")) not in ("applied", "rolled_back"):
+            continue
+        applied = _parse_iso(run.get("applied_at", ""))
+        if not applied or applied > cutoff:
+            continue
+        review = await review_run(workspace_id, run, days=days, now=now)
+        await store.update_evolution_run(workspace_id, run["id"],
+                                         review_json=review,
+                                         reviewed_at=review["reviewed_at"])
+        reviewed.append({"run_id": run["id"], "kind": run.get("kind"),
+                         "verdict": review["verdict"]})
+        if len(reviewed) >= limit:
+            break
+    return {"reviewed": len(reviewed), "runs": reviewed}
+
+
+async def accuracy(workspace_id: str) -> dict:
+    """提案准确率 = improved / 已判定（neutral、worse、reverted 都算没做对）
+
+    未判定（样本不足）的不计入分母；一条都没判定时返回 None，不编数。
+    """
+    from ..core.store import get_store
+    store = await get_store()
+    tally = {"improved": 0, "neutral": 0, "worse": 0, "reverted": 0, "insufficient": 0}
+    by_kind: dict[str, dict] = {}
+    for run in await store.list_evolution_runs(workspace_id, limit=500):
+        review = run.get("review") or {}
+        verdict = str(review.get("verdict") or "")
+        if verdict not in tally:
+            continue
+        tally[verdict] += 1
+        row = by_kind.setdefault(str(run.get("kind")), dict.fromkeys(tally, 0))
+        row[verdict] += 1
+    judged = tally["improved"] + tally["neutral"] + tally["worse"] + tally["reverted"]
+    return {
+        "reviewed": sum(tally.values()),
+        "judged": judged,
+        "accuracy": round(tally["improved"] / judged, 3) if judged else None,
+        "non_regression_rate": (round((tally["improved"] + tally["neutral"]) / judged, 3)
+                                if judged else None),
+        "tally": tally,
+        "by_kind": by_kind,
+        "definition": ("准确率 = 复盘判定为 improved 的占已判定提案之比；"
+                       "样本不足的提案不计入分母（不编数）"),
+    }

@@ -961,12 +961,17 @@ def evolution_list(workspace: str):
 
 @evolution_group.command("propose")
 @click.option("--workspace", "-w", required=True)
-def evolution_propose(workspace: str):
-    """生成提案（阈值自整定 / 模型权重；不自动生效）"""
+@click.option("--no-structures", is_flag=True, help="只提参数（阈值/权重），不提结构")
+def evolution_propose(workspace: str, no_structures: bool):
+    """生成提案（参数：阈值/权重；结构：规则/监控/看板。都不自动生效）"""
     from .engine.evolution import propose_all
-    out = run_async(propose_all(workspace))
-    console.print(f"[green]阈值提案 {out['threshold_tunes']} 个 · "
-                  f"权重提案 {out['model_weights']} 个[/]")
+    out = run_async(propose_all(workspace, structures=not no_structures))
+    console.print(f"[green]阈值 {out['threshold_tunes']} · 权重 {out['model_weights']} · "
+                  f"规则 {out['structure_dsl']} · 监控 {out['structure_monitor']} · "
+                  f"看板 {out['structure_board']}[/]")
+    if out["runs"]:
+        console.print(f"  账本 id：{', '.join(r[:8] for r in out['runs'])}"
+                      f"（`insflow evolution apply <id> -w {workspace}` 生效）")
 
 
 @evolution_group.command("apply")
@@ -996,6 +1001,54 @@ def evolution_rollback(run_id: str, workspace: str):
         console.print(f"[red]失败：{e}[/]")
         raise SystemExit(1)
     console.print(f"[green]已回滚[/] 恢复 {res['restored']}")
+
+
+@evolution_group.command("review")
+@click.option("--workspace", "-w", required=True)
+@click.option("--days", default=0, type=int, help="复盘窗口天数（默认 14）")
+def evolution_review(workspace: str, days: int):
+    """复盘生效满 N 天的提案，把效果写回账本"""
+    from .engine.evolution import REVIEW_AFTER_DAYS, review_due
+    out = run_async(review_due(workspace, days=days or REVIEW_AFTER_DAYS))
+    if not out["reviewed"]:
+        console.print("[yellow]没有到期待复盘的提案[/]（生效未满窗口或已复盘）")
+        return
+    console.print(f"[green]复盘 {out['reviewed']} 条[/]")
+    for r in out["runs"]:
+        console.print(f"  {r['run_id'][:8]} {r['kind']:<18} {r['verdict']}")
+
+
+@evolution_group.command("accuracy")
+@click.option("--workspace", "-w", required=True)
+def evolution_accuracy(workspace: str):
+    """提案准确率（improved / 已判定；样本不足的不计入分母）"""
+    from .engine.evolution import accuracy
+    a = run_async(accuracy(workspace))
+    if not a["reviewed"]:
+        console.print("[yellow]还没有复盘记录[/]（先 `insflow evolution review`）")
+        return
+    rate = f"{a['accuracy']:.0%}" if a["accuracy"] is not None else "—（无已判定样本）"
+    console.print(f"[bold]准确率 {rate}[/] · 已复盘 {a['reviewed']} · 已判定 {a['judged']}")
+    console.print(f"  {a['tally']}")
+    for kind, row in a["by_kind"].items():
+        console.print(f"  {kind:<18} {row}")
+
+
+@main.command("behavior")
+@click.option("--workspace", "-w", required=True)
+def behavior_cmd(workspace: str):
+    """行为信号与默认布局建议（本地统计，不上传）"""
+    from .engine.behavior import suggest_defaults, summary
+    sm = run_async(summary(workspace))
+    sg = run_async(suggest_defaults(workspace))
+    console.print(f"[bold]行为事件 {sm['total_events']} 次[/] · {sg['basis']}")
+    for kind, rows in sm["by_kind"].items():
+        if rows:
+            console.print(f"  {kind}: " + ", ".join(
+                f"{r['key']}×{r['hits']}" for r in rows[:5]))
+    if sg["enough"]:
+        console.print(f"  建议默认舱：{sg['default_cockpit']} · "
+                      f"常用面板：{', '.join(sg['panel_ids']) or '—'}")
 
 
 @main.command("playbook")

@@ -193,3 +193,77 @@ _dsl_registry = DSLRegistry()
 
 def get_dsl_registry() -> DSLRegistry:
     return _dsl_registry
+
+
+# ========== 持久化（批次 H 修复）==========
+#
+# 注册表本来只在内存里：API 注册、模板包 apply、结构提案生效的规则，**进程一重启就没了**，
+# 而且没有任何报错——用户只会发现"配的模型莫名其妙不跑了"。规则本身是配置（不是数据），
+# 随工作区 settings_json 走最合适：多实例共享、跟着备份走、导出模板包时能带上。
+
+SETTINGS_KEY = "dsl_rules"
+
+
+async def _load_settings(workspace_id: str):
+    from ..core.store import get_store
+    store = await get_store()
+    ws = await store.get_workspace(workspace_id)
+    if not ws:
+        raise DSLValidationError("工作区不存在")
+    return store, ws, dict(ws.settings_json or {})
+
+
+async def save_rule(workspace_id: str, spec: dict) -> dict:
+    """注册 + 落库（同 id 覆盖）。校验失败抛 DSLValidationError，不落任何东西。"""
+    model = get_dsl_registry().register(workspace_id, spec)   # 先过校验
+    store, ws, settings = await _load_settings(workspace_id)
+    rules = [r for r in (settings.get(SETTINGS_KEY) or [])
+             if isinstance(r, dict) and r.get("id") != model.id]
+    rules.append(dict(spec))
+    settings[SETTINGS_KEY] = rules
+    ws.settings_json = settings
+    await store.update_workspace(ws)
+    return dict(spec)
+
+
+async def remove_rule(workspace_id: str, rule_id: str) -> bool:
+    """摘除 + 落库删除（内存或库里任一存在即算删掉）"""
+    in_memory = get_dsl_registry().unregister(workspace_id, rule_id)
+    store, ws, settings = await _load_settings(workspace_id)
+    rules = settings.get(SETTINGS_KEY) or []
+    kept = [r for r in rules if not (isinstance(r, dict) and r.get("id") == rule_id)]
+    changed = len(kept) != len(rules)
+    if changed:
+        settings[SETTINGS_KEY] = kept
+        ws.settings_json = settings
+        await store.update_workspace(ws)
+    return in_memory or changed
+
+
+async def persisted_rules(workspace_id: str) -> list[dict]:
+    """库里存着的规则（与内存注册表可能短暂不一致时以库为准）"""
+    from ..core.store import get_store
+    store = await get_store()
+    ws = await store.get_workspace(workspace_id)
+    settings = dict((ws.settings_json if ws else {}) or {})
+    return [r for r in (settings.get(SETTINGS_KEY) or []) if isinstance(r, dict)]
+
+
+async def restore_rules() -> int:
+    """启动时把各工作区落库的规则装回注册表（bootstrap 调用一次）"""
+    from ..core.store import get_store
+    store = await get_store()
+    registry = get_dsl_registry()
+    restored = 0
+    for ws in await store.list_workspaces():
+        for spec in (dict(ws.settings_json or {}).get(SETTINGS_KEY) or []):
+            if not isinstance(spec, dict):
+                continue
+            try:
+                registry.register(ws.id, spec)
+                restored += 1
+            except DSLValidationError:
+                import logging
+                logging.getLogger("insflow.dsl").warning(
+                    "跳过非法 DSL 规则: %s/%s", ws.id, spec.get("id"))
+    return restored
