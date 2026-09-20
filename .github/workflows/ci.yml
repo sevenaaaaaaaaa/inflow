@@ -104,11 +104,16 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
-      - name: UI 行为回归（直接消费抽离后的静态 JS）
+      - name: 安装依赖
+        run: pip install -q -e ".[dev]"
+      - name: UI 行为回归（静态 JS 是交互唯一源）
+        run: node scripts/e2e_ui.mjs insflow/web/static_app.js
+      - name: 控制台壳自检（外链静态资源 + 无内联函数膨胀）
         run: |
-          pip install -q -e ".[dev]"
-          node scripts/e2e_ui.mjs insflow/web/static_app.js
-
+          python - <<'PY'
+          import os
+          import tempfile
+          from pathlib import Path
 
           import insflow.core.files as files_mod
 
@@ -116,12 +121,12 @@ jobs:
           os.environ.setdefault("INSFLOW_DISABLE_SCHEDULER", "1")
           files_mod.DATA_DIR = Path(tempfile.mkdtemp())
           from fastapi.testclient import TestClient
+
           from insflow.server.app import app
 
-          # 必须取包含 base.html 的页面（交互函数都在 base.html 里）
           html = TestClient(app).get("/console/m").text
-          assert "ifToggleSeries" in html, "页面未包含 base.html 交互脚本"
-          Path("/tmp/console.html").write_text(html, encoding="utf-8")
+          assert "/console/static/app.js?v=" in html, "页面未外链静态 JS"
+          # 交互已抽到 static_app.js；内联 function 只会让缓存失效/体积反弹
+          assert "function if" not in html, "检测到内联交互函数，请放回 static_app.js"
+          print("控制台壳自检 OK")
           PY
-          python scripts/extract_inline_js.py /tmp/console.html /tmp/inline.js
-          node scripts/e2e_ui.mjs /tmp/inline.js
