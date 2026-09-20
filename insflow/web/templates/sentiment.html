@@ -50,7 +50,7 @@
       csv_name='sentiment-trend') | safe }}
   <p class="sub" style="margin-top:8px">负向占比越高越危险；情绪均分（-1~1）为正说明口碑偏正面。</p>
   {% else %}
-  <div class="empty">暂无趋势数据 —— 创建 topic 监测（品牌词/话题）后生成</div>
+  <div class="empty"><span>暂无趋势数据</span><a class="btn" href="/console/monitors?workspace_id={{ workspace_id }}">创建话题监测</a></div>
   {% endif %}
 </div>
 

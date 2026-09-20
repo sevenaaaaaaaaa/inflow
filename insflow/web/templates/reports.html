@@ -5,7 +5,7 @@
 <p class="sub">报告即文件（Markdown 存储分类目录，对齐 MFlow 1-2 Insight 习惯）</p>
 
 {% if not all_reports %}
-<div class="empty">暂无报告 —— 触发诊断/周报/深度报告后在此查看</div>
+<div class="empty"><span>暂无报告</span><a class="btn" href="/console/cockpit/overview?workspace_id={{ workspace_id }}">去仪表盘触发诊断</a></div>
 {% endif %}
 
 {% for cat, files in all_reports.items() %}

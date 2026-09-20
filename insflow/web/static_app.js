@@ -164,6 +164,54 @@ async function ifLayoutHistory(){
   }catch(e){}
 })();
 
+/* ── 顶栏工作区切换（OPC 多客户快切；偏好记忆） ── */
+function ifCurrentWs(){
+  return document.body.getAttribute('data-ws') || '';
+}
+function ifSwitchWs(id){
+  if(!id) return;
+  try{ localStorage.setItem('if_ws', id); }catch(e){}
+  var u = new URL(location.href);
+  u.searchParams.set('workspace_id', id);
+  location.href = u.toString();
+}
+function ifToggleWs(ev){
+  if(ev) ev.stopPropagation();
+  var pop = document.getElementById('if-ws');
+  if(!pop) return;
+  var open = pop.hidden;
+  document.querySelectorAll('.more-pop').forEach(function(p){ p.hidden = true; });
+  pop.hidden = !open;
+  var btn = document.getElementById('if-ws-btn');
+  if(btn) btn.setAttribute('aria-expanded', String(!pop.hidden));
+  if(!open) return;
+  var cur = ifCurrentWs();
+  pop.innerHTML = '<div class="more-item" style="opacity:.6;cursor:default">切换工作区</div>';
+  fetch('/api/v1/workspaces', {credentials:'same-origin'})
+    .then(function(r){ return r.json(); })
+    .then(function(j){
+      (j.workspaces || []).forEach(function(w){
+        var b = document.createElement('button');
+        b.className = 'more-item' + (w.id === cur ? ' ws-on' : '');
+        b.textContent = (w.id === cur ? '● ' : '○ ') + (w.name || w.id) +
+                        '（' + w.id + '）';
+        b.onclick = function(){ ifSwitchWs(w.id); };
+        pop.appendChild(b);
+      });
+      if(!(j.workspaces || []).length){
+        pop.innerHTML += '<div class="more-item" style="opacity:.6;cursor:default">无可用工作区</div>';
+      }
+      var mine = document.createElement('button');
+      mine.className = 'more-item';
+      mine.textContent = '＋ 新建工作区（用向导创建）';
+      mine.onclick = function(){
+        location.href = '/console/onboarding?workspace_id=' + encodeURIComponent(cur);
+      };
+      pop.appendChild(mine);
+    })
+    .catch(function(){});
+}
+
 /* ── 顶栏「更多」下拉（低频操作收纳，带文字标签） ── */
 function ifToggleMore(ev){
   if(ev) ev.stopPropagation();
@@ -330,6 +378,17 @@ async function ifPostAnnot(panelKey){
       if(span) span.textContent = n;
       b.style.opacity = n ? '1' : '.55';
     });
+  }catch(e){}
+})();
+
+/* ── 记住上次工作区：URL 无 workspace_id 时补上（避免每次都回到 default） ── */
+(function(){
+  try{
+    if(document.body.getAttribute('data-ws') !== 'default') return;
+    var u = new URL(location.href);
+    if(u.searchParams.get('workspace_id')) return;
+    var last = localStorage.getItem('if_ws');
+    if(last && last !== 'default'){ u.searchParams.set('workspace_id', last); location.replace(u.toString()); }
   }catch(e){}
 })();
 

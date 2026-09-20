@@ -18,7 +18,10 @@ from typing import Any
 
 # 项目根目录（insflow 包的上上级）
 ROOT_DIR = Path(__file__).parent.parent.parent
-DATA_DIR = ROOT_DIR / "data"
+# 数据目录可用 INSFLOW_DATA_DIR 覆盖（容器/测试/多实例挂载卷都需要）
+import os as _os
+
+DATA_DIR = Path(_os.environ.get("INSFLOW_DATA_DIR") or (ROOT_DIR / "data"))
 
 
 def _now() -> datetime:

@@ -28,7 +28,7 @@
   </table>
   <p class="sub" style="margin-top:6px">无面板数据，不做绝对流量承诺；仅用于同口径横向比较与趋势判断。</p>
   {% else %}
-  <div class="empty">暂无外部信号（引荐域/SERP/内容/社媒）—— 接入后自动估算</div>
+  <div class="empty"><span>暂无外部信号（引荐域/SERP/内容/社媒）</span><a class="dp-btn" href="/console/monitors?workspace_id={{ workspace_id }}">创建监控采集信号</a></div>
   {% endif %}
 </div>
 
@@ -42,7 +42,7 @@
         csv_name='price-' ~ domain, subtitle='来自定价页采样（非估算）') | safe }}
     {% endfor %}
   {% else %}
-  <div class="empty">暂无价格采样 —— 上架 competitor 定价页监控后自动出现</div>
+  <div class="empty"><span>暂无价格采样</span><a class="dp-btn" href="/console/monitors?workspace_id={{ workspace_id }}">上架定价页监控</a></div>
   {% endif %}
 </div>
 
@@ -51,7 +51,7 @@
   {% if data.gaps %}
   {{ viz.bar_chart(data.gaps, color='var(--accent)') | safe }}
   {% else %}
-  <div class="empty">暂无缺口数据 —— 创建 keyword 监控并记录一次排名快照</div>
+  <div class="empty"><span>暂无缺口数据</span><a class="dp-btn" href="/console/monitors?workspace_id={{ workspace_id }}">创建关键词监控</a></div>
   {% endif %}
 </div>
 
@@ -69,7 +69,7 @@
   {% endfor %}
 </table>
 {% else %}
-<div class="empty">暂无竞品档案 —— 去「竞品」创建，或应用行业模板包（含 3 竞品定价监控）</div>
+<div class="empty"><span>暂无竞品档案</span><a class="btn" href="/console/monitors?workspace_id={{ workspace_id }}">创建竞品监控</a><a class="dp-btn" href="/console/plugins?workspace_id={{ workspace_id }}">应用行业模板包</a></div>
 {% endif %}
 
 <h2>竞品异动时间线</h2>

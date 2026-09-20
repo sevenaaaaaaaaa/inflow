@@ -239,7 +239,8 @@ async def _polish(markdown: str, workspace_id: str) -> str:
         import os
 
         from ..agent.llm import LLMGateway
-        gw = LLMGateway(api_key=os.environ.get("OPENAI_API_KEY") or None)
+        gw = LLMGateway(api_key=os.environ.get("OPENAI_API_KEY") or None,
+                        workspace_id=workspace_id)
         if not gw.available:
             return markdown
         out = await gw.chat([

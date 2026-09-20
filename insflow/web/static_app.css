@@ -341,3 +341,31 @@ body.scrolled #chrome{box-shadow:var(--shadow-sm)}
 @media(max-width:360px){
   .cards{grid-template-columns:1fr !important}
 }
+
+/* 17) 首跑清单（引导四步闭环；全完成后自动隐藏） */
+.checklist{padding:16px 18px}
+.cl-head{display:flex; align-items:baseline; gap:10px; flex-wrap:wrap}
+.cl-head .sub{margin:0}
+.cl-bar{height:6px; background:var(--hover-strong); border-radius:99px; overflow:hidden; margin:10px 0 12px}
+.cl-bar span{display:block; height:6px; background:var(--grad); transition:width .4s var(--ease-spring)}
+.cl-items{display:grid; gap:8px}
+.cl-item{display:flex; align-items:center; gap:10px; font-size:var(--fs-lg)}
+.cl-dot{width:20px; height:20px; border-radius:50%; display:grid; place-items:center;
+  font-size:11px; font-weight:800; border:1px solid var(--border-strong); color:var(--muted); flex-shrink:0}
+.cl-item.on .cl-dot{background:var(--ok-soft); border-color:transparent; color:var(--ok)}
+.cl-item.on .cl-label{color:var(--muted); text-decoration:line-through; text-decoration-thickness:1px}
+.cl-label{flex:1}
+
+/* 18) 工作区切换器（OPC 多客户快切） */
+.ws-menu .ws-btn{font-size:15px}
+.more-item.ws-on{background:var(--accent-soft); color:var(--accent-strong); font-weight:700}
+@media(max-width:640px){ .ws-menu .icon-btn{width:32px;height:32px} }
+
+/* 19) 今日三件事 / 客户 ROI 卡 */
+.todos .todo{display:flex; align-items:center; gap:10px; padding:9px 0;
+  border-bottom:1px solid var(--border); flex-wrap:wrap}
+.todos .todo:last-child{border-bottom:0}
+.todo-title{flex:1; font-size:var(--fs-lg); font-weight:600; min-width:180px}
+.todo-actions{display:flex; gap:6px}
+.roi-grid{display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:14px}
+.roi-num{font-size:24px; font-weight:800; color:var(--accent); font-variant-numeric:tabular-nums}

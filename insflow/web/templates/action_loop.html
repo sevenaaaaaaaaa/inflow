@@ -24,7 +24,7 @@
       csv_name='attribution', subtitle='路径数 ' ~ data.attribution.paths_used
              ~ ('（已降级为渠道占比：无触点序列）' if data.attribution.degraded else '')) | safe }}
   {% else %}
-  <div class="empty">暂无归因数据 —— 接入旅程事件（journey_events 带 channel）后可用</div>
+  <div class="empty"><span>暂无归因数据（需 journey_events 带 channel）</span><a class="dp-btn" href="/console/integrations?workspace_id={{ workspace_id }}">查看接入通道</a></div>
   {% endif %}
 </div>
 

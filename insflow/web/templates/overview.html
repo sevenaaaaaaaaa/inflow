@@ -59,6 +59,6 @@
   {% endfor %}
 </table>
 {% else %}
-<div class="empty">暂无监控任务 —— 去「数据监测 → 监控任务」创建，或「接入向导」接入第一方数据</div>
+<div class="empty"><span>暂无监控任务</span><a class="btn" href="/console/monitors?workspace_id={{ workspace_id }}">创建监控任务</a><a class="dp-btn" href="/console/onboarding?workspace_id={{ workspace_id }}">接入第一方数据</a></div>
 {% endif %}
 {% endblock %}

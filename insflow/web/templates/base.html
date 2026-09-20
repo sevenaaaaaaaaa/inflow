@@ -114,6 +114,12 @@ function ifSetFilter(k, v){
     {% endfor %}
   </nav>
   <div class="chrome-actions">
+    <div class="more-menu ws-menu" data-keep-drawer>
+      <button class="icon-btn ws-btn" id="if-ws-btn" onclick="ifToggleWs(event)"
+              title="切换工作区（多客户快切）" aria-haspopup="true" aria-expanded="false"
+              data-ws-label="{{ workspace_id or '—' }}">🏢</button>
+      <div class="more-pop" id="if-ws" hidden></div>
+    </div>
     <button class="icon-btn" onclick="ifAsk()" title="问数（⌘K / Ctrl+K）：指标趋势 / 数据质量 / 渠道归因 / 动作增量">🔎</button>
     <button class="icon-btn" onclick="toggleAutoRefresh()" id="auto-btn" title="自动刷新（延迟 60s 起、每 120s 一次、最多 20 次、页面隐藏暂停）">⟳</button>
     <div class="more-menu" data-keep-drawer>

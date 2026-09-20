@@ -15,7 +15,7 @@
   {% if data.funnel %}
   {{ viz.funnel(data.funnel) | safe }}
   {% else %}
-  <div class="empty">暂无漏斗数据 —— 创建 journey 监控（配置 GA4 漏斗事件）后生成</div>
+  <div class="empty"><span>暂无漏斗数据（需 GA4 漏斗事件）</span><a class="btn" href="/console/monitors?workspace_id={{ workspace_id }}">创建旅程监控</a></div>
   {% endif %}
 </div>
 
@@ -26,7 +26,7 @@
       data.path_sankey | map('list') | list,
       viz.sankey(data.path_sankey, unit=' 人'), csv_name='journey-path') | safe }}
   {% else %}
-  <div class="empty">暂无路径数据 —— 创建 journey 监控后生成</div>
+  <div class="empty"><span>暂无路径数据</span><a class="dp-btn" href="/console/monitors?workspace_id={{ workspace_id }}">创建旅程监控</a></div>
   {% endif %}
 </div>
 
@@ -36,7 +36,7 @@
   {{ viz.line_chart([{'name': '留存率', 'values': data.retention | map(attribute='value') | list}],
                     data.retention | map(attribute='bucket') | list, as_area=True) | safe }}
   {% else %}
-  <div class="empty">暂无留存数据（需 GA4 授权）</div>
+  <div class="empty"><span>暂无留存数据</span><a class="dp-btn" href="/console/onboarding?workspace_id={{ workspace_id }}">授权 GA4</a></div>
   {% endif %}
 </div>
 
@@ -70,6 +70,6 @@
   {% endfor %}
 </table>
 {% else %}
-<div class="empty">暂无流失预警 —— 在「接入向导」配置 OpenFlow MCP 后可用真实会员/订单数据分层</div>
+<div class="empty"><span>暂无流失预警（需 OpenFlow 会员/订单数据分层）</span><a class="dp-btn" href="/console/integrations?workspace_id={{ workspace_id }}">配置 OpenFlow 通道</a></div>
 {% endif %}
 {% endblock %}

@@ -765,3 +765,85 @@ class TestP0Interop:
         # 模型产出 openflow.automation / openflow.plugin_api，必须有适配器
         assert "openflow.automation" in types
         assert "openflow.plugin_api" in types
+
+
+class TestQuickstartAndOnboarding:
+    """批次 A：一条命令跑起来 + 首跑清单 + 空状态 CTA"""
+
+    def test_quickstart_cli_prepares_without_serving(self, tmp_path, monkeypatch):
+        import subprocess
+        import sys
+        env = dict(__import__("os").environ)
+        env.update({"INSFLOW_DB_DRIVER": "sqlite", "INSFLOW_DISABLE_SCHEDULER": "1",
+                    "INSFLOW_MASTER_KEY": "qs-key"})
+        proc = subprocess.run(
+            [sys.executable, "-m", "insflow.cli", "quickstart", "--no-serve",
+             "--workspace", "qs-ws", "--days", "3"],
+            capture_output=True, text=True, timeout=120,
+            env={**env, "INSFLOW_DATA_DIR": str(tmp_path)})
+        out = proc.stdout + proc.stderr
+        assert proc.returncode == 0, out[-400:]
+        assert "数据库已就绪" in out and "演示数据" in out
+        assert "--no-serve" in out or "准备完成" in out
+
+    def test_quickstart_help_lists_options(self):
+        from click.testing import CliRunner
+
+        from insflow.cli import main
+        res = CliRunner().invoke(main, ["quickstart", "--help"])
+        assert res.exit_code == 0
+        for flag in ("--no-mock", "--no-serve", "--open", "--workspace"):
+            assert flag in res.output, flag
+
+    def test_first_run_checklist_progress(self, env):
+        import asyncio
+
+        from fastapi.testclient import TestClient
+
+        from insflow.engine.demo import DemoSeeder
+        from insflow.server.app import app
+
+        cli = TestClient(app)
+        empty = cli.get("/console", params={"workspace_id": "test-ws"})
+        assert "开始使用 · 0/4" in empty.text
+        assert "去接入" in empty.text                     # 首步 CTA
+
+        async def _seed():
+            await DemoSeeder("test-ws", days=20).seed()
+        asyncio.get_event_loop().run_until_complete(_seed())
+        done = cli.get("/console", params={"workspace_id": "test-ws"})
+        assert "开始使用 ·" not in done.text              # 完成后自动隐藏
+
+    def test_empty_states_have_next_step(self, env):
+        import re
+
+        from fastapi.testclient import TestClient
+
+        from insflow.server.app import app
+
+        cli = TestClient(app)
+        pages = ["/console", "/console/cockpit/traffic", "/console/cockpit/journey",
+                 "/console/cockpit/competitor", "/console/sentiment",
+                 "/console/monitors", "/console/plugins", "/console/audit"]
+        total = with_cta = 0
+        for path in pages:
+            r = cli.get(path, params={"workspace_id": "test-ws"})
+            for block in re.findall(r'<div class="empty">(.*?)</div>', r.text, re.S):
+                body = re.sub(r"\s+", " ", block)
+                # 健康状态类（✅ / 情绪健康 / 无…异常）无需 CTA
+                if "✅" in body or "健康" in body or "暂无流量异常" in body:
+                    continue
+                total += 1
+                if "<a " in body or "dp-btn" in body:
+                    with_cta += 1
+        assert total == 0 or with_cta / total >= 0.8, f"CTA 覆盖 {with_cta}/{total}"
+
+    def test_quickstart_no_key_needed(self):
+        """quickstart 的 mock 模式不得依赖任何 API Key（爱好者 5 分钟上手）"""
+        import inspect
+
+        from insflow import cli
+        src = inspect.getsource(cli.quickstart.callback)
+        assert "INSFLOW_MASTER_KEY" in src
+        for key in ("OPENAI_API_KEY", "GSC_CLIENT_ID", "SERPER_API_KEY"):
+            assert key not in src, key

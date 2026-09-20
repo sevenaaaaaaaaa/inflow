@@ -76,7 +76,7 @@
     {% endfor %}
   </table>
   {% else %}
-  <div class="empty">暂无结构化验证结论 —— 动作验证后自动出现</div>
+  <div class="empty"><span>暂无结构化验证结论（动作过 14 天窗口后自动出现）</span><a class="dp-btn" href="/console/cockpit/action-loop?workspace_id={{ workspace_id }}">去行动验证</a></div>
   {% endif %}
 </div>
 

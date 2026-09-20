@@ -289,6 +289,7 @@ class BillingManager:
         agent_used = _used("agent_asks")
         deep_used = _used("deep_reports")
         cost_used = _used("cost_usd", 0.0)
+        llm_cost_used = _used("llm_cost_usd", 0.0)
 
         def _pct(used, limit):
             return round(used / limit, 3) if limit else 0.0
@@ -309,6 +310,8 @@ class BillingManager:
                                  "pct": _pct(deep_used, limits["deep_reports"])},
                 "cost_usd": {"used": round(cost_used, 2), "limit": limits["monthly_cost_usd"],
                              "pct": _pct(cost_used, limits["monthly_cost_usd"])},
+                "llm_cost_usd": {"used": round(llm_cost_used, 4), "limit": None,
+                                 "pct": 0.0},
                 "competitors": {"limit": limits["competitors"]},
                 "white_label": limits["white_label"],
             },

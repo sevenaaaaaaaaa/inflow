@@ -294,6 +294,30 @@ def template_vars(request: Request) -> dict:
     return out
 
 
+async def accessible_workspaces(request: Request) -> list[dict]:
+    """当前会话可见的工作区（代运营/OPC 多客户快切）
+
+    - SaaS 模式：只列登录用户所属工作区（租户隔离，fail-closed）
+    - 私有化：列全部工作区（一人管多客户是私有化主场景）
+    """
+    store = await get_store()
+    user = getattr(request.state, "user", None)
+    all_ws = await store.list_workspaces()
+    if os.environ.get("INSFLOW_SAAS", "") == "1" and user:
+        own = str(user.get("workspace_id") or "")
+        return [{"id": w.id, "name": w.name} for w in all_ws if w.id == own]
+    return [{"id": w.id, "name": w.name} for w in all_ws[:30]]
+
+
+def top_three_insights(insights: list, weights: dict | None = None,
+                       limit: int = 3) -> list:
+    """今日三件事：待处理洞察按「严重度 × 模型权重」排序取前 N"""
+    from ..engine.router import rank_insights
+    pending = [i for i in insights
+               if getattr(i.status, "value", i.status) in ("new", "acknowledged")]
+    return rank_insights(pending, weights)[:limit]
+
+
 async def _default_workspace() -> str:
     store = await get_store()
     wss = await store.list_workspaces()
@@ -378,6 +402,8 @@ def _ctx(request: Request, nav: str, workspace_id: str, **extra) -> dict:
     return {
         "request": request,
         "nav": nav,
+        # 顶栏工作区切换器（子模板 import base 时无 request，故在此解析；失败不阻塞渲染）
+        "workspaces": extra.pop("workspaces", None) or [],
         "area": NAV_AREA.get(nav, "overview"),
         "version": __version__,
         "workspace_id": workspace_id,
@@ -403,8 +429,54 @@ async def dashboard(request: Request, workspace_id: str = Query("")):
         status_counts[i.status.value] = status_counts.get(i.status.value, 0) + 1
     feedback = await store.get_feedback_stats(workspace_id)
 
+    # 首跑清单（从数据事实推导，不额外存状态）：接入 → 洞察 → 动作 → 验证
+    monitors_count = await store._fetchone(
+        "SELECT COUNT(*) AS n FROM monitors WHERE workspace_id = ?", (workspace_id,))
+    verifications = await store.verification_summary(workspace_id)
+    feedback_total = sum(int(v) for v in feedback.values()
+                         if isinstance(v, (int, float)))
+    checklist = [
+        {"key": "connect", "label": "接入第一个数据源（或创建监控任务）",
+         "done": int((monitors_count or {}).get("n") or 0) > 0,
+         "href": f"/console/onboarding?workspace_id={workspace_id}", "cta": "去接入"},
+        {"key": "insight", "label": "跑一次诊断，产出洞察",
+         "done": len(all_insights) > 0,
+         "href": f"/console/insights?workspace_id={workspace_id}", "cta": "看洞察"},
+        {"key": "action", "label": "派发一个动作（进入 14 天验证）",
+         "done": sum(v for k, v in status_counts.items()
+                     if k in ("actioned", "verified")) > 0 or feedback_total > 0,
+         "href": f"/console/insights?workspace_id={workspace_id}", "cta": "去派发"},
+        {"key": "verify", "label": "看到第一条验证结论（自进化数据来源）",
+         "done": verifications.get("total", 0) > 0 or feedback_total > 0,
+         "href": f"/console/evolution?workspace_id={workspace_id}", "cta": "看验证"},
+    ]
+    checklist_done = sum(1 for c in checklist if c["done"])
+
+    # 今日三件事（严重度 × 自进化权重）与待验证动作
+    try:
+        from ..engine.router import get_model_router
+        weights = await get_model_router().load_weights(workspace_id)
+    except Exception:
+        weights = {}
+    todos = top_three_insights(all_insights, weights, limit=3)
+    try:
+        due = await store.list_actions_due_for_verification()
+        due_actions = [a for a in due if a.workspace_id == workspace_id]
+    except Exception:
+        due_actions = []
+
+    # 客户 ROI（OPC：这个客户赚不赚）
+    try:
+        from ..engine.roi import client_roi
+        roi = await client_roi(workspace_id)
+    except Exception:
+        roi = {}
+
     return templates.TemplateResponse(request, "dashboard.html", _ctx(
         request, "dashboard", workspace_id,
+        checklist=checklist, checklist_done=checklist_done,
+        todos=todos, due_actions=due_actions[:5], roi=roi,
+        workspaces=await accessible_workspaces(request),
         stage=ws.stage.value if ws else "-",
         counts={
             "total": len(all_insights),

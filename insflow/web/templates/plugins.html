@@ -13,7 +13,7 @@
   {% endfor %}
 </table>
 {% else %}
-<div class="empty">未安装任何插件</div>
+<div class="empty"><span>未安装任何插件</span><a class="dp-btn" href="/console/integrations?workspace_id={{ workspace_id }}">查看已接入通道</a></div>
 {% endif %}
 
 <h2>本地市场（marketplace/）</h2>
@@ -29,7 +29,7 @@
   {% endfor %}
 </table>
 {% else %}
-<div class="empty">marketplace/ 目录暂无可安装插件（把插件包放进 marketplace/sources/ 等）</div>
+<div class="empty"><span>marketplace/ 目录暂无可安装插件（把插件包放进 marketplace/sources/ 等）</span><a class="dp-btn" href="/console/integrations?workspace_id={{ workspace_id }}">查看已接入通道</a></div>
 {% endif %}
 
 <script>

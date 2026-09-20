@@ -58,10 +58,12 @@ class LLMGateway:
     """
 
     def __init__(self, api_key: str | None = None, base_url: str | None = None,
-                 model: str | None = None, budget: BudgetLedger | None = None):
+                 model: str | None = None, budget: BudgetLedger | None = None,
+                 workspace_id: str = ""):
         self.api_key = api_key or os.environ.get("OPENAI_API_KEY", "")
         self.base_url = (base_url or os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1")).rstrip("/")
         self.model = model or os.environ.get("INSFLOW_AGENT_MODEL", "gpt-4o-mini")
+        self.workspace_id = workspace_id or os.environ.get("INSFLOW_WORKSPACE_ID", "")
         self.budget = budget or BudgetLedger(
             max_cost_usd=float(os.environ.get("INSFLOW_AGENT_BUDGET_USD", "5.0"))
         )
@@ -110,6 +112,13 @@ class LLMGateway:
             model=self.model,
         )
         self.budget.record(entry)
+        # 成本落库（settings_json.usage.<月>.llm_cost_usd）→ 客户 ROI 跨会话可见
+        if self.workspace_id and entry.cost_usd:
+            import contextlib
+            with contextlib.suppress(Exception):
+                from ..engine.billing import BillingManager
+                await BillingManager(self.workspace_id).record_usage_persisted(
+                    "llm_cost_usd", entry.cost_usd)
 
         choice = data.get("choices", [{}])[0]
         message = choice.get("message", {})

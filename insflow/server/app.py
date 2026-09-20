@@ -105,9 +105,19 @@ async def saas_guard(request, call_next):
     if _os.environ.get("INSFLOW_SAAS", "") != "1":
         return await call_next(request)
     path = request.url.path
-    if path.startswith("/console") and not path.startswith(
-            ("/console/login", "/console/register", "/console/logout",
-             "/console/sso/", "/console/static/")):
+    is_console = path.startswith("/console") and not path.startswith(
+        ("/console/login", "/console/register", "/console/logout",
+         "/console/sso/", "/console/static/"))
+    if is_console or path.startswith("/api/"):
+        # /api/* 也解析会话（否则 API 拿不到租户上下文 → 多租户过滤失效）；
+        # 但 API 不跳登录页（由各端点自行返回 401/403）
+        if path.startswith("/api/") and not is_console:
+            from ..core.accounts import COOKIE_NAME, AccountManager
+            user = await AccountManager().verify_session(
+                request.cookies.get(COOKIE_NAME))
+            if user:
+                request.state.user = user
+            return await call_next(request)
         from urllib.parse import quote
 
         from fastapi.responses import RedirectResponse
@@ -553,11 +563,17 @@ async def health():
 # ========== 工作区 API ==========
 
 @app.get("/api/v1/workspaces")
-async def list_workspaces():
-    """列出所有工作区"""
+async def list_workspaces(request: Request):
+    """列出可见工作区（SaaS：仅会话用户所属；私有化：全部，供多客户快切）"""
     store = await get_store()
     workspaces = await store.list_workspaces()
-    return {"workspaces": [ws.model_dump() for ws in workspaces]}
+    user = getattr(request.state, "user", None)
+    if _os.environ.get("INSFLOW_SAAS", "") == "1" and user:
+        own = str(user.get("workspace_id") or "")
+        workspaces = [w for w in workspaces if w.id == own]
+    return {"workspaces": [
+        {"id": ws.id, "name": ws.name, "stage": ws.stage.value,
+         "maturity": ws.maturity_level.value} for ws in workspaces]}
 
 
 # ========== 接入向导（TD-1，M7）==========

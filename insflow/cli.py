@@ -26,6 +26,12 @@ except Exception:
 console = Console()
 
 
+def secrets_token() -> str:
+    """生成主密钥（quickstart 首次运行用）"""
+    import secrets
+    return secrets.token_urlsafe(24)
+
+
 def run_async(coro):
     """运行异步函数（结束后关闭全局 store，避免 aiosqlite 线程阻塞退出）"""
     from .core.store import close_store
@@ -41,6 +47,109 @@ def run_async(coro):
 def main():
     """Insight Flow - 增长情报与策略操作系统"""
     pass
+
+
+@main.command("roi")
+@click.option("--workspace", "-w", required=True)
+def roi_cmd(workspace: str):
+    """客户 ROI：有效动作 / 显著结论 / 成本与单位经济（OPC 视角）"""
+    from .engine.roi import client_roi
+    r = run_async(client_roi(workspace))
+    o, c = r["output"], r["cost"]
+    console.print(f"[bold]{r['workspace_id']}[/]  "
+                  f"有效动作 {o['effective_actions']} · 显著 {o['significant_results']} · "
+                  f"验证 {o['verified_total']}")
+    console.print(f"  成本合计 ${c['total_cost_usd']}"
+                  f"（数据源 ${c['source_cost_usd']} + LLM ${c['llm_cost_usd']}）"
+                  f" · 接口 {c['api_calls']:.0f} 次 · Agent {c['agent_asks']:.0f} 次")
+    per = r["unit_economics"]["cost_per_effective_action_usd"]
+    console.print(f"  成本 / 有效动作：{'$' + str(per) if per is not None else '—（暂无有效动作）'}")
+
+
+@main.command()
+@click.option("--host", default="127.0.0.1", help="监听地址（对外暴露用 0.0.0.0）")
+@click.option("--port", default=8400, type=int, help="服务端口")
+@click.option("--workspace", "-w", default="insflow-demo", help="演示工作区 ID")
+@click.option("--days", default=30, help="演示数据天数")
+@click.option("--mock/--no-mock", "with_mock", default=True,
+              help="灌入零依赖演示数据（无需任何 API Key）")
+@click.option("--open/--no-open", "open_browser", default=True, help="启动后自动打开浏览器")
+@click.option("--no-serve", is_flag=True, help="只准备数据不起服务（CI/脚本用）")
+def quickstart(host: str, port: int, workspace: str, days: int, with_mock: bool,
+               open_browser: bool, no_serve: bool):
+    """一条命令跑起来：建配置 → 迁移 → （可选）灌演示数据 → 起服务
+
+    面向首次使用/AI 爱好者：零 API Key 即可看到 9 个驾驶舱、即席探索、问数、
+    行动验证与自进化的完整效果。
+    """
+    import pathlib
+
+    root = pathlib.Path(__file__).parent.parent
+    env_file = root / ".env"
+
+    console.print("[bold]Insight Flow 快速开始[/]")
+    # 1) 最小配置（首次运行自动生成；已有则不动）
+    if not env_file.exists():
+        env_file.write_text(
+            "# Insight Flow 最小配置（quickstart 生成）\n"
+            "INSFLOW_DB_DRIVER=sqlite\n"
+            f"INSFLOW_MASTER_KEY={secrets_token()}\n",
+            encoding="utf-8")
+        console.print(f"  [green]✓[/] 已生成配置 {env_file}")
+    else:
+        console.print("  [dim]·[/] 复用已有 .env")
+
+    # 2) 迁移
+    from .core.store import reset_store
+
+    async def _migrate():
+        from .core.store import Store
+        store = Store()
+        await store.connect()
+        await store.migrate()
+        reset_store(store)
+        from .core.entities import Workspace
+        if not await store.get_workspace(workspace):
+            await store.create_workspace(Workspace(id=workspace, name="演示工作区"))
+        return store
+    async def _prepare():
+        store = await _migrate()
+        count = 0
+        if with_mock:
+            from .engine.demo import DemoSeeder
+            res = await DemoSeeder(workspace, days=days).seed()
+            count = res.get("insights", 0)
+        return store, count
+
+    _store, insights = run_async(_prepare())
+    console.print("  [green]✓[/] 数据库已就绪")
+
+    if with_mock:
+        console.print(f"  [green]✓[/] 演示数据：{insights} 条洞察"
+                      f"（工作区 [bold]{workspace}[/]）")
+        console.print("     零 API Key 即可体验：9 个驾驶舱 / 即席探索 / ⌘K 问数 / 行动验证 / 自进化")
+
+    if no_serve:
+        console.print("\n[green]准备完成[/]（--no-serve，未启动服务）")
+        return
+
+    # 3) 起服务（前台阻塞）
+    url = f"http://{host if host != '0.0.0.0' else '127.0.0.1'}:{port}/console"
+    console.print(f"\n[bold green]服务地址[/] {url}")
+    console.print("[dim]按 Ctrl+C 停止[/]\n")
+    if open_browser:
+        import threading
+        import webbrowser
+
+        def _open():
+            import time as _t
+            _t.sleep(1.5)
+            with contextlib.suppress(Exception):
+                webbrowser.open(url)
+        threading.Thread(target=_open, daemon=True).start()
+
+    import uvicorn
+    uvicorn.run("insflow.server.app:app", host=host, port=port, log_level="info")
 
 
 @main.command()

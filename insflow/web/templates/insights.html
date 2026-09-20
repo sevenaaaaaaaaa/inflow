@@ -46,7 +46,7 @@
   {% endfor %}
 </table>
 {% else %}
-<div class="empty">无匹配洞察</div>
+<div class="empty"><span>无匹配洞察</span><a class="dp-btn" href="/console/insights?workspace_id={{ workspace_id }}">清除筛选</a></div>
 {% endif %}
 
 <script>

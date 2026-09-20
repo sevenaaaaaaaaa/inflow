@@ -35,6 +35,6 @@
   {% endfor %}
 </table>
 {% else %}
-<div class="empty">暂无审计记录 —— 修改 RLS 策略 / 布局 / 告警规则 / 成员角色后会出现在这里</div>
+<div class="empty"><span>暂无审计记录（改 RLS/布局/告警/成员角色后会出现在这里）</span><a class="dp-btn" href="/console/members?workspace_id={{ workspace_id }}">去成员与权限</a></div>
 {% endif %}
 {% endblock %}

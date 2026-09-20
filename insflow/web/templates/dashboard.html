@@ -12,6 +12,71 @@
   <div class="card"><div class="num">{{ feedback_effective }}</div><div class="label">验证有效</div></div>
 </div>
 
+{% if checklist and checklist_done < checklist | length %}
+<div class="card checklist">
+  <div class="cl-head">
+    <b>开始使用 · {{ checklist_done }}/{{ checklist | length }}</b>
+    <span class="sub">跟着做四步，就能看到「洞察 → 动作 → 14 天验证 → 自进化」的完整闭环</span>
+  </div>
+  <div class="cl-bar"><span style="width:{{ (checklist_done * 100 // (checklist | length)) }}%"></span></div>
+  <div class="cl-items">
+    {% for c in checklist %}
+    <div class="cl-item {{ 'on' if c.done }}">
+      <span class="cl-dot">{{ '✓' if c.done else loop.index }}</span>
+      <span class="cl-label">{{ c.label }}</span>
+      {% if not c.done %}<a class="dp-btn" href="{{ c.href }}">{{ c.cta }} →</a>{% endif %}
+    </div>
+    {% endfor %}
+  </div>
+</div>
+{% endif %}
+
+{% if todos %}
+<h2>今日三件事</h2>
+<div class="card todos">
+  <p class="sub">按「严重度 × 模型权重（自进化）」排序；需要留意{{ due_actions | length }}个到期验证</p>
+  {% for t in todos %}
+  <div class="todo">
+    <span class="badge b-{{ t.severity.value }}">{{ t.severity.value }}</span>
+    <span class="todo-title">{{ t.title[:56] }}</span>
+    <span class="sub">{{ (t.models_json or []) | join('、') }}</span>
+    <span class="todo-actions">
+      <button class="dp-btn" onclick="ifDispatchInsight('{{ t.id }}', 'feishu.notify')">派发（飞书）</button>
+      <a class="dp-btn" href="/console/insights?workspace_id={{ workspace_id }}">去处理</a>
+    </span>
+  </div>
+  {% endfor %}
+</div>
+<script>
+async function ifDispatchInsight(id, actionType){
+  var el = document.getElementById(id);
+  var title = el ? el.querySelector('strong').textContent : id;
+  var r = await fetch('/api/v1/actions', {method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({workspace_id:'{{ workspace_id }}', insight_id:id,
+                          action_type: actionType, title: title,
+                          description:'仪表盘「今日三件事」一键派发'})});
+  var d = await r.json();
+  toast(d.ok ? '动作已派发，进入 14 天验证' : ('派发失败：' + (d.detail || '')),
+        d.ok ? 'ok' : 'error');
+  if(d.ok) setTimeout(function(){ location.reload(); }, 900);
+}
+</script>
+{% endif %}
+
+{% if roi and roi.cost %}
+<h2>客户 ROI</h2>
+<div class="card roi">
+  <div class="roi-grid">
+    <div><div class="roi-num">{{ roi.output.effective_actions }}</div><div class="sub">有效动作</div></div>
+    <div><div class="roi-num">{{ roi.output.significant_results }}</div><div class="sub">显著结论</div></div>
+    <div><div class="roi-num">${{ roi.cost.total_cost_usd }}</div><div class="sub">本月成本（源 ${{ roi.cost.source_cost_usd }} + LLM ${{ roi.cost.llm_cost_usd }}）</div></div>
+    <div><div class="roi-num">{{ ('$' ~ roi.unit_economics.cost_per_effective_action_usd) if roi.unit_economics.cost_per_effective_action_usd is not none else '—' }}</div><div class="sub">成本 / 有效动作</div></div>
+  </div>
+  <p class="sub" style="margin:8px 0 0">{{ roi.unit_economics.note }}</p>
+</div>
+{% endif %}
+
 <h2>最新洞察</h2>
 {% if recent_insights %}
 <table>
@@ -27,7 +92,7 @@
   {% endfor %}
 </table>
 {% else %}
-<div class="empty">暂无洞察 —— 先创建数据源监控或触发一次诊断</div>
+<div class="empty"><span>暂无洞察 —— 先创建数据源监控或触发一次诊断</span><a class="btn" href="/console/onboarding?workspace_id={{ workspace_id }}">去接入向导</a></div>
 {% endif %}
 
 <h2>快速操作</h2>

@@ -26,7 +26,7 @@
         compare={'name': '上期', 'series': [{'name': 'GSC 点击(上期)', 'values': data.compare.clicks}]},
         annotations=data.annotations, forecast_periods=7),
       csv_name='traffic-trend', subtitle='虚线=上期对比；竖线=洞察标注；末端虚线=线性预测') | safe }}
-  {% else %}<div class="empty">暂无流量数据（接入 GSC/GA4 后生成）</div>{% endif %}
+  {% else %}<div class="empty"><span>暂无流量数据（接入 GSC/GA4 后生成）</span><a class="btn" href="/console/onboarding?workspace_id={{ workspace_id }}">去接入 GSC/GA4</a></div>{% endif %}
 </div>
 
 <h2>技术健康（CrUX 真实用户 CWV）</h2>
@@ -48,7 +48,7 @@
   </table>
   <p class="sub" style="margin-top:10px">LCP ≤2.5s · INP ≤200ms · CLS ≤0.1 · TTFB ≤0.8s（CrUX p75，28 天滚动窗口）</p>
   {% else %}
-  <div class="empty">未接入 CrUX（去「接入向导」配置 API Key）</div>
+  <div class="empty"><span>未接入 CrUX</span><a class="dp-btn" href="/console/onboarding?workspace_id={{ workspace_id }}">配置 API Key</a></div>
   {% endif %}
 </div>
 
@@ -61,7 +61,7 @@
       csv_name='traffic-keywords', drill_metric='gsc_impressions',
       subtitle='右上更优；点击查看明细') | safe }}
   {% else %}
-  <div class="empty">暂无关键词机会数据 —— 创建 keyword 监控后生成</div>
+  <div class="empty"><span>暂无关键词机会数据</span><a class="dp-btn" href="/console/monitors?workspace_id={{ workspace_id }}">创建关键词监控</a></div>
   {% endif %}
 </div>
 
@@ -81,7 +81,7 @@
                    label='会话数（近似地理网格，非精确边界；导入 GeoJSON 后可切换精确边界）'),
       csv_name='traffic-geo') | safe }}
   {% else %}
-  <div class="empty">暂无地域维度数据 —— 采集维度含 province/country 时自动出现</div>
+  <div class="empty"><span>暂无地域维度数据（采集维度含 province/country 时自动出现）</span><a class="dp-btn" href="/console/assets?workspace_id={{ workspace_id }}">导入边界数据集</a></div>
   {% endif %}
 </div>
 
@@ -92,7 +92,7 @@
       data.box | map(attribute=0) | zip(data.box | map(attribute=1) | map('length')) | map('list') | list,
       viz.boxplot(data.box, y_label='转化量'), csv_name='traffic-box') | safe }}
   {% else %}
-  <div class="empty">暂无渠道维度数据 —— 采集维度含 channel 时自动出现</div>
+  <div class="empty"><span>暂无渠道维度数据（采集维度含 channel 时自动出现）</span><a class="dp-btn" href="/console/monitors?workspace_id={{ workspace_id }}">创建监控</a></div>
   {% endif %}
 </div>
 

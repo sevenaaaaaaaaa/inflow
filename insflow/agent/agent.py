@@ -30,7 +30,7 @@ class InsightAgent:
 
     def __init__(self, workspace_id: str, llm: LLMGateway | None = None):
         self.workspace_id = workspace_id
-        self.llm = llm or LLMGateway()
+        self.llm = llm or LLMGateway(workspace_id=workspace_id)
         self.skills = get_skills_host()
 
     # ========== 工具执行 ==========

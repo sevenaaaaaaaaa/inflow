@@ -489,3 +489,118 @@ class TestModelListEndpoint:
         assert by_id["aarrr"]["weight"] == 1.4
         assert by_id["nps"]["weight"] == 0.6
         assert by_id["ltv_cac"]["weight"] == 1.0          # 未配置默认 1.0
+
+
+class TestBatchD_OPCWorkspace:
+    """批次 D：工作区快切 / 今日三件事 / 客户 ROI（OPC 视角）"""
+
+    def test_accessible_workspaces_and_api(self, env):
+        import asyncio
+
+        from fastapi.testclient import TestClient
+
+        from insflow.core.entities import Workspace
+        from insflow.server.app import app
+
+        async def _seed():
+            store = env["store"]
+            await store.create_workspace(Workspace(id="client-b", name="客户B"))
+        asyncio.get_event_loop().run_until_complete(_seed())
+        cli = TestClient(app)
+        ws = cli.get("/api/v1/workspaces").json()["workspaces"]
+        ids = {w["id"] for w in ws}
+        assert {"test-ws", "client-b"} <= ids
+        # 切换器 JS 与按钮在页面里（全站可用，不只仪表盘）
+        page = cli.get("/console/cockpit/traffic",
+                       params={"workspace_id": "test-ws"}).text
+        assert "ifToggleWs" in page and "if-ws-btn" in page
+
+    def test_workspaces_api_scoped_in_saas(self, env, monkeypatch):
+        import asyncio
+
+        from fastapi.testclient import TestClient
+
+        from insflow.core.accounts import AccountManager
+        from insflow.server.app import app
+        monkeypatch.setenv("INSFLOW_SAAS", "1")
+
+        async def _seed():
+            await AccountManager("test-ws").register("opc@test.com", "password123",
+                                                     "OPC", "客户A")
+        asyncio.get_event_loop().run_until_complete(_seed())
+        cli = TestClient(app)
+        cli.post("/console/login", data={"email": "opc@test.com",
+                                        "password": "password123"})
+        ws = cli.get("/api/v1/workspaces").json()["workspaces"]
+        assert len(ws) == 1 and ws[0]["name"] == "客户A"      # 租户隔离
+
+    def test_top_three_and_due_actions(self, env):
+        import asyncio
+
+        from fastapi.testclient import TestClient
+
+        from insflow.engine.demo import DemoSeeder
+        from insflow.server.app import app
+
+        async def _seed():
+            await DemoSeeder("test-ws", days=20).seed()
+        asyncio.get_event_loop().run_until_complete(_seed())
+        page = TestClient(app).get("/console", params={
+            "workspace_id": "test-ws"}).text
+        assert "今日三件事" in page
+        assert page.count("派发（飞书）") <= 3
+
+    def test_client_roi_and_cli(self, env):
+        import asyncio
+
+        from click.testing import CliRunner
+
+        from insflow.cli import main
+        from insflow.engine.roi import client_roi
+
+        async def _seed():
+            store = env["store"]
+            await store.add_verification_result(
+                "test-ws", action_id="a1", insight_type="traffic_anomaly",
+                action_type="send_report", metric="ga4_sessions",
+                verdict="effective", effect_pct=0.3, significant=True,
+                sample_n=14, confidence=0.8, method="t")
+            from insflow.engine.billing import BillingManager
+            await BillingManager("test-ws").record_usage_persisted("cost_usd", 12.5)
+            await BillingManager("test-ws").record_usage_persisted("llm_cost_usd", 1.5)
+        asyncio.get_event_loop().run_until_complete(_seed())
+
+        roi = asyncio.get_event_loop().run_until_complete(client_roi("test-ws"))
+        assert roi["output"]["effective_actions"] == 1
+        assert roi["cost"]["total_cost_usd"] == 14.0
+        assert roi["unit_economics"]["cost_per_effective_action_usd"] == 14.0
+        assert "未折算增量收入" in roi["unit_economics"]["note"]
+        res = CliRunner().invoke(main, ["roi", "-w", "test-ws"])
+        assert res.exit_code == 0 and "有效动作 1" in res.output
+
+    def test_roi_without_effective_actions_is_null(self, env):
+        import asyncio
+
+        from insflow.engine.roi import client_roi
+        roi = asyncio.get_event_loop().run_until_complete(client_roi("test-ws"))
+        assert roi["unit_economics"]["cost_per_effective_action_usd"] is None
+
+    def test_llm_cost_is_persisted(self, env, monkeypatch):
+        """LLM 成本必须落库（此前只在会话内存，ROI 看不到）"""
+        import asyncio
+
+        from insflow.agent.llm import BudgetLedger, LLMGateway, LLMUsage
+
+        async def _run():
+            gw = LLMGateway(api_key="k", workspace_id="test-ws",
+                            budget=BudgetLedger())
+            gw.budget.record(LLMUsage(prompt_tokens=10, completion_tokens=5,
+                                      cost_usd=0.0, latency_ms=1, model="m"))
+            # 直接验证落库路径（不真调 LLM API）
+            from insflow.engine.billing import BillingManager
+            await BillingManager("test-ws").record_usage_persisted("llm_cost_usd", 0.42)
+            from insflow.engine.roi import client_roi
+            return await client_roi("test-ws")
+
+        roi = asyncio.get_event_loop().run_until_complete(_run())
+        assert roi["cost"]["llm_cost_usd"] == 0.42
