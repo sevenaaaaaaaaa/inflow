@@ -481,15 +481,16 @@ class TestBatch45Platform:
             again = await evaluate_workspace("test-ws")       # 同窗口去重
             est = await estimate_many("test-ws",
                                       ["main-site.com", "competitor-b.com"], 20)
-            return comments, fired, again, est
+            esc = await sweep_escalations("test-ws")
+            return comments, fired, again, est, esc
 
-        comments, fired, again, est = asyncio.get_event_loop().run_until_complete(_run())
+        comments, fired, again, est, esc = asyncio.get_event_loop().run_until_complete(_run())
         assert comments[0]["body"] == "复核"
         assert len(fired) == 1 and fired[0]["insight_id"]
         assert again == []
         assert est[0]["index"] > est[1]["index"]     # 主站指数应高于弱竞品
         assert est[0]["method"] and "不做绝对流量承诺" in "".join(est[0]["method"])
-        assert sweep_escalations("test-ws") is not None
+        assert isinstance(esc, list)
 
     def test_role_matrix_and_entity_allow(self):
         from insflow.engine.permissions import (

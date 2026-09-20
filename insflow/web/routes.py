@@ -349,6 +349,7 @@ NAV_AREA = {
     "integrations": "ecosystem",
     "evolution": "ecosystem",
     "snapshots": "report",
+    "agent": "agent",
 }
 
 
@@ -591,6 +592,24 @@ async def plugins_page(request: Request, workspace_id: str = Query("")):
     ))
 
 
+@router.get("/agent", response_class=HTMLResponse)
+async def agent_page(request: Request, workspace_id: str = Query("")):
+    """Agent 工作台：待审批提案 / 定时任务 / 工作区记忆 / 技能库"""
+    if not workspace_id:
+        workspace_id = await _default_workspace()
+    from ..agent import get_skills_host
+    from ..engine.agent_memory import list_notes
+    from ..engine.proposals import list_pending
+    store = await get_store()
+    return templates.TemplateResponse(request, "agent.html", _ctx(
+        request, "agent", workspace_id,
+        skills=get_skills_host().list_skills(),
+        notes=await list_notes(workspace_id, limit=50),
+        tasks=await store.list_agent_tasks(workspace_id),
+        pending=await list_pending(workspace_id, limit=20),
+    ))
+
+
 COCKPIT_PAGES = {
     "overview": ("overview.html", "overview", "情报总览"),
     "traffic": ("traffic.html", "traffic", "流量驾驶舱"),
@@ -655,11 +674,17 @@ async def cockpit_page(request: Request, name: str, workspace_id: str = Query(""
                 geo_dataset_name = ""
     template, nav, title = COCKPIT_PAGES[name]
     dq_bad = ((data or {}).get("dq") or {}).get("bad") if name == "ops" else None
+    # 待审批动作（Agent 提案）：绕开 TTL 缓存，批准后刷新立即消失
+    pending = []
+    if name == "action-loop":
+        from ..engine.proposals import list_pending
+        pending = await list_pending(workspace_id, limit=20)
     return templates.TemplateResponse(request, template, _ctx(
         request, nav, workspace_id, data=data, title=title, days=days or 14,
         entity=entity, channel=channel, geo_dataset=geo_dataset,
         geo_dataset_name=geo_dataset_name, geo_dim=(data.get("geo_dim") or "province"),
         dq_bad=dq_bad, dq=((data or {}).get("dq") if name == "ops" else None),
+        pending=pending,
     ))
 
 

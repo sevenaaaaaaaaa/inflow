@@ -1,0 +1,186 @@
+{% extends "base.html" %}
+{% block title %} · Agent{% endblock %}
+{% block content %}
+<h1>Agent 工作台</h1>
+<p class="sub">Agent 只答不办？这里让它「起草 → 你批准 → 14 天验证」：提案、记忆、定时任务集中管理</p>
+
+<h2>待审批动作（{{ pending | length }}）</h2>
+{% if pending %}
+<div class="card" data-cap="action.write">
+  <p class="sub">Agent 起草的动作不会自动执行；批准后经 Action Router 派发并开启 14 天验证窗口。</p>
+  <table>
+    <tr><th>动作</th><th>洞察</th><th>提案理由</th><th>提案方</th><th>时间</th><th>操作</th></tr>
+    {% for p in pending %}
+    <tr id="pa-{{ p.action_id }}">
+      <td><code>{{ p.action_type }}</code></td>
+      <td><a href="/console/insights?workspace_id={{ workspace_id }}">{{ (p.title or p.insight_title)[:40] }}</a></td>
+      <td class="sub">{{ p.rationale[:80] or '—' }}</td>
+      <td><span class="badge b-gray">{{ p.proposed_by or 'agent' }}</span></td>
+      <td class="sub">{{ p.created_at[:16] | replace('T', ' ') }}</td>
+      <td>
+        <button class="dp-btn" onclick="ifProposalApprove('{{ p.action_id }}')">批准派发</button>
+        <button class="secondary" onclick="ifProposalReject('{{ p.action_id }}')">拒绝</button>
+      </td>
+    </tr>
+    {% endfor %}
+  </table>
+</div>
+{% else %}
+<div class="empty"><span>暂无待审批提案 —— 问数时说「去通知/去派发」或让 Agent 给建议即可起草</span><button class="dp-btn" onclick="ifAsk()">去问数</button></div>
+{% endif %}
+
+<h2>Agent 定时任务（{{ tasks | length }}）</h2>
+<div class="card" data-cap="action.write">
+  <p class="sub">把一次问答固化成 cron（UTC）：到点自动跑并推送飞书/Webhook；cron 支持 hourly / daily / weekly 或 5 段式。</p>
+  <div class="toolbar" style="flex-wrap:wrap;gap:8px">
+    <input id="at-name" placeholder="任务名（可空）" style="min-width:180px">
+    <input id="at-q" placeholder="要定期执行的问题，如：近 7 天各渠道转化对比" style="min-width:320px">
+    <select id="at-cron">
+      <option value="daily">每天 09:00</option>
+      <option value="weekly">每周一 09:30</option>
+      <option value="hourly">每小时</option>
+    </select>
+    <button class="dp-btn" onclick="ifTaskCreate()">创建任务</button>
+  </div>
+</div>
+{% if tasks %}
+<table>
+  <tr><th>任务</th><th>问题</th><th>计划</th><th>上次运行</th><th>状态</th><th>操作</th></tr>
+  {% for t in tasks %}
+  <tr id="at-{{ t.id }}">
+    <td>{{ t.name }}</td>
+    <td class="sub">{{ t.question[:56] }}</td>
+    <td><code>{{ t.cron }}</code></td>
+    <td class="sub">{{ (t.last_run_at or '—')[:16] | replace('T', ' ') }}</td>
+    <td>
+      {% if not t.enabled %}<span class="badge b-gray">已暂停</span>
+      {% elif t.last_status == 'ok' %}<span class="badge b-ok">最近成功</span>
+      {% elif t.last_status == 'error' %}<span class="badge b-high">上次失败</span>
+      {% else %}<span class="badge b-gray">待首次运行</span>{% endif %}
+    </td>
+    <td class="sub">
+      <button class="dp-btn" onclick="ifTaskRun('{{ t.id }}')">立即运行</button>
+      <button class="secondary" onclick="ifTaskToggle('{{ t.id }}', {{ 'false' if t.enabled else 'true' }})">{{ '暂停' if t.enabled else '启用' }}</button>
+      <button class="secondary" onclick="ifTaskDelete('{{ t.id }}')">删除</button>
+    </td>
+  </tr>
+  {% endfor %}
+</table>
+{% else %}
+<div class="empty">还没有定时任务 —— 试试「以后每天帮我盯一下各渠道转化」</div>
+{% endif %}
+
+<h2>工作区记忆（{{ notes | length }}）</h2>
+<div class="card" data-cap="action.write">
+  <p class="sub">问答会自动带上命中的记忆（本地检索，不外传）；同标题保存则版本 +1，可追溯。</p>
+  <div class="toolbar" style="flex-wrap:wrap;gap:8px">
+    <input id="an-title" placeholder="标题，如：Q3 北极星是付费转化" style="min-width:240px">
+    <input id="an-body" placeholder="内容（含关键数字/偏好/背景）" style="min-width:320px">
+    <input id="an-tags" placeholder="标签（逗号分隔，可空）" style="min-width:160px">
+    <button class="dp-btn" onclick="ifNoteCreate()">保存记忆</button>
+  </div>
+</div>
+{% if notes %}
+<table>
+  <tr><th>标题</th><th>内容</th><th>标签</th><th>版本</th><th>更新</th><th></th></tr>
+  {% for n in notes %}
+  <tr>
+    <td>{{ n.title }}</td>
+    <td class="sub">{{ n.body[:80] }}</td>
+    <td class="sub">{{ (n.tags_json or []) | join('、') or '—' }}</td>
+    <td><span class="badge b-gray">v{{ n.version }}</span></td>
+    <td class="sub">{{ (n.updated_at or '')[:16] | replace('T', ' ') }}</td>
+    <td><button class="secondary" onclick="ifNoteDelete('{{ n.id }}')">删除</button></td>
+  </tr>
+  {% endfor %}
+</table>
+{% else %}
+<div class="empty">暂无记忆 —— 问答里说「记住：…」即可写入</div>
+{% endif %}
+
+<h2>技能库（{{ skills | length }}）</h2>
+<div class="card">
+  <p class="sub">提问命中触发词时自动注入方法论到 system prompt（改写 Skill 即改 Agent 行为）。</p>
+  <table>
+    <tr><th>技能</th><th>用途</th><th>触发词</th></tr>
+    {% for s in skills %}
+    <tr>
+      <td><code>{{ s.name }}</code></td>
+      <td>{{ s.description }}</td>
+      <td class="sub">{{ (s.triggers or [])[:6] | join('、') }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+</div>
+
+<script>
+async function ifProposalApprove(id){
+  var r = await fetch('/api/v1/actions/' + id + '/approve', {method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({workspace_id:'{{ workspace_id }}', actor:'console'})});
+  var d = await r.json();
+  toast(d.ok ? '已批准派发，进入 14 天验证' : ('批准失败：' + (d.detail || d.error || '')), d.ok ? 'ok' : 'error');
+  if(d.ok) setTimeout(function(){ location.reload(); }, 800);
+}
+async function ifProposalReject(id){
+  var reason = prompt('拒绝原因（可空）：') || '';
+  var r = await fetch('/api/v1/actions/' + id + '/reject', {method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({workspace_id:'{{ workspace_id }}', actor:'console', reason: reason})});
+  var d = await r.json();
+  toast(d.ok ? '已拒绝' : ('拒绝失败：' + (d.detail || '')), d.ok ? 'ok' : 'error');
+  if(d.ok) setTimeout(function(){ location.reload(); }, 700);
+}
+async function ifTaskCreate(){
+  var q = (document.getElementById('at-q') || {}).value || '';
+  if(!q.trim()){ toast('请填写问题', 'error'); return; }
+  var r = await fetch('/api/v1/agent/tasks', {method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({workspace_id:'{{ workspace_id }}',
+      name:(document.getElementById('at-name') || {}).value || '',
+      question: q, cron:(document.getElementById('at-cron') || {}).value || 'daily'})});
+  var d = await r.json();
+  if(d.ok && d.task){ toast('任务已创建' + (d.task.scheduled ? '' : '（调度器未运行，启动后生效）'), 'ok'); setTimeout(function(){ location.reload(); }, 800); }
+  else toast('创建失败：' + (d.detail || ''), 'error');
+}
+async function ifTaskRun(id){
+  toast('运行中…');
+  var r = await fetch('/api/v1/agent/tasks/' + id + '/run?workspace_id=' + encodeURIComponent('{{ workspace_id }}'), {method:'POST'});
+  var d = await r.json();
+  if(d.ok){ toast('运行完成（' + (d.mode || '') + '）'); if(d.answer) alert(d.answer); }
+  else toast('运行失败：' + (d.error || ''), 'error');
+}
+async function ifTaskToggle(id, enabled){
+  var r = await fetch('/api/v1/agent/tasks/' + id + '/toggle', {method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({workspace_id:'{{ workspace_id }}', enabled: enabled})});
+  var d = await r.json();
+  toast(d.ok ? (enabled ? '已启用' : '已暂停') : '操作失败', d.ok ? 'ok' : 'error');
+  if(d.ok) setTimeout(function(){ location.reload(); }, 600);
+}
+async function ifTaskDelete(id){
+  if(!confirm('删除该定时任务？')) return;
+  var r = await fetch('/api/v1/agent/tasks/' + id + '?workspace_id=' + encodeURIComponent('{{ workspace_id }}'), {method:'DELETE'});
+  var d = await r.json();
+  toast(d.ok ? '已删除' : '删除失败', d.ok ? 'ok' : 'error');
+  if(d.ok) setTimeout(function(){ location.reload(); }, 600);
+}
+async function ifNoteCreate(){
+  var title = (document.getElementById('an-title') || {}).value || '';
+  var body = (document.getElementById('an-body') || {}).value || '';
+  var tags = ((document.getElementById('an-tags') || {}).value || '').split(/[,，]/).map(function(s){return s.trim()}).filter(Boolean);
+  if(!title.trim() || !body.trim()){ toast('标题与内容必填', 'error'); return; }
+  var r = await fetch('/api/v1/agent/notes', {method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({workspace_id:'{{ workspace_id }}', title:title, body:body, tags:tags, author:'user'})});
+  var d = await r.json();
+  toast(d.ok ? ('已保存（v' + ((d.note || {}).version || 1) + '）') : '保存失败', d.ok ? 'ok' : 'error');
+  if(d.ok) setTimeout(function(){ location.reload(); }, 700);
+}
+async function ifNoteDelete(id){
+  if(!confirm('删除该记忆？')) return;
+  await fetch('/api/v1/agent/notes/' + id + '?workspace_id=' + encodeURIComponent('{{ workspace_id }}'), {method:'DELETE'});
+  location.reload();
+}
+</script>
+{% endblock %}

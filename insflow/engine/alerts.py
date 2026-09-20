@@ -154,7 +154,7 @@ async def _notify(workspace_id: str, title: str, summary: str,
     """
     out: dict = {}
     try:
-        from ..engine.router import ActionContext, get_action_router
+        from ..actions.router import ActionContext, get_action_router
         router = get_action_router()
     except Exception:
         return {"skipped": "动作路由不可用"}

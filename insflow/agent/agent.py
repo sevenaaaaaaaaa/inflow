@@ -18,11 +18,15 @@ SYSTEM_PROMPT = """你是 Insight Flow 的增长数据分析师 Agent。
 1. 回答必须基于工具返回的数据，禁止编造数字或结论
 2. 引用洞察时必须标注 [ins:洞察ID]，用户可据此溯源
 3. 每个结论注明置信度与严重程度（如数据不足则明说）
-4. 推荐动作直接引用洞察里的 recommended_actions，不要自行发明执行方式
-5. 用户用中文提问时用中文回答
+4. 需要执行动作时用 propose_action 起草**待审批**动作（必须带洞察 ID 与理由），
+   并明确告诉用户"需要人工批准后才派发"；不要声称已执行
+5. 用户表达长期偏好/重要背景时可 save_note 记住；用户说"以后每天/每周盯一下"
+   时用 schedule_task 建定时任务
+6. 用户用中文提问时用中文回答
 """
 
 MAX_TOOL_ROUNDS = 4
+MAX_TRACKED_PROPOSALS = 3
 
 
 class InsightAgent:
@@ -32,6 +36,7 @@ class InsightAgent:
         self.workspace_id = workspace_id
         self.llm = llm or LLMGateway(workspace_id=workspace_id)
         self.skills = get_skills_host()
+        self.proposed_actions: list[dict] = []
 
     # ========== 工具执行 ==========
 
@@ -52,18 +57,35 @@ class InsightAgent:
             required = []
         if "workspace_id" in required and "workspace_id" not in args:
             args["workspace_id"] = self.workspace_id
-        return await execute_tool(name, args)
+        output = await execute_tool(name, args)
+        if name == "propose_action":
+            try:
+                data = json.loads(output)
+                if (data.get("ok") and data.get("action_id")
+                        and len(self.proposed_actions) < MAX_TRACKED_PROPOSALS):
+                    self.proposed_actions.append({
+                        "action_id": data["action_id"],
+                        "action_type": data.get("action_type", ""),
+                        "insight_id": data.get("insight_id", ""),
+                        "title": data.get("title", ""),
+                        "state": data.get("state", "pending"),
+                    })
+            except (json.JSONDecodeError, TypeError):
+                pass
+        return output
 
     # ========== ask 主入口 ==========
 
     async def ask(self, question: str) -> dict:
-        """问答：返回 {answer, citations, skills_used, mode}
+        """问答：返回 {answer, citations, skills_used, mode, proposed_actions}
 
         citations: [{"insight_id": str, "title": str}] —— 引用溯源清单
+        proposed_actions: Agent 起草的待审批动作（人在 UI 里批准）
         mode: "llm" | "retrieval"
         """
         matched_skills = self.skills.match(question)
         citations: list[dict] = []
+        self.proposed_actions = []
 
         if self.llm.available:
             try:
@@ -84,14 +106,16 @@ class InsightAgent:
             cited_ids = {c["insight_id"] for c in citations}
         result["citations"] = await self._expand_citations(cited_ids)
         result["skills_used"] = [s.name for s in matched_skills]
+        result["proposed_actions"] = list(self.proposed_actions)
         result["mode"] = mode
         return result
 
     # ========== LLM 模式（function calling 循环）==========
 
     async def _ask_with_llm(self, question: str, skills: list[Skill], citations: list) -> dict:
+        memory = await self._memory_context(question)
         messages: list[dict] = [
-            {"role": "system", "content": self._system_prompt_with_skills(skills)},
+            {"role": "system", "content": self._system_prompt_with_skills(skills, memory)},
             {"role": "user", "content": question},
         ]
 
@@ -168,8 +192,16 @@ class InsightAgent:
 
     # ========== 辅助 ==========
 
-    def _system_prompt_with_skills(self, skills: list[Skill]) -> str:
+    async def _memory_context(self, question: str) -> str:
+        """工作区记忆注入（本地检索，不出工作区）"""
+        from ..engine.agent_memory import memory_context
+        return await memory_context(self.workspace_id, question)
+
+    def _system_prompt_with_skills(self, skills: list[Skill],
+                                   memory: str = "") -> str:
         prompt = SYSTEM_PROMPT
+        if memory:
+            prompt += "\n\n" + memory
         if skills:
             prompt += "\n\n可用的分析方法论（按需遵循）：\n\n"
             for skill in skills[:2]:

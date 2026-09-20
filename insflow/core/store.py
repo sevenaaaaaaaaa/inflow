@@ -420,6 +420,46 @@ MIGRATIONS = [
     CREATE INDEX IF NOT EXISTS idx_evolution_ws_time
         ON evolution_runs(workspace_id, created_at);
     """,
+    """
+    CREATE TABLE IF NOT EXISTS agent_notes (
+        id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL,
+        note_key TEXT NOT NULL,
+        title TEXT NOT NULL,
+        body TEXT NOT NULL,
+        tags_json TEXT NOT NULL DEFAULT '[]',
+        citations_json TEXT NOT NULL DEFAULT '[]',
+        version INTEGER NOT NULL DEFAULT 1,
+        author TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    );
+    """,
+    """
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_notes_key
+        ON agent_notes(workspace_id, note_key);
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS agent_tasks (
+        id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL,
+        name TEXT NOT NULL,
+        question TEXT NOT NULL,
+        cron TEXT NOT NULL DEFAULT '0 9 * * *',
+        channels_json TEXT NOT NULL DEFAULT '[]',
+        enabled INTEGER NOT NULL DEFAULT 1,
+        created_by TEXT NOT NULL DEFAULT '',
+        last_run_at TEXT,
+        last_status TEXT NOT NULL DEFAULT '',
+        last_summary TEXT NOT NULL DEFAULT '',
+        run_count INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL
+    );
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_agent_tasks_ws
+        ON agent_tasks(workspace_id);
+    """,
 
 ]
 
@@ -526,7 +566,7 @@ class Store:
 
         tables = ["insights", "metrics", "actions", "feedback", "events",
                   "raw_records", "journey_events", "subscriptions", "monitors",
-                  "competitors", "users", "sessions"]
+                  "competitors", "users", "sessions", "agent_notes", "agent_tasks"]
         row_counts = {}
         for t in tables:
             row_counts[t] = await self._backend.count(t)
@@ -772,13 +812,17 @@ class Store:
         await self._db.commit()
         return action
 
-    async def list_actions(self, workspace_id: str, insight_id: str | None = None) -> list[Action]:
-        """列出动作"""
+    async def list_actions(self, workspace_id: str, insight_id: str | None = None,
+                           *, state: str | None = None) -> list[Action]:
+        """列出动作（可按状态过滤；待审批=state='pending'）"""
         query = "SELECT * FROM actions WHERE workspace_id = ?"
         params = [workspace_id]
         if insight_id:
             query += " AND insight_id = ?"
             params.append(insight_id)
+        if state:
+            query += " AND state = ?"
+            params.append(state)
         query += " ORDER BY created_at DESC"
         rows = await self._fetchall(query, tuple(params))
         return [self._parse_action_row(row) for row in rows]
@@ -1408,6 +1452,162 @@ class Store:
             f"""SELECT * FROM evolution_runs WHERE {where}
                 ORDER BY created_at DESC LIMIT ?""", tuple([*params, min(limit, 500)]))
         return [_decode_evolution(r) for r in rows]
+
+    # ---- Agent 工作区记忆（agent_notes：可检索、带引用与版本）----
+
+    @staticmethod
+    def _decode_agent_note(row: dict) -> dict:
+        out = dict(row)
+        for key in ("tags_json", "citations_json"):
+            try:
+                out[key] = json.loads(out.get(key) or "[]")
+            except (TypeError, ValueError):
+                out[key] = []
+        return out
+
+    async def get_agent_note(self, workspace_id: str, note_id: str) -> dict | None:
+        row = await self._fetchone(
+            "SELECT * FROM agent_notes WHERE workspace_id = ? AND id = ?",
+            (workspace_id, note_id))
+        return self._decode_agent_note(row) if row else None
+
+    async def upsert_agent_note(self, workspace_id: str, *, note_key: str, title: str,
+                                body: str, tags: list | None = None,
+                                citations: list | None = None,
+                                author: str = "") -> dict:
+        """按 note_key 写入：新建 v1，已存在则更新并 version+1（记忆可追溯）"""
+        now = datetime.now(UTC).isoformat()
+        note_key = (note_key or "").strip()[:191] or generate_id()
+        row = await self._fetchone(
+            "SELECT * FROM agent_notes WHERE workspace_id = ? AND note_key = ?",
+            (workspace_id, note_key))
+        if row:
+            # None 表示"本次不改"（更新正文时保留既有标签/引用）
+            tags_json = (json.dumps(tags, ensure_ascii=False)
+                         if tags is not None else (row.get("tags_json") or "[]"))
+            cites_json = (json.dumps(citations, ensure_ascii=False)
+                          if citations is not None
+                          else (row.get("citations_json") or "[]"))
+            await self._execute(
+                """UPDATE agent_notes SET title = ?, body = ?, tags_json = ?,
+                   citations_json = ?, version = version + 1, author = ?, updated_at = ?
+                   WHERE workspace_id = ? AND note_key = ?""",
+                (title[:512], body, tags_json, cites_json,
+                 (author or row.get("author") or "")[:96], now,
+                 workspace_id, note_key))
+            await self._db.commit()
+            return await self.get_agent_note(workspace_id, row["id"]) or {}
+        note_id = generate_id()
+        await self._execute(
+            """INSERT INTO agent_notes (id, workspace_id, note_key, title, body,
+               tags_json, citations_json, version, author, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)""",
+            (note_id, workspace_id, note_key, title[:512], body,
+             json.dumps(tags or [], ensure_ascii=False),
+             json.dumps(citations or [], ensure_ascii=False),
+             author[:96], now, now))
+        await self._db.commit()
+        return await self.get_agent_note(workspace_id, note_id) or {}
+
+    async def list_agent_notes(self, workspace_id: str, limit: int = 50) -> list[dict]:
+        rows = await self._fetchall(
+            """SELECT * FROM agent_notes WHERE workspace_id = ?
+               ORDER BY updated_at DESC LIMIT ?""",
+            (workspace_id, min(limit, 500)))
+        return [self._decode_agent_note(r) for r in rows]
+
+    async def search_agent_notes(self, workspace_id: str, query: str = "",
+                                 limit: int = 10) -> list[dict]:
+        """关键词检索（零依赖：英文词命中 + 中文按字符弱匹配），空查询取最近"""
+        import re as _re
+        notes = await self.list_agent_notes(workspace_id, limit=200)
+        q = (query or "").strip().lower()
+        if not q:
+            return notes[:limit]
+        terms = [t for t in _re.split(r"[\s,，。;；:：!！?？]+", q) if t]
+        q_chars = {c for c in q if "\u4e00" <= c <= "\u9fff"}
+
+        def score(note: dict) -> float:
+            text = (f"{note.get('title', '')} {note.get('body', '')} "
+                    f"{' '.join(note.get('tags_json') or [])}").lower()
+            s = float(sum(1 for t in terms if t in text))
+            s += sum(1 for c in q_chars if c in text) * 0.1
+            return s
+
+        ranked = sorted(notes, key=score, reverse=True)
+        hits = [n for n in ranked if score(n) > 0]
+        return (hits or notes)[:limit]
+
+    async def delete_agent_note(self, workspace_id: str, note_id: str) -> bool:
+        await self._execute(
+            "DELETE FROM agent_notes WHERE workspace_id = ? AND id = ?",
+            (workspace_id, note_id))
+        await self._db.commit()
+        return True
+
+    # ---- Agent 定时任务（把一次问答/叙事固化为 cron，跑完推送）----
+
+    @staticmethod
+    def _decode_agent_task(row: dict) -> dict:
+        out = dict(row)
+        try:
+            out["channels_json"] = json.loads(out.get("channels_json") or "[]")
+        except (TypeError, ValueError):
+            out["channels_json"] = []
+        out["enabled"] = bool(out.get("enabled"))
+        return out
+
+    async def create_agent_task(self, workspace_id: str, *, name: str, question: str,
+                                cron: str = "0 9 * * *",
+                                channels: list | None = None,
+                                created_by: str = "") -> dict:
+        task_id = generate_id()
+        now = datetime.now(UTC).isoformat()
+        await self._execute(
+            """INSERT INTO agent_tasks (id, workspace_id, name, question, cron,
+               channels_json, enabled, created_by, last_run_at, last_status,
+               last_summary, run_count, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, 1, ?, NULL, '', '', 0, ?)""",
+            (task_id, workspace_id, name[:255], question, cron,
+             json.dumps(channels or [], ensure_ascii=False), created_by[:96], now))
+        await self._db.commit()
+        return await self.get_agent_task(task_id) or {}
+
+    async def get_agent_task(self, task_id: str) -> dict | None:
+        row = await self._fetchone("SELECT * FROM agent_tasks WHERE id = ?", (task_id,))
+        return self._decode_agent_task(row) if row else None
+
+    async def list_agent_tasks(self, workspace_id: str,
+                               enabled_only: bool = False) -> list[dict]:
+        query = "SELECT * FROM agent_tasks WHERE workspace_id = ?"
+        if enabled_only:
+            query += " AND enabled = 1"
+        query += " ORDER BY created_at DESC"
+        rows = await self._fetchall(query, (workspace_id,))
+        return [self._decode_agent_task(r) for r in rows]
+
+    async def delete_agent_task(self, workspace_id: str, task_id: str) -> bool:
+        await self._execute(
+            "DELETE FROM agent_tasks WHERE workspace_id = ? AND id = ?",
+            (workspace_id, task_id))
+        await self._db.commit()
+        return True
+
+    async def set_agent_task_enabled(self, workspace_id: str, task_id: str,
+                                     enabled: bool) -> bool:
+        await self._execute(
+            "UPDATE agent_tasks SET enabled = ? WHERE workspace_id = ? AND id = ?",
+            (1 if enabled else 0, workspace_id, task_id))
+        await self._db.commit()
+        return True
+
+    async def mark_agent_task_run(self, task_id: str, *, status: str,
+                                  summary: str = "") -> None:
+        await self._execute(
+            """UPDATE agent_tasks SET last_run_at = ?, last_status = ?,
+               last_summary = ?, run_count = run_count + 1 WHERE id = ?""",
+            (datetime.now(UTC).isoformat(), status[:32], summary[:2000], task_id))
+        await self._db.commit()
 
     # ---- 入站事件幂等（跨系统契约：同一 event_id 只处理一次）----
 

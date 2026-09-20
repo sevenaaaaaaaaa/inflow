@@ -1,9 +1,12 @@
 """MCP Server 共享工具层（stdio 与 HTTP 两种传输共用）
 
-工具清单（架构文档 §9.2，10 个）：
+工具清单（架构文档 §9.2，11 个）：
 list_insights / get_insight / run_diagnosis / ask_analyst /
 list_competitors / get_competitor_timeline / get_maturity /
-list_monitors / trigger_playbook / get_feedback_stats
+list_monitors / trigger_playbook / get_feedback_stats / propose_action
+
+写工具策略：propose_action 只**起草待审批动作**（不派发），人工在控制台点批准；
+trigger_playbook / run_diagnosis 为执行类，HTTP 端要求 write scope。
 """
 
 import json
@@ -140,6 +143,17 @@ async def tool_get_feedback_stats(workspace_id: str) -> dict:
     return await store.get_feedback_stats(workspace_id)
 
 
+async def tool_propose_action(workspace_id: str, insight_id: str, action_type: str,
+                              target_ref: str = "", rationale: str = "",
+                              params: dict | None = None) -> dict:
+    """起草待审批动作（进 pending + 通知；人批准后才派发）"""
+    from ..engine.proposals import propose_action
+    return await propose_action(
+        workspace_id, insight_id=insight_id, action_type=action_type,
+        target_ref=target_ref, params=params or {}, rationale=rationale,
+        proposed_by="mcp")
+
+
 # ========== MCP schema（OpenAI/MCP 通用 inputSchema）==========
 
 MCP_TOOLS_SCHEMA = [
@@ -250,6 +264,24 @@ MCP_TOOLS_SCHEMA = [
             "required": ["workspace_id"],
         },
     },
+    {
+        "name": "propose_action",
+        "description": ("起草一个待人工审批的动作（不会立即执行；人在控制台批准后"
+                        "才派发并进入 14 天验证）。适合让 Agent/上游系统提建议。"),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "workspace_id": {"type": "string"},
+                "insight_id": {"type": "string"},
+                "action_type": {"type": "string",
+                                 "description": "feishu.notify | slack.notify | email.send | webhook.generic | mflow.create_content | openflow.webhook_insight 等"},
+                "target_ref": {"type": "string"},
+                "rationale": {"type": "string"},
+                "params": {"type": "object"},
+            },
+            "required": ["workspace_id", "insight_id", "action_type"],
+        },
+    },
 ]
 
 TOOL_IMPLS = {
@@ -263,6 +295,7 @@ TOOL_IMPLS = {
     "list_monitors": tool_list_monitors,
     "trigger_playbook": tool_trigger_playbook,
     "get_feedback_stats": tool_get_feedback_stats,
+    "propose_action": tool_propose_action,
 }
 
 

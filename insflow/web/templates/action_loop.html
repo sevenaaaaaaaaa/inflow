@@ -12,6 +12,28 @@
   {{ viz.kpi_card('重试耗尽', data.kpis.dead, color='var(--danger)') | safe }}
 </div>
 
+{% if pending %}
+<h2>待审批动作（{{ pending | length }}）</h2>
+<div class="card" data-cap="action.write">
+  <p class="sub">Agent / MCP 起草的动作不会自动执行；批准后经 Action Router 派发并开启 14 天验证。</p>
+  <table>
+    <tr><th>动作</th><th>洞察</th><th>提案理由</th><th>提案方</th><th>操作</th></tr>
+    {% for p in pending %}
+    <tr>
+      <td><code>{{ p.action_type }}</code></td>
+      <td>{{ (p.title or p.insight_title)[:44] }}</td>
+      <td class="sub">{{ p.rationale[:72] or '—' }}</td>
+      <td><span class="badge b-gray">{{ p.proposed_by or 'agent' }}</span></td>
+      <td>
+        <button class="dp-btn" onclick="ifLoopApprove('{{ p.action_id }}')">批准派发</button>
+        <button class="secondary" onclick="ifLoopReject('{{ p.action_id }}')">拒绝</button>
+      </td>
+    </tr>
+    {% endfor %}
+  </table>
+</div>
+{% endif %}
+
 <h2>渠道归因（多触点）</h2>
 <div class="card">
   {% if data.attribution and data.attribution.channels %}
@@ -99,4 +121,23 @@
 
 <h2>动作时间线</h2>
 <div class="card">{{ viz.timeline(data.timeline) | safe }}</div>
+<script>
+async function ifLoopApprove(id){
+  var r = await fetch('/api/v1/actions/' + id + '/approve', {method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({workspace_id:'{{ workspace_id }}', actor:'console'})});
+  var d = await r.json();
+  toast(d.ok ? '已批准派发，进入 14 天验证' : ('批准失败：' + (d.detail || '')), d.ok ? 'ok' : 'error');
+  if(d.ok) setTimeout(function(){ location.reload(); }, 800);
+}
+async function ifLoopReject(id){
+  var reason = prompt('拒绝原因（可空）：') || '';
+  var r = await fetch('/api/v1/actions/' + id + '/reject', {method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({workspace_id:'{{ workspace_id }}', actor:'console', reason:reason})});
+  var d = await r.json();
+  toast(d.ok ? '已拒绝' : ('拒绝失败：' + (d.detail || '')), d.ok ? 'ok' : 'error');
+  if(d.ok) setTimeout(function(){ location.reload(); }, 700);
+}
+</script>
 {% endblock %}

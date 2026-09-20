@@ -1,11 +1,14 @@
 """Insight Flow Agent 工具集
 
-Agent 消费的确定性工具（全部只读，写操作走 Action Router 审批链路）：
+Agent 消费的工具（默认只读；写操作全部走"可控写入"链路）：
 - query_insights：按条件检索洞察流
 - get_insight_detail：洞察详情（含 evidence 供引用溯源）
 - list_models：列出可运行的洞察模型
 - get_feedback_stats：动作验证效果统计（北极星）
 - list_reports：报告中心目录
+- propose_action：**起草待审批动作**（进 pending，人工批准才派发）
+- save_note / recall_notes：工作区记忆（带引用与版本，可检索）
+- schedule_task：把这套分析固化为定时任务（每日/每周跑并推送）
 """
 
 import json
@@ -200,6 +203,65 @@ AGENT_TOOLS = [
                 "required": ["workspace_id"]},
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "propose_action",
+            "description": ("起草一个**待人工审批**的动作（不会立即执行）。"
+                            "适用于用户要求'去执行/派发/通知/建内容'且已有对应洞察时；"
+                            "必须引用洞察 ID，并说明理由。人批准后进入 14 天验证。"),
+            "parameters": {"type": "object", "properties": {
+                "workspace_id": {"type": "string"},
+                "insight_id": {"type": "string", "description": "依据的洞察 ID（必填，保证引用溯源）"},
+                "action_type": {"type": "string",
+                                "description": "动作类型，如 feishu.notify / webhook.generic / mflow.create_content / openflow.webhook_insight"},
+                "target_ref": {"type": "string", "description": "目标地址（未配置时留空用工作区默认）"},
+                "params": {"type": "object", "description": "动作参数（可选）"},
+                "rationale": {"type": "string", "description": "为什么建议这个动作（一到两句）"},
+            }, "required": ["workspace_id", "insight_id", "action_type"]},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "save_note",
+            "description": ("把值得记住的结论/偏好/背景存入工作区记忆（之后问答会自动带上）。"
+                            "同标题会更新并把版本 +1。"),
+            "parameters": {"type": "object", "properties": {
+                "workspace_id": {"type": "string"},
+                "title": {"type": "string"},
+                "body": {"type": "string", "description": "记忆正文（含关键数字）"},
+                "tags": {"type": "array", "items": {"type": "string"}},
+                "citations": {"type": "array", "items": {"type": "string"},
+                              "description": "相关洞察 ID 列表"},
+            }, "required": ["workspace_id", "title", "body"]},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "recall_notes",
+            "description": "检索工作区记忆（此前沉淀的结论/偏好/背景）。",
+            "parameters": {"type": "object", "properties": {
+                "workspace_id": {"type": "string"}, "query": {"type": "string"},
+                "limit": {"type": "integer", "default": 10}},
+                "required": ["workspace_id"]},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "schedule_task",
+            "description": ("把这个问题存为**定时任务**（每日/每周自动跑一次并把答案推送到飞书/Webhook）。"
+                            "用户说'以后每天/每周帮我盯一下…'时使用。"),
+            "parameters": {"type": "object", "properties": {
+                "workspace_id": {"type": "string"},
+                "question": {"type": "string", "description": "要定期执行的问题（可含指标/时间范围）"},
+                "cron": {"type": "string", "enum": ["hourly", "daily", "weekly"], "default": "daily"},
+                "name": {"type": "string", "description": "任务名（默认取问题前 40 字）"},
+            }, "required": ["workspace_id", "question"]},
+        },
+    },
 ]
 
 TOOL_EXECUTORS = {
@@ -213,6 +275,10 @@ TOOL_EXECUTORS = {
     "data_quality": lambda args: tool_data_quality(**args),
     "attribution": lambda args: tool_attribution(**args),
     "action_lift": lambda args: tool_action_lift(**args),
+    "propose_action": lambda args: tool_propose_action(**args),
+    "save_note": lambda args: tool_save_note(**args),
+    "recall_notes": lambda args: tool_recall_notes(**args),
+    "schedule_task": lambda args: tool_schedule_task(**args),
 }
 
 
@@ -260,3 +326,49 @@ async def tool_action_lift(workspace_id: str, days: float = 30) -> dict:
     """动作增量（前后对比 + 自助法区间；非随机实验）"""
     from ..engine.attribution import lift_summary
     return await lift_summary(workspace_id, days=days)
+
+# ========== 可控写入：动作提案 / 工作区记忆 / 定时任务（批次 C） ==========
+
+async def tool_propose_action(workspace_id: str, insight_id: str, action_type: str,
+                              target_ref: str = "", params: dict | None = None,
+                              rationale: str = "") -> dict:
+    """起草待审批动作（Agent 不能直接派发；人批准后才进 14 天验证）"""
+    from ..engine.proposals import propose_action
+    return await propose_action(
+        workspace_id, insight_id=insight_id, action_type=action_type,
+        target_ref=target_ref, params=params or {}, rationale=rationale,
+        proposed_by="agent")
+
+
+async def tool_save_note(workspace_id: str, title: str, body: str,
+                         tags: list | None = None,
+                         citations: list | None = None) -> dict:
+    """写入工作区记忆（同标题更新并 version+1）"""
+    from ..engine.agent_memory import save_note
+    note = await save_note(workspace_id, title=title, body=body, tags=tags,
+                           citations=citations)
+    return {"ok": True, "note_id": note.get("id"), "note_key": note.get("note_key"),
+            "version": note.get("version"), "updated_at": note.get("updated_at")}
+
+
+async def tool_recall_notes(workspace_id: str, query: str = "",
+                            limit: int = 10) -> dict:
+    """检索工作区记忆"""
+    from ..engine.agent_memory import recall_notes
+    notes = await recall_notes(workspace_id, query, limit=limit)
+    return {"total": len(notes), "notes": [{
+        "id": n.get("id"), "title": n.get("title"), "body": (n.get("body") or "")[:500],
+        "tags": n.get("tags_json"), "citations": n.get("citations_json"),
+        "version": n.get("version"), "updated_at": n.get("updated_at"),
+    } for n in notes]}
+
+
+async def tool_schedule_task(workspace_id: str, question: str, cron: str = "daily",
+                             name: str = "") -> dict:
+    """把问题固化为定时任务（hourly/daily/weekly，跑完推送飞书/Webhook）"""
+    from ..engine.agent_tasks import create_task
+    task = await create_task(workspace_id, name=name or question[:40],
+                             question=question, cron=cron, created_by="agent")
+    return {"ok": True, "task_id": task.get("id"), "cron": task.get("cron"),
+            "scheduled": task.get("scheduled"),
+            "message": "已创建定时任务；每次执行后按通道推送（可在控制台 Agent 页管理）"}

@@ -314,7 +314,63 @@ async function ifAskRun(){
     var j = await r.json();
     if(st) st.textContent = j.mode === 'llm' ? 'LLM 回答' : '检索/规则回答';
     if(out) out.textContent = j.answer || '（无内容）';
+    if(typeof ifAskRenderExtras === 'function') ifAskRenderExtras(j, ws, q);
   }catch(e){ if(st) st.textContent = '失败：' + e; }
+}
+/* 问数扩展：Agent 起草的待审批动作（内联批准）+ 一键存为工作区记忆 */
+function ifAskRenderExtras(j, ws, question){
+  var out = document.getElementById('if-ask-out');
+  if(!out) return;
+  var old = document.getElementById('if-ask-extras');
+  if(old) old.remove();
+  var box = document.createElement('div');
+  box.id = 'if-ask-extras';
+  var html = '';
+  var props = j.proposed_actions || [];
+  if(props.length){
+    html += '<div style="margin-top:10px;border-top:1px dashed var(--line);padding-top:8px">'
+         + '<div class="sub">Agent 起草的待审批动作（不会自动执行）</div>';
+    props.forEach(function(p){
+      html += '<div style="display:flex;gap:8px;align-items:center;margin:6px 0;font-size:12px">'
+           + '<code>' + (p.action_type || '') + '</code>'
+           + '<span class="sub">' + ((p.title || '').slice(0, 40)) + '</span>'
+           + '<button class="dp-btn" onclick="ifAskApprove(\'' + p.action_id + '\',\'' + ws + '\')">批准派发</button>'
+           + '<button class="secondary" onclick="ifAskReject(\'' + p.action_id + '\',\'' + ws + '\')">拒绝</button>'
+           + '</div>';
+    });
+    html += '</div>';
+  }
+  html += '<div style="margin-top:8px"><button class="secondary" onclick="ifAskSaveNote(\'' + ws + '\')">存为工作区记忆</button></div>';
+  box.innerHTML = html;
+  out.parentNode.insertBefore(box, out.nextSibling);
+  window.__ifAskExtras = {props: props, question: question, answer: (j.answer || '')};
+}
+async function ifAskApprove(id, ws){
+  var r = await fetch('/api/v1/actions/' + id + '/approve', {method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({workspace_id: ws, actor:'console'})});
+  var d = await r.json();
+  toast(d.ok ? '已批准派发，进入 14 天验证' : ('批准失败：' + (d.detail || '')), d.ok ? 'ok' : 'error');
+}
+async function ifAskReject(id, ws){
+  var reason = prompt('拒绝原因（可空）：') || '';
+  var r = await fetch('/api/v1/actions/' + id + '/reject', {method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({workspace_id: ws, actor:'console', reason: reason})});
+  var d = await r.json();
+  toast(d.ok ? '已拒绝提案' : ('拒绝失败：' + (d.detail || '')), d.ok ? 'ok' : 'error');
+}
+async function ifAskSaveNote(ws){
+  var ctx = window.__ifAskExtras || {};
+  var title = prompt('记忆标题：', (ctx.question || '').slice(0, 40));
+  if(title === null) return;
+  var citations = ((ctx.props || []).map(function(p){ return p.insight_id; }).filter(Boolean));
+  var r = await fetch('/api/v1/agent/notes', {method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({workspace_id: ws, title: title || '问答记忆',
+                          body: ctx.answer || '', citations: citations, author: 'user'})});
+  var d = await r.json();
+  toast(d.ok ? '已存入记忆（下次问答自动带上）' : '保存失败', d.ok ? 'ok' : 'error');
 }
 document.addEventListener('keydown', function(e){
   if((e.metaKey || e.ctrlKey) && (e.key === 'k' || e.key === 'K')){

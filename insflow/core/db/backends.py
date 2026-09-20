@@ -186,6 +186,12 @@ class MySQLBackend:
         self._conn = conn
         self._pool.put(conn)
         await self.execute("SET SESSION time_zone='+00:00'")
+        # 关键：MySQL 默认 REPEATABLE READ + autocommit=0 的长连接，会把第一次 SELECT
+        # 的快照一直保留到本连接下次 COMMIT——外部进程（CLI / 另一实例 / 运维脚本）的写入
+        # 对服务不可见（实测：CLI 创建的待审批动作在控制台列表里查不到）。
+        # 改为读已提交：语句级最新视图；写仍由调用方显式 commit 批量提交（性能不变）。
+        await self.execute(
+            "SET SESSION TRANSACTION ISOLATION LEVEL READ COMMITTED")
 
     async def _run(self, fn):
         """在池中取连接执行（线程内）。

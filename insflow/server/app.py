@@ -1927,6 +1927,120 @@ async def agent_skills():
     return {"skills": get_skills_host().list_skills()}
 
 
+# ---- 工作区记忆（agent_notes：Agent 读写，带引用与版本）----
+
+class AgentNoteRequest(BaseModel):
+    workspace_id: str
+    title: str
+    body: str
+    tags: list[str] = []
+    citations: list = []
+    note_key: str = ""
+    author: str = ""
+
+
+@app.get("/api/v1/agent/notes")
+async def agent_notes(workspace_id: str = Query(...), q: str = Query(""),
+                      limit: int = Query(50, ge=1, le=200)):
+    """列出/检索工作区记忆"""
+    from ..engine.agent_memory import list_notes, recall_notes
+    store = await get_store()
+    if not await store.get_workspace(workspace_id):
+        raise HTTPException(status_code=404, detail="Workspace not found")
+    notes = await (recall_notes(workspace_id, q, limit=limit) if q.strip()
+                   else list_notes(workspace_id, limit=limit))
+    return {"notes": notes, "total": len(notes)}
+
+
+@app.post("/api/v1/agent/notes")
+async def save_agent_note(data: AgentNoteRequest):
+    """写入记忆（同 note_key 更新并 version+1）"""
+    from ..engine.agent_memory import save_note
+    note = await save_note(data.workspace_id, title=data.title, body=data.body,
+                           tags=data.tags, citations=data.citations,
+                           author=data.author or "user", note_key=data.note_key)
+    return {"ok": True, "note": note}
+
+
+@app.delete("/api/v1/agent/notes/{note_id}")
+async def delete_agent_note(note_id: str, workspace_id: str = Query(...)):
+    """删除记忆"""
+    from ..engine.agent_memory import delete_note
+    await delete_note(workspace_id, note_id)
+    return {"ok": True}
+
+
+# ---- Agent 定时任务（把一次问答固化为 cron，跑完推送）----
+
+class AgentTaskRequest(BaseModel):
+    workspace_id: str
+    question: str
+    name: str = ""
+    cron: str = "daily"
+    channels: list[str] = []
+    created_by: str = ""
+
+
+@app.get("/api/v1/agent/tasks")
+async def agent_tasks(workspace_id: str = Query(...)):
+    """列出 Agent 定时任务（含上次运行状态）"""
+    store = await get_store()
+    if not await store.get_workspace(workspace_id):
+        raise HTTPException(status_code=404, detail="Workspace not found")
+    return {"tasks": await store.list_agent_tasks(workspace_id)}
+
+
+@app.post("/api/v1/agent/tasks")
+async def create_agent_task(data: AgentTaskRequest):
+    """创建定时任务（cron 支持 hourly/daily/weekly 或 5 段式，UTC）"""
+    from ..engine.agent_tasks import AgentTaskError, create_task
+    try:
+        task = await create_task(data.workspace_id, name=data.name,
+                                 question=data.question, cron=data.cron,
+                                 channels=data.channels,
+                                 created_by=data.created_by or "user")
+    except AgentTaskError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    return {"ok": True, "task": task}
+
+
+@app.delete("/api/v1/agent/tasks/{task_id}")
+async def delete_agent_task(task_id: str, workspace_id: str = Query(...)):
+    """删除定时任务（同时摘除调度 job）"""
+    from ..engine.agent_tasks import delete_task
+    ok = await delete_task(workspace_id, task_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Task not found")
+    return {"ok": True}
+
+
+class AgentTaskToggle(BaseModel):
+    workspace_id: str
+    enabled: bool
+
+
+@app.post("/api/v1/agent/tasks/{task_id}/toggle")
+async def toggle_agent_task(task_id: str, data: AgentTaskToggle):
+    """启用/暂停定时任务"""
+    from ..engine.agent_tasks import AgentTaskError, set_enabled
+    try:
+        task = await set_enabled(data.workspace_id, task_id, data.enabled)
+    except AgentTaskError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    return {"ok": True, "task": task}
+
+
+@app.post("/api/v1/agent/tasks/{task_id}/run")
+async def run_agent_task(task_id: str, workspace_id: str = Query(...)):
+    """立即执行一次（同步返回答案；也用于验证配置）"""
+    from ..engine.agent_tasks import run_task
+    store = await get_store()
+    task = await store.get_agent_task(task_id)
+    if not task or task["workspace_id"] != workspace_id:
+        raise HTTPException(status_code=404, detail="Task not found")
+    return await run_task(task_id)
+
+
 # ========== MCP over HTTP（OpenFlow McpGuard / 任意 MCP HTTP 客户端）==========
 
 # 内核 fail-closed（R2-4）：默认要求认证；本地调试显式 INSFLOW_MCP_AUTH=0 才放开
@@ -1959,7 +2073,8 @@ async def mcp_call_tool(data: McpToolCall, request: Request):
     """MCP 工具调用（认证默认强制；触发类工具要求 write scope）"""
     from ..mcp_server.tools import call_mcp_tool
     if MCP_AUTH_REQUIRED:
-        write_tools = {"trigger_playbook", "run_diagnosis"}
+        # propose_action 是可控写入口：只起草待审批，不直接派发（审批门在控制台）
+        write_tools = {"trigger_playbook", "run_diagnosis", "propose_action"}
         await require_auth(request, "write" if data.name in write_tools else "read")
     import json as jsonlib
     output = await call_mcp_tool(data.name, data.arguments)
@@ -2231,6 +2346,45 @@ async def list_action_types():
     """列出已注册的动作适配器类型"""
     from ..actions.router import get_action_router
     return {"action_types": get_action_router().list_types()}
+
+
+# ---- 待审批动作（Agent 提案 → 人工批准/拒绝；批次 C 的审批门）----
+
+@app.get("/api/v1/actions/pending")
+async def list_pending_actions(workspace_id: str = Query(...)):
+    """待审批动作清单（Agent 起草，未经批准不会派发）"""
+    from ..engine.proposals import list_pending
+    store = await get_store()
+    if not await store.get_workspace(workspace_id):
+        raise HTTPException(status_code=404, detail="Workspace not found")
+    return {"actions": await list_pending(workspace_id)}
+
+
+class ActionDecisionRequest(BaseModel):
+    workspace_id: str
+    actor: str = ""
+    reason: str = ""
+
+
+@app.post("/api/v1/actions/{action_id}/approve")
+async def approve_action(action_id: str, data: ActionDecisionRequest):
+    """批准并派发（pending → dispatched + 基线 + 14 天验证窗口）"""
+    from ..engine.proposals import ProposalError, approve_action
+    try:
+        return await approve_action(data.workspace_id, action_id, actor=data.actor)
+    except ProposalError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+
+@app.post("/api/v1/actions/{action_id}/reject")
+async def reject_action(action_id: str, data: ActionDecisionRequest):
+    """拒绝提案（pending → cancelled，保留原因）"""
+    from ..engine.proposals import ProposalError, reject_action
+    try:
+        return await reject_action(data.workspace_id, action_id,
+                                   actor=data.actor, reason=data.reason)
+    except ProposalError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
 
 # ========== 诊断 API ==========

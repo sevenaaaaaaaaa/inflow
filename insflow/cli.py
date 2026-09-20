@@ -432,8 +432,109 @@ def agent_ask(question: str, workspace: str):
             console.print("[dim]引用溯源：[/]")
             for c in result["citations"][:10]:
                 console.print(f"  [dim]ins:{c['insight_id']} {c['title']}[/]")
+        for p in result.get("proposed_actions") or []:
+            console.print(f"  [yellow]待审批动作[/] {p['action_id']} "
+                          f"{p['action_type']}（{p['state']}）—— "
+                          f"批准：insflow action approve {p['action_id']} -w {workspace}")
+        return result
 
     run_async(_ask())
+
+
+@agent.command("notes")
+@click.option("--workspace", "-w", default="default", help="工作区ID")
+@click.option("--query", "-q", default="", help="关键词检索（空=最近）")
+def agent_notes(workspace: str, query: str):
+    """列出 / 检索工作区记忆（agent_notes）"""
+    from .engine.agent_memory import list_notes, recall_notes
+
+    async def _run():
+        return await (recall_notes(workspace, query) if query.strip()
+                      else list_notes(workspace))
+
+    notes = run_async(_run())
+    console.print(f"[green]{len(notes)} 条记忆[/]")
+    for n in notes:
+        cites = "、".join(str(c.get("insight_id") or c)
+                           for c in (n.get("citations_json") or [])[:3])
+        console.print(f"  - [bold]{n['title']}[/] [dim]v{n.get('version', 1)}[/]"
+                      + (f"（引用 {cites}）" if cites else ""))
+        console.print(f"    [dim]{(n.get('body') or '')[:100]}[/]")
+
+
+@agent.command("remember")
+@click.argument("text")
+@click.option("--title", "-t", required=True, help="记忆标题（同名更新，版本+1）")
+@click.option("--workspace", "-w", default="default", help="工作区ID")
+def agent_remember(text: str, title: str, workspace: str):
+    """写入工作区记忆（问答与定时任务都会带上）"""
+    from .engine.agent_memory import save_note
+
+    note = run_async(save_note(workspace, title=title, body=text, author="cli"))
+    console.print(f"[green]已保存[/] {note.get('note_key')} v{note.get('version')} "
+                  f"({note.get('id')})")
+
+
+@agent.command("tasks")
+@click.option("--workspace", "-w", default="default", help="工作区ID")
+def agent_tasks(workspace: str):
+    """列出 Agent 定时任务"""
+    from .core.store import get_store
+
+    async def _run():
+        return await (await get_store()).list_agent_tasks(workspace)
+
+    tasks = run_async(_run())
+    console.print(f"[green]{len(tasks)} 个定时任务[/]")
+    for t in tasks:
+        state = "启用" if t["enabled"] else "暂停"
+        console.print(f"  - [{state}] {t['id']} [bold]{t['name']}[/] cron={t['cron']} "
+                      f"last={t.get('last_status') or '—'}"
+                      + (f" runs={t.get('run_count', 0)}" if t.get("run_count") else ""))
+        console.print(f"    [dim]{t['question'][:100]}[/]")
+
+
+@agent.command("task-add")
+@click.argument("question")
+@click.option("--cron", default="daily", help="hourly/daily/weekly 或 5 段式（UTC）")
+@click.option("--name", default="", help="任务名（默认取问题前 40 字）")
+@click.option("--workspace", "-w", default="default", help="工作区ID")
+def agent_task_add(question: str, cron: str, name: str, workspace: str):
+    """把一个问题固化为定时任务（跑完推送飞书/Webhook）"""
+    from .engine.agent_tasks import create_task
+
+    task = run_async(create_task(workspace, name=name, question=question,
+                                 cron=cron, created_by="cli"))
+    console.print(f"[green]已创建[/] {task['id']} cron={task['cron']} "
+                  + ("（已挂到调度器）" if task.get("scheduled") else "（调度器未运行，启动后生效）"))
+
+
+@agent.command("task-run")
+@click.argument("task_id")
+def agent_task_run(task_id: str):
+    """立即执行一次 Agent 定时任务"""
+    from .engine.agent_tasks import run_task
+
+    result = run_async(run_task(task_id))
+    if result.get("ok"):
+        console.print(Panel(result.get("answer") or "", title=f"mode={result.get('mode')}"))
+        console.print(f"[green]已执行[/] 推送：{result.get('pushed') or '（未配置通道）'}")
+    else:
+        console.print(f"[red]执行失败：{result.get('error')}[/]")
+        sys.exit(1)
+
+
+@agent.command("task-rm")
+@click.argument("task_id")
+@click.option("--workspace", "-w", required=True, help="工作区ID")
+def agent_task_rm(task_id: str, workspace: str):
+    """删除 Agent 定时任务（同时摘除调度 job）"""
+    from .engine.agent_tasks import delete_task
+
+    ok = run_async(delete_task(workspace, task_id))
+    console.print("[green]已删除[/]" if ok else "[red]任务不存在[/]")
+    if not ok:
+        sys.exit(1)
 
 
 @main.group()
@@ -781,6 +882,53 @@ def playbook_cmd(workspace: str, mine: bool):
 def action_group():
     """动作与死信（跨系统派发可靠性）"""
     pass
+
+
+@action_group.command("pending")
+@click.option("--workspace", "-w", required=True, help="工作区ID")
+def action_pending(workspace: str):
+    """列出待审批动作（Agent/MCP 起草，批准后才派发）"""
+    from .engine.proposals import list_pending
+
+    items = run_async(list_pending(workspace))
+    console.print(f"[green]{len(items)} 条待审批[/]")
+    for p in items:
+        console.print(f"  - {p['action_id']} [bold]{p['action_type']}[/] "
+                      f"({p.get('proposed_by') or 'agent'})")
+        console.print(f"    洞察：{(p.get('title') or p.get('insight_title') or '')[:60]}")
+        if p.get("rationale"):
+            console.print(f"    [dim]理由：{p['rationale'][:80]}[/]")
+        console.print(f"    [dim]批准：insflow action approve {p['action_id']} -w {workspace}"
+                      f" ｜ 拒绝：insflow action reject {p['action_id']} -w {workspace}[/]")
+
+
+@action_group.command("approve")
+@click.argument("action_id")
+@click.option("--workspace", "-w", required=True, help="工作区ID")
+@click.option("--actor", default="cli", help="操作人（审计）")
+def action_approve(action_id: str, workspace: str, actor: str):
+    """批准并派发（+ 基线 + 14 天验证窗口）"""
+    from .engine.proposals import approve_action
+
+    result = run_async(approve_action(workspace, action_id, actor=actor))
+    if result.get("ok"):
+        console.print(f"[green]已批准派发[/] 验证窗口至 {result.get('verify_window_until') or '—'}")
+    else:
+        console.print(f"[red]批准失败：{result.get('error')}[/]")
+        sys.exit(1)
+
+
+@action_group.command("reject")
+@click.argument("action_id")
+@click.option("--workspace", "-w", required=True, help="工作区ID")
+@click.option("--reason", default="", help="拒绝原因")
+@click.option("--actor", default="cli", help="操作人（审计）")
+def action_reject(action_id: str, workspace: str, reason: str, actor: str):
+    """拒绝提案（pending → cancelled）"""
+    from .engine.proposals import reject_action
+
+    result = run_async(reject_action(workspace, action_id, actor=actor, reason=reason))
+    console.print("[green]已拒绝[/]" if result.get("ok") else "[red]拒绝失败[/]")
 
 
 @action_group.command("dead-letters")

@@ -123,3 +123,56 @@ class TestMySQLSchema:
         assert "PRAGMA" not in ddl
         assert "INSERT OR IGNORE" not in ddl
         assert "strftime" not in ddl
+
+
+class TestMySQLVisibility:
+    """回归：MySQL 长连接 REPEATABLE READ 快照会让外部写入不可见
+
+    实测场景：CLI/运维脚本写了 pending 动作，控制台（服务进程）查不到 →
+    因为 autocommit=0 下第一次 SELECT 的快照持续到本连接下次 COMMIT。
+    修复：连接时 SET SESSION TRANSACTION ISOLATION LEVEL READ COMMITTED。
+    （仅 MySQL 环境执行；SQLite 下跳过）
+    """
+
+    async def test_external_write_visible_after_service_read(self, monkeypatch):
+        import os
+        if os.environ.get("INSFLOW_DB_DRIVER", "sqlite") != "mysql":
+            pytest.skip("需 MySQL 驱动环境")
+        from insflow.core.entities import Workspace
+        from insflow.core.store import Store
+
+        s = Store()
+        await s.connect()
+        await s.migrate()
+        await s.create_workspace(Workspace(id="vis-ws", name="v"))   # 写入并 commit
+        await s._fetchone("SELECT COUNT(*) AS n FROM workspaces")     # 开出读快照
+
+        import pymysql
+
+        from insflow.core.db import mysql_config_from_env
+        cfg = mysql_config_from_env()
+        kwargs = {"user": cfg["user"], "password": cfg.get("password", ""),
+                  "database": cfg["dbname"], "charset": "utf8mb4",
+                  "autocommit": True}
+        if cfg.get("socket"):
+            kwargs["unix_socket"] = cfg["socket"]
+        else:
+            kwargs["host"] = cfg["host"]
+            kwargs["port"] = int(cfg.get("port", 3306))
+        ext = pymysql.connect(**kwargs)
+        try:
+            with ext.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO workspaces (id, name, stage, maturity_level, "
+                    "settings_json, created_at, updated_at) "
+                    "VALUES ('vis-ext', 'external', 'S0', 'L0', '{}', "
+                    "'2026-01-01T00:00:00', '2026-01-01T00:00:00')")
+            row = await s._fetchone("SELECT COUNT(*) AS n FROM workspaces")
+            assert int(row["n"]) >= 2, "外部写入对服务不可见（隔离级别未生效）"
+        finally:
+            with ext.cursor() as cur:
+                cur.execute("DELETE FROM workspaces WHERE id = 'vis-ext'")
+            ext.close()
+            await s._execute("DELETE FROM workspaces WHERE id = 'vis-ws'")
+            await s._db.commit()
+            await s.close()

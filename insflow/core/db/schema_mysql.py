@@ -371,5 +371,39 @@ MYSQL_MIGRATIONS = [
         KEY idx_evolution_ws_time (workspace_id, created_at)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
     """,
+    """
+    CREATE TABLE IF NOT EXISTS agent_notes (
+        id VARCHAR(64) PRIMARY KEY,
+        workspace_id VARCHAR(64) NOT NULL,
+        note_key VARCHAR(191) NOT NULL,
+        title VARCHAR(512) NOT NULL,
+        body MEDIUMTEXT,
+        tags_json TEXT,
+        citations_json TEXT,
+        version INT NOT NULL DEFAULT 1,
+        author VARCHAR(96) NOT NULL DEFAULT '',
+        created_at VARCHAR(40) NOT NULL,
+        updated_at VARCHAR(40) NOT NULL,
+        UNIQUE KEY uq_agent_notes_key (workspace_id, note_key)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS agent_tasks (
+        id VARCHAR(64) PRIMARY KEY,
+        workspace_id VARCHAR(64) NOT NULL,
+        name VARCHAR(255) NOT NULL,
+        question TEXT,
+        cron VARCHAR(64) NOT NULL DEFAULT '0 9 * * *',
+        channels_json TEXT,
+        enabled TINYINT NOT NULL DEFAULT 1,
+        created_by VARCHAR(96) NOT NULL DEFAULT '',
+        last_run_at VARCHAR(40) NULL,
+        last_status VARCHAR(32) NOT NULL DEFAULT '',
+        last_summary TEXT,
+        run_count INT NOT NULL DEFAULT 0,
+        created_at VARCHAR(40) NOT NULL,
+        KEY idx_agent_tasks_ws (workspace_id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    """,
 
 ]

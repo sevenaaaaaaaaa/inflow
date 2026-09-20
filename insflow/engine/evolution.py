@@ -120,7 +120,6 @@ def _pick_threshold(values: list[float], current: float,
         candidates[round(ordered[idx], 6)] = freq(ordered[idx])
     current_freq = freq(current)
     best: float | None = None
-    best_gap = None
     band_used = MAX_DELTA_RATIO
     for band in GUARDRAIL_BANDS:
         band_best, band_gap = None, None
@@ -131,7 +130,7 @@ def _pick_threshold(values: list[float], current: float,
             if band_gap is None or gap < band_gap:
                 band_best, band_gap = threshold, gap
         if band_best is not None:
-            best, best_gap, band_used = band_best, band_gap, band
+            best, band_used = band_best, band
             break
     if best is None:
         return None, {}, MAX_DELTA_RATIO

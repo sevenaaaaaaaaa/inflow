@@ -308,6 +308,13 @@ async def bootstrap_scheduled_jobs() -> dict:
     scheduler.register_handler("alerts.hourly", _alerts_hourly)
     registered["jobs"].append("alerts.hourly@hourly-40")
 
+    # 11. Agent 定时任务（把一次问答固化为 cron；恢复启用中的任务）
+    from ..engine.agent_tasks import TASK_TYPE as AGENT_TASK_TYPE
+    from ..engine.agent_tasks import restore_tasks, run_due_handler
+    scheduler.register_handler(AGENT_TASK_TYPE, run_due_handler)
+    registered["agent_tasks_restored"] = await restore_tasks()
+    registered["jobs"].append("agent.task.run@per-task-cron")
+
     # 多实例：定时任务只由 leader 执行（无 Redis → 单机恒为 leader）
     from ..core.leader import get_leader
     leader = get_leader()
