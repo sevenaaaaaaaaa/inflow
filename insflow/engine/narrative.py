@@ -247,7 +247,7 @@ async def _polish(markdown: str, workspace_id: str) -> str:
             {"role": "system", "content":
              "你是增长分析师。把下面的确定性结论改写成 3-5 句管理者摘要。"
              "严格禁止引入未出现的数字或事实；无法判断时保留原文表述。"},
-            {"role": "user", "content": markdown}])
+            {"role": "user", "content": markdown}], temperature=0.1, task="summarize")
         text = (out or {}).get("content") if isinstance(out, dict) else str(out)
         return f"{text}\n\n---\n{markdown}" if text else markdown
     except Exception:

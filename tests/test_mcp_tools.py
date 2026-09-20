@@ -36,15 +36,15 @@ async def env(tmp_path, monkeypatch):
 
 
 class TestToolRegistry:
-    def test_11_tools_with_schema(self):
+    def test_12_tools_with_schema(self):
         names = {t["name"] for t in MCP_TOOLS_SCHEMA}
         assert {
-            "list_insights", "get_insight", "run_diagnosis", "ask_analyst",
+            "list_insights", "get_insight", "search_insights", "run_diagnosis", "ask_analyst",
             "list_competitors", "get_competitor_timeline", "get_maturity",
             "list_monitors", "trigger_playbook", "get_feedback_stats",
             "propose_action",
         } == names
-        assert len(TOOL_IMPLS) == 11
+        assert len(TOOL_IMPLS) == 12
 
     def test_schemas_have_required(self):
         for t in MCP_TOOLS_SCHEMA:

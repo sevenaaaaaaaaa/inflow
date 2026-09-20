@@ -300,6 +300,131 @@ def events_catalog(do_write: bool, direction: str, as_json: bool):
     console.print(render_markdown())
 
 
+@main.group("prompt")
+def prompt_group():
+    """Prompt 版本与回归评测"""
+    pass
+
+
+@prompt_group.command("list")
+def prompt_list():
+    """列出 prompts/ 下的 prompt 与版本"""
+    from .agent.prompts import list_prompts, prompts_dir
+    rows = list_prompts()
+    if not rows:
+        console.print(f"[yellow]{prompts_dir()} 下没有 prompt[/]（代码内置兜底仍可用）")
+        return
+    for r in rows:
+        console.print(f"[bold]{r['name']}[/]  版本 {r['versions']} · 生效 v{r['latest']}")
+
+
+@prompt_group.command("show")
+@click.argument("name", default="agent_system")
+@click.option("--version", "-v", type=int, default=None)
+def prompt_show(name: str, version: int | None):
+    """打印某一版 prompt 正文（含哈希，便于和答案里的 ref 对账）"""
+    from .agent.agent import SYSTEM_PROMPT
+    from .agent.prompts import get_prompt
+    p = get_prompt(name, version, fallback=SYSTEM_PROMPT if name == "agent_system" else "")
+    console.print(f"[bold]{p.ref}[/]  {p.path or '（代码内置兜底）'}")
+    console.print(p.text)
+
+
+@prompt_group.command("eval")
+@click.option("--workspace", "-w", required=True)
+@click.option("--version", "-v", "versions", multiple=True, type=int,
+              help="要评测的版本（可多次；不填用生效版本）")
+@click.option("--set", "set_name", default="agent_qa", help="golden set 名")
+@click.option("--min-score", default=0.0, type=float, help="低于该分数退出码为 1（CI 门禁）")
+@click.option("--write", "do_write", is_flag=True, help="报告写入 data/prompt_evals/")
+@click.option("--json", "as_json", is_flag=True)
+def prompt_eval(workspace: str, versions: tuple, set_name: str,
+                min_score: float, do_write: bool, as_json: bool):
+    """跑 golden set 回归（LLM 未配置时只验证答案管线，报告会标注）"""
+    from .agent.prompt_eval import compare, run_eval
+    if len(versions) > 1:
+        result = run_async(compare(workspace, list(versions), set_name=set_name))
+        if as_json:
+            console.print_json(data=result)
+            return
+        for row in result["versions"]:
+            console.print(f"v{row['version']}: {row['score']:.0%} "
+                          f"（{row['passed']}/{row['total']}）  {row['prompt']}")
+        if not result["prompt_sensitive"]:
+            console.print("[yellow]提示[/]：未配置 LLM，各版本走同一条确定性管线，"
+                          "分数相同属正常——配 OPENAI_API_KEY 才能真正对比 prompt")
+        score = min((r["score"] for r in result["versions"]), default=0.0)
+    else:
+        report = run_async(run_eval(workspace, version=(versions[0] if versions else None),
+                                    set_name=set_name, write=do_write))
+        if as_json:
+            console.print_json(data=report)
+            return
+        console.print(f"[bold]{report['prompt']}[/] · 模式 {report['mode']} · "
+                      f"得分 {report['score']:.0%}（{report['passed']}/{report['total']}"
+                      f"，跳过 {report['skipped']}）")
+        for case in report["cases"]:
+            if case.get("skipped"):
+                continue
+            mark = "[green]✓[/]" if case.get("passed") else "[red]✗[/]"
+            console.print(f"  {mark} {case['id']} {'; '.join(case.get('reasons') or [])}")
+        if not report["prompt_sensitive"]:
+            console.print("[yellow]提示[/]：未配置 LLM → 本轮测的是答案管线不退化，"
+                          "prompt 文案差异测不出来")
+        if report.get("path"):
+            console.print(f"报告：{report['path']}")
+        score = report["score"]
+    if min_score and score < min_score:
+        console.print(f"[red]低于门槛 {min_score:.0%}[/]")
+        sys.exit(1)
+
+
+@main.command("search")
+@click.argument("query")
+@click.option("--workspace", "-w", required=True)
+@click.option("--kind", "kinds", multiple=True,
+              type=click.Choice(["insight", "note"]), help="检索范围（可多次）")
+@click.option("--limit", "-l", default=10, help="返回条数")
+def search_cmd(query: str, workspace: str, kinds: tuple, limit: int):
+    """语义检索洞察/工作区记忆（本地向量，词面不命中也能召回）"""
+    from .engine.semantic_index import search
+    hits = run_async(search(workspace, query, kinds=list(kinds) or None, limit=limit))
+    if not hits:
+        console.print("[yellow]没有命中[/]（索引为空时先跑一次诊断或 `insflow index rebuild`）")
+        return
+    for h in hits:
+        console.print(f"[bold]{h['score']:.3f}[/] [{h['kind']}] {h['title']} "
+                      f"[dim]{h['ref_id']}[/]")
+        console.print(f"  {h['snippet'][:120]}")
+
+
+@main.group("index")
+def index_group():
+    """语义检索索引"""
+    pass
+
+
+@index_group.command("rebuild")
+@click.option("--workspace", "-w", required=True)
+def index_rebuild(workspace: str):
+    """全量重建向量索引（换 embedding 模型后必须跑）"""
+    from .engine.semantic_index import reindex
+    r = run_async(reindex(workspace))
+    console.print(f"[green]已重建[/] 索引 {r['indexed']} 条（清理孤儿 {r['removed']}）")
+
+
+@index_group.command("stats")
+@click.option("--workspace", "-w", required=True)
+def index_stats(workspace: str):
+    """索引统计（条数/模型/维度）"""
+    from .engine.semantic_index import stats
+    st = run_async(stats(workspace))
+    console.print(f"总计 {st['total']} 条 · 维度 {st['dim']} · "
+                  f"模型 {', '.join(st['models']) or '—'}")
+    for kind, n in st["by_kind"].items():
+        console.print(f"  {kind}: {n}")
+
+
 @plugin.command("check")
 @click.argument("plugin_path")
 def plugin_check(plugin_path: str):

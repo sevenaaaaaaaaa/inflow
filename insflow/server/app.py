@@ -1920,6 +1920,77 @@ async def agent_ask(data: AgentAskRequest, workspace_id: str = Query(...)):
     return await agent.ask(data.question)
 
 
+@app.get("/api/v1/search")
+async def semantic_search(request: Request, workspace_id: str = Query(...),
+                          q: str = Query(..., min_length=1),
+                          kinds: str = Query("insight", description="insight,note"),
+                          limit: int = Query(10, ge=1, le=50)):
+    """语义检索（本地向量；索引在检索前增量同步）"""
+    from ..engine.semantic_index import search
+    _guard(request, "read")
+    store = await get_store()
+    if not await store.get_workspace(workspace_id):
+        raise HTTPException(status_code=404, detail="Workspace not found")
+    wanted = [k.strip() for k in kinds.split(",") if k.strip()]
+    hits = await search(workspace_id, q, kinds=wanted or None, limit=limit)
+    return {"query": q, "total": len(hits), "hits": hits}
+
+
+@app.post("/api/v1/search/reindex")
+async def semantic_reindex(request: Request, workspace_id: str = Query(...),
+                           full: bool = Query(False, description="true=全量重建")):
+    """重建/同步向量索引（换 embedding 模型后用 full=true）"""
+    from ..engine.semantic_index import reindex, stats, sync_workspace
+    _guard(request, "insight.write")
+    store = await get_store()
+    if not await store.get_workspace(workspace_id):
+        raise HTTPException(status_code=404, detail="Workspace not found")
+    result = await (reindex(workspace_id) if full else sync_workspace(workspace_id))
+    return {"ok": True, **result, "stats": await stats(workspace_id)}
+
+
+@app.get("/api/v1/agent/stream")
+async def agent_ask_stream(request: Request, workspace_id: str = Query(...),
+                           question: str = Query(..., min_length=1)):
+    """问数 SSE 流：stage（进度）/ delta（答案片段）/ done（完整结果）/ error
+
+    用 GET 是为了前端能直接用 EventSource（浏览器原生重连 + 无需手写解析）。
+    反代同 /api/v1/stream：需关闭响应缓冲，已带 X-Accel-Buffering: no。
+    """
+    from fastapi.responses import StreamingResponse
+
+    from ..agent import InsightAgent
+    from ..engine.realtime import sse_event
+    _guard(request, "read")
+    store = await get_store()
+    if not await store.get_workspace(workspace_id):
+        raise HTTPException(status_code=404, detail="Workspace not found")
+
+    async def _gen():
+        agent = InsightAgent(workspace_id)
+        try:
+            async for event, data in agent.ask_stream(question):
+                if await request.is_disconnected():
+                    return
+                yield sse_event(event, data)
+        except Exception as e:  # noqa: BLE001 —— 连接已开，异常要以 SSE 帧告知前端
+            yield sse_event("error", {"detail": f"{type(e).__name__}: {e}"})
+
+    return StreamingResponse(_gen(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-store",
+                                      "X-Accel-Buffering": "no",
+                                      "Connection": "keep-alive"})
+
+
+@app.get("/api/v1/agent/routing")
+async def agent_routing(request: Request, workspace_id: str = Query("")):
+    """模型路由配置与本会话预算水位（便宜/强模型、降级阈值、价格表）"""
+    from ..agent.llm import LLMGateway
+    _guard(request, "read")
+    gw = LLMGateway(workspace_id=workspace_id)
+    return {"available": gw.available, **gw.routing()}
+
+
 @app.get("/api/v1/agent/skills")
 async def agent_skills():
     """列出已加载的 Agent Skills"""

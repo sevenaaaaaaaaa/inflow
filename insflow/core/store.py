@@ -460,6 +460,30 @@ MIGRATIONS = [
     CREATE INDEX IF NOT EXISTS idx_agent_tasks_ws
         ON agent_tasks(workspace_id);
     """,
+    # V6: 语义检索索引（embeddings）—— 本地 n-gram 向量或 embedding API，按 model 隔离
+    """
+    CREATE TABLE IF NOT EXISTS embeddings (
+        id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        ref_id TEXT NOT NULL,
+        model TEXT NOT NULL DEFAULT '',
+        dim INTEGER NOT NULL DEFAULT 0,
+        text_hash TEXT NOT NULL DEFAULT '',
+        title TEXT NOT NULL DEFAULT '',
+        snippet TEXT NOT NULL DEFAULT '',
+        vector_json TEXT NOT NULL DEFAULT '{}',
+        updated_at TEXT NOT NULL
+    );
+    """,
+    """
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_embeddings_ref
+        ON embeddings(workspace_id, kind, ref_id);
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_embeddings_ws_model
+        ON embeddings(workspace_id, model);
+    """,
 
 ]
 

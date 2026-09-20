@@ -301,7 +301,48 @@ function ifAsk(){
     input.addEventListener('keydown', function(e){ if(e.key === 'Enter') ifAskRun(); });
   }
 }
-async function ifAskRun(){
+/* 问数：优先 SSE 流式（边想边出字 + 显示在调哪个工具），不支持则回落一次性 POST */
+function ifAskRun(){
+  var ws = document.body.getAttribute('data-ws') || '';
+  var q = (document.getElementById('if-ask-q') || {}).value || '';
+  var st = document.getElementById('if-ask-status'), out = document.getElementById('if-ask-out');
+  if(!q.trim()){ if(st) st.textContent = '请输入问题'; return; }
+  if(!window.EventSource) return ifAskRunPost();
+  if(st) st.textContent = '思考中…';
+  if(out) out.textContent = '';
+  var url = '/api/v1/agent/stream?workspace_id=' + encodeURIComponent(ws)
+          + '&question=' + encodeURIComponent(q);
+  var es, settled = false;
+  try{ es = new EventSource(url, {withCredentials: true}); }
+  catch(e){ return ifAskRunPost(); }
+  es.addEventListener('stage', function(e){
+    try{ var d = JSON.parse(e.data); if(st) st.textContent = d.label || '处理中…'; }catch(_){}
+  });
+  es.addEventListener('delta', function(e){
+    try{ var d = JSON.parse(e.data); if(out) out.textContent += (d.text || ''); }catch(_){}
+  });
+  es.addEventListener('done', function(e){
+    settled = true;
+    try{
+      var j = JSON.parse(e.data);
+      if(st) st.textContent = j.mode === 'llm' ? 'LLM 回答' : '检索/规则回答';
+      if(out && !out.textContent) out.textContent = j.answer || '（无内容）';
+      if(typeof ifAskRenderExtras === 'function') ifAskRenderExtras(j, ws, q);
+    }catch(_){}
+    es.close();
+  });
+  es.addEventListener('error', function(e){
+    settled = true; es.close();
+    if(st) st.textContent = '失败（已改用非流式重试）';
+    ifAskRunPost();
+  });
+  es.onerror = function(){
+    es.close();
+    // 没收到 done 就断了：回落一次性请求，别让用户看半截答案
+    if(!settled) ifAskRunPost();
+  };
+}
+async function ifAskRunPost(){
   var ws = document.body.getAttribute('data-ws') || '';
   var q = (document.getElementById('if-ask-q') || {}).value || '';
   var st = document.getElementById('if-ask-status'), out = document.getElementById('if-ask-out');

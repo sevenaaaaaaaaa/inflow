@@ -58,6 +58,16 @@ insflow plugin check plugins/sources/my-blog
 # 事件目录（与 GET /api/v1/events/catalog 同源）
 insflow events catalog --write
 
+# 语义检索（本地向量，零依赖）
+insflow search "竞品降价" -w <workspace-id>
+insflow index rebuild -w <workspace-id>     # 换 embedding 模型后跑
+insflow index stats -w <workspace-id>
+
+# Prompt 版本与回归
+insflow prompt list
+insflow prompt show agent_system -v 1
+insflow prompt eval -w <workspace-id> --min-score 0.8   # 可做 CI 门禁
+
 # 启动服务
 insflow serve [--port 8400] [--reload]
 ```
@@ -75,6 +85,10 @@ insflow serve [--port 8400] [--reload]
 | POST | /api/v1/insights/{id}/dismiss | 忽略洞察 |
 | POST | /api/v1/diagnosis/run | 触发诊断 |
 | GET | /api/v1/maturity | 获取成熟度 |
+| GET | /api/v1/search | 语义检索（洞察/工作区记忆） |
+| POST | /api/v1/search/reindex | 同步或重建向量索引 |
+| GET | /api/v1/agent/stream | 问数 SSE 流（stage/delta/done） |
+| GET | /api/v1/agent/routing | 模型路由配置与预算水位 |
 
 ## 开发
 
@@ -103,6 +117,7 @@ inFlow Dev/
 │   ├── actions/         # 动作执行
 │   ├── integrations/    # 外部集成
 │   └── mcp_server/      # MCP 服务器
+├── prompts/             # Prompt 版本（<name>.v<N>.md）与 golden set
 ├── plugins/             # 插件目录
 ├── skills/              # Agent Skills
 ├── data/                # 运行时数据

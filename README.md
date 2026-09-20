@@ -17,6 +17,7 @@
 | [13-十维进化评审](docs/13-十维进化评审.md) | 易用/开放/Agent 等十维差距与批次 A–E | 进行中 |
 | [14-事件目录](docs/14-事件目录.md) | 入站/出站/内部事件（与 API 同源，勿手改） | 自动生成 |
 | [15-插件开发指南](docs/15-插件开发指南.md) | manifest、约定函数、plugin new/check、上架 | v1.0 |
+| [prompts/](prompts/) | Prompt 版本（`<name>.v<N>.md`）与 golden set 回归用例 | v1 |
 | [examples/](examples/README.md) | curl / Python / TypeScript / n8n / Dify / MCP | v1.0 |
 | [contracts/openapi.json](contracts/openapi.json) | OpenAPI 3.1 快照（CI 锁定破坏性变更） | 锁定 |
 

@@ -206,6 +206,23 @@ AGENT_TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "search_insights",
+            "description": ("语义检索洞察与工作区记忆（按意思找，不要求词面命中）。"
+                            "用户问'有没有关于…的洞察/我们之前怎么说的'时优先用它；"
+                            "需要最新 N 条或按状态过滤时用 query_insights。"),
+            "parameters": {"type": "object", "properties": {
+                "workspace_id": {"type": "string"},
+                "query": {"type": "string", "description": "自然语言检索词"},
+                "limit": {"type": "integer", "default": 8},
+                "kinds": {"type": "array", "items": {"type": "string",
+                          "enum": ["insight", "note"]},
+                          "description": "检索范围，默认只查洞察"},
+            }, "required": ["workspace_id", "query"]},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "propose_action",
             "description": ("起草一个**待人工审批**的动作（不会立即执行）。"
                             "适用于用户要求'去执行/派发/通知/建内容'且已有对应洞察时；"
@@ -275,6 +292,7 @@ TOOL_EXECUTORS = {
     "data_quality": lambda args: tool_data_quality(**args),
     "attribution": lambda args: tool_attribution(**args),
     "action_lift": lambda args: tool_action_lift(**args),
+    "search_insights": lambda args: tool_search_insights(**args),
     "propose_action": lambda args: tool_propose_action(**args),
     "save_note": lambda args: tool_save_note(**args),
     "recall_notes": lambda args: tool_recall_notes(**args),
@@ -326,6 +344,19 @@ async def tool_action_lift(workspace_id: str, days: float = 30) -> dict:
     """动作增量（前后对比 + 自助法区间；非随机实验）"""
     from ..engine.attribution import lift_summary
     return await lift_summary(workspace_id, days=days)
+
+# ========== 语义检索（批次 F）==========
+
+async def tool_search_insights(workspace_id: str, query: str, limit: int = 8,
+                               kinds: list | None = None) -> dict:
+    """语义检索（本地向量，词面不命中也能召回）；默认只查洞察"""
+    from ..engine.semantic_index import search, search_insights
+    wanted = [k for k in (kinds or ["insight"]) if k in ("insight", "note")]
+    if wanted == ["insight"]:
+        return await search_insights(workspace_id, query, limit=limit)
+    hits = await search(workspace_id, query, kinds=wanted, limit=limit)
+    return {"query": query, "total": len(hits), "hits": hits}
+
 
 # ========== 可控写入：动作提案 / 工作区记忆 / 定时任务（批次 C） ==========
 

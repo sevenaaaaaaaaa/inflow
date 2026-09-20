@@ -1,7 +1,7 @@
 """MCP Server 共享工具层（stdio 与 HTTP 两种传输共用）
 
-工具清单（架构文档 §9.2，11 个）：
-list_insights / get_insight / run_diagnosis / ask_analyst /
+工具清单（架构文档 §9.2，12 个）：
+list_insights / get_insight / search_insights / run_diagnosis / ask_analyst /
 list_competitors / get_competitor_timeline / get_maturity /
 list_monitors / trigger_playbook / get_feedback_stats / propose_action
 
@@ -31,6 +31,12 @@ async def tool_get_insight(insight_id: str) -> dict:
     store = await get_store()
     ins = await store.get_insight(insight_id)
     return _d(ins) if ins else {"error": f"Insight not found: {insight_id}"}
+
+
+async def tool_search_insights(workspace_id: str, query: str, limit: int = 8) -> dict:
+    """语义检索洞察（本地向量；词面不命中也能召回）"""
+    from ..engine.semantic_index import search_insights
+    return await search_insights(workspace_id, query, limit=limit)
 
 
 async def tool_run_diagnosis(workspace_id: str) -> dict:
@@ -181,6 +187,19 @@ MCP_TOOLS_SCHEMA = [
         },
     },
     {
+        "name": "search_insights",
+        "description": "语义检索洞察（按意思找，词面不命中也能召回；本地向量，无需外部服务）。",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "workspace_id": {"type": "string"},
+                "query": {"type": "string"},
+                "limit": {"type": "integer", "default": 8},
+            },
+            "required": ["workspace_id", "query"],
+        },
+    },
+    {
         "name": "run_diagnosis",
         "description": "触发一次全量流量诊断（AARRR + 异常检测 + 洞察生成 + 报告落盘）。",
         "inputSchema": {
@@ -287,6 +306,7 @@ MCP_TOOLS_SCHEMA = [
 TOOL_IMPLS = {
     "list_insights": tool_list_insights,
     "get_insight": tool_get_insight,
+    "search_insights": tool_search_insights,
     "run_diagnosis": tool_run_diagnosis,
     "ask_analyst": tool_ask_analyst,
     "list_competitors": tool_list_competitors,

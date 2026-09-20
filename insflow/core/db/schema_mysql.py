@@ -405,5 +405,22 @@ MYSQL_MIGRATIONS = [
         KEY idx_agent_tasks_ws (workspace_id)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
     """,
+    """
+    CREATE TABLE IF NOT EXISTS embeddings (
+        id VARCHAR(64) PRIMARY KEY,
+        workspace_id VARCHAR(64) NOT NULL,
+        kind VARCHAR(32) NOT NULL,
+        ref_id VARCHAR(64) NOT NULL,
+        model VARCHAR(96) NOT NULL DEFAULT '',
+        dim INT NOT NULL DEFAULT 0,
+        text_hash VARCHAR(32) NOT NULL DEFAULT '',
+        title VARCHAR(512) NOT NULL DEFAULT '',
+        snippet TEXT,
+        vector_json MEDIUMTEXT,
+        updated_at VARCHAR(40) NOT NULL,
+        UNIQUE KEY uq_embeddings_ref (workspace_id, kind, ref_id),
+        KEY idx_embeddings_ws_model (workspace_id, model)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    """,
 
 ]

@@ -9,9 +9,11 @@ import json
 import re
 
 from .llm import LLMGateway
+from .prompts import Prompt, get_prompt
 from .skills_host import Skill, get_skills_host
 from .tools import AGENT_TOOLS, execute_tool
 
+# 兜底副本：打包安装没有 prompts/ 目录时用它（版本记为 v0）
 SYSTEM_PROMPT = """你是 Insight Flow 的增长数据分析师 Agent。
 
 规则：
@@ -27,16 +29,21 @@ SYSTEM_PROMPT = """你是 Insight Flow 的增长数据分析师 Agent。
 
 MAX_TOOL_ROUNDS = 4
 MAX_TRACKED_PROPOSALS = 3
+STREAM_CHUNK = 48        # 非流式答案的分块粒度（字符）
+STREAM_PAUSE = 0.01      # 分块之间的让步，避免一次性刷屏
 
 
 class InsightAgent:
     """数据洞察问答 Agent"""
 
-    def __init__(self, workspace_id: str, llm: LLMGateway | None = None):
+    def __init__(self, workspace_id: str, llm: LLMGateway | None = None,
+                 prompt_version: int | None = None):
         self.workspace_id = workspace_id
         self.llm = llm or LLMGateway(workspace_id=workspace_id)
         self.skills = get_skills_host()
         self.proposed_actions: list[dict] = []
+        self.prompt: Prompt = get_prompt("agent_system", prompt_version,
+                                         fallback=SYSTEM_PROMPT)
 
     # ========== 工具执行 ==========
 
@@ -108,7 +115,105 @@ class InsightAgent:
         result["skills_used"] = [s.name for s in matched_skills]
         result["proposed_actions"] = list(self.proposed_actions)
         result["mode"] = mode
+        # 回传 prompt 版本与正文哈希：事后能定位"这句话是哪一版说的"
+        result["prompt"] = {"name": self.prompt.name, "version": self.prompt.version,
+                            "hash": self.prompt.hash, "ref": self.prompt.ref}
         return result
+
+    # ========== 流式问答（SSE）==========
+
+    async def ask_stream(self, question: str):
+        """流式问答：逐个 yield (event, data)
+
+        事件：stage（进度：在调哪个工具）/ delta（答案片段）/ done（与 ask 同结构）
+
+        诚实边界：**工具轮不流式**——function calling 需要完整 JSON 才能执行；
+        流的是进度与答案分块；只有"轮数用尽后的收尾总结"走真 token 流式。
+        没有 LLM 时同样有流（把确定性答案分块推），前端无需两套渲染。
+        """
+        skills = self.skills.match(question)
+        citations: list[dict] = []
+        self.proposed_actions = []
+        mode = "llm" if self.llm.available else "retrieval"
+        state = {"answer": ""}
+        yield "stage", {"stage": "start", "label": "思考中…", "mode": mode}
+
+        if self.llm.available:
+            try:
+                async for event in self._stream_with_llm(question, skills, state):
+                    yield event
+            except RuntimeError as e:
+                result = await self._ask_retrieval_only(question, skills, citations)
+                text = result["answer"] + f"\n\n> ⚠️ LLM 推理不可用（{e}），已回退到检索模式。"
+                mode = "retrieval"
+                yield "stage", {"stage": "fallback", "label": "回退检索模式", "mode": mode}
+                async for event in self._emit_chunks(text):
+                    yield event
+                state["answer"] = text
+        else:
+            result = await self._ask_retrieval_only(question, skills, citations)
+            async for event in self._emit_chunks(result["answer"]):
+                yield event
+            state["answer"] = result["answer"]
+
+        answer = state["answer"]
+        cited_ids = set(re.findall(r"\[ins:([\w-]+)\]", answer))
+        if not cited_ids:
+            cited_ids = {c["insight_id"] for c in citations}
+        yield "done", {
+            "answer": answer,
+            "citations": await self._expand_citations(cited_ids),
+            "skills_used": [s.name for s in skills],
+            "proposed_actions": list(self.proposed_actions),
+            "mode": mode,
+            "prompt": {"name": self.prompt.name, "version": self.prompt.version,
+                       "hash": self.prompt.hash, "ref": self.prompt.ref},
+        }
+
+    async def _emit_chunks(self, text: str):
+        """把已有文本切块推送（让"没有 LLM"与"有 LLM"的前端体验一致）"""
+        import asyncio
+        for i in range(0, len(text or ""), STREAM_CHUNK):
+            yield "delta", {"text": text[i:i + STREAM_CHUNK]}
+            await asyncio.sleep(STREAM_PAUSE)
+
+    async def _stream_with_llm(self, question: str, skills: list[Skill], state: dict):
+        memory = await self._memory_context(question)
+        messages: list[dict] = [
+            {"role": "system", "content": self._system_prompt_with_skills(skills, memory)},
+            {"role": "user", "content": question},
+        ]
+        for _ in range(MAX_TOOL_ROUNDS):
+            resp = await self.llm.chat(messages, tools=AGENT_TOOLS)
+            tool_calls = resp.get("tool_calls") or []
+            if not tool_calls:
+                state["answer"] = resp.get("content") or ""
+                async for event in self._emit_chunks(state["answer"]):
+                    yield event
+                return
+            messages.append(resp.get("raw_message") or {
+                "role": "assistant",
+                "content": resp.get("content") or "",
+                "tool_calls": tool_calls,
+            })
+            for call in tool_calls:
+                fn = call.get("function", {})
+                name = fn.get("name", "")
+                try:
+                    args = json.loads(fn.get("arguments") or "{}")
+                except json.JSONDecodeError:
+                    args = {}
+                yield "stage", {"stage": "tool", "tool": name, "label": f"调用 {name}…"}
+                output = await self.run_tool(name, args)
+                messages.append({"role": "tool", "tool_call_id": call.get("id", ""),
+                                 "content": output})
+
+        yield "stage", {"stage": "summarize", "label": "汇总中…"}
+        pieces: list[str] = []
+        async for piece in self.llm.chat_stream(messages):
+            pieces.append(piece)
+            yield "delta", {"text": piece}
+        state["answer"] = "".join(pieces)
 
     # ========== LLM 模式（function calling 循环）==========
 
@@ -199,7 +304,7 @@ class InsightAgent:
 
     def _system_prompt_with_skills(self, skills: list[Skill],
                                    memory: str = "") -> str:
-        prompt = SYSTEM_PROMPT
+        prompt = self.prompt.text or SYSTEM_PROMPT
         if memory:
             prompt += "\n\n" + memory
         if skills:

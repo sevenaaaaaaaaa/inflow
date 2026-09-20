@@ -1357,6 +1357,45 @@
         "summary": "Delete Agent Note"
       }
     },
+    "/api/v1/agent/routing": {
+      "get": {
+        "description": "模型路由配置与本会话预算水位（便宜/强模型、降级阈值、价格表）",
+        "operationId": "agent_routing_api_v1_agent_routing_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "workspace_id",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Workspace Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Agent Routing"
+      }
+    },
     "/api/v1/agent/skills": {
       "get": {
         "description": "列出已加载的 Agent Skills",
@@ -1372,6 +1411,54 @@
           }
         },
         "summary": "Agent Skills"
+      }
+    },
+    "/api/v1/agent/stream": {
+      "get": {
+        "description": "问数 SSE 流：stage（进度）/ delta（答案片段）/ done（完整结果）/ error\n\n用 GET 是为了前端能直接用 EventSource（浏览器原生重连 + 无需手写解析）。\n反代同 /api/v1/stream：需关闭响应缓冲，已带 X-Accel-Buffering: no。",
+        "operationId": "agent_ask_stream_api_v1_agent_stream_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "workspace_id",
+            "required": true,
+            "schema": {
+              "title": "Workspace Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "question",
+            "required": true,
+            "schema": {
+              "minLength": 1,
+              "title": "Question",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Agent Ask Stream"
       }
     },
     "/api/v1/agent/tasks": {
@@ -6025,6 +6112,128 @@
           }
         },
         "summary": "Set Rls Policies"
+      }
+    },
+    "/api/v1/search": {
+      "get": {
+        "description": "语义检索（本地向量；索引在检索前增量同步）",
+        "operationId": "semantic_search_api_v1_search_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "workspace_id",
+            "required": true,
+            "schema": {
+              "title": "Workspace Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "q",
+            "required": true,
+            "schema": {
+              "minLength": 1,
+              "title": "Q",
+              "type": "string"
+            }
+          },
+          {
+            "description": "insight,note",
+            "in": "query",
+            "name": "kinds",
+            "required": false,
+            "schema": {
+              "default": "insight",
+              "description": "insight,note",
+              "title": "Kinds",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 10,
+              "maximum": 50,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Semantic Search"
+      }
+    },
+    "/api/v1/search/reindex": {
+      "post": {
+        "description": "重建/同步向量索引（换 embedding 模型后用 full=true）",
+        "operationId": "semantic_reindex_api_v1_search_reindex_post",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "workspace_id",
+            "required": true,
+            "schema": {
+              "title": "Workspace Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "true=全量重建",
+            "in": "query",
+            "name": "full",
+            "required": false,
+            "schema": {
+              "default": false,
+              "description": "true=全量重建",
+              "title": "Full",
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Semantic Reindex"
       }
     },
     "/api/v1/semantics/calc": {
