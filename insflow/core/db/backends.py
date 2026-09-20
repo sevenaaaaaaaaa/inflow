@@ -270,13 +270,17 @@ class MySQLBackend:
 
 
 def mysql_config_from_env() -> dict:
-    """从环境变量读取 MySQL 配置（命名对齐 OpenFlow 的 mysql_* 约定）"""
+    """从环境变量读取 MySQL 配置（命名对齐 OpenFlow 的 mysql_* 约定）
+
+    密码同时接受 MYSQL_PASS（本仓库 .env 约定）与 MYSQL_PASSWORD（GitHub Actions
+    service 容器约定）——两者不一致曾让 CI 的 MySQL 任务整个 setup 失败。
+    """
     return {
         "host": os.environ.get("MYSQL_HOST", "127.0.0.1"),
         "port": int(os.environ.get("MYSQL_PORT", "3306")),
-        "dbname": os.environ.get("MYSQL_DBNAME", "insflow"),
+        "dbname": os.environ.get("MYSQL_DBNAME") or os.environ.get("MYSQL_DATABASE", "insflow"),
         "user": os.environ.get("MYSQL_USER", "insflow"),
-        "password": os.environ.get("MYSQL_PASS", ""),
+        "password": os.environ.get("MYSQL_PASS") or os.environ.get("MYSQL_PASSWORD", ""),
         "socket": os.environ.get("MYSQL_SOCKET", ""),
         "pool_size": int(os.environ.get("MYSQL_POOL_SIZE", "5")),
     }

@@ -65,7 +65,7 @@ class TestDriverSelection:
         assert isinstance(create_backend(), MySQLBackend)
 
     def test_mysql_config_from_env(self, monkeypatch):
-        """命名对齐 OpenFlow 的 mysql_* 约定"""
+        """命名对齐 OpenFlow 的 mysql_* 约定；密码兼容两套变量名"""
         monkeypatch.setenv("MYSQL_HOST", "db.internal")
         monkeypatch.setenv("MYSQL_PORT", "3307")
         monkeypatch.setenv("MYSQL_DBNAME", "insflow")
@@ -74,6 +74,14 @@ class TestDriverSelection:
         cfg = mysql_config_from_env()
         assert cfg["host"] == "db.internal" and cfg["port"] == 3307
         assert cfg["user"] == "insflow_u" and cfg["password"] == "secret"
+
+    def test_mysql_config_password_alias(self, monkeypatch):
+        """CI（GitHub Actions service）用 MYSQL_PASSWORD；旧行为读不到 → setup 全灭"""
+        monkeypatch.delenv("MYSQL_PASS", raising=False)
+        monkeypatch.setenv("MYSQL_PASSWORD", "ci-secret")
+        monkeypatch.setenv("MYSQL_DATABASE", "ci_db")
+        cfg = mysql_config_from_env()
+        assert cfg["password"] == "ci-secret" and cfg["dbname"] == "ci_db"
 
     async def test_mysql_missing_config_fails_closed(self, monkeypatch):
         """配置不全 → 明确报错（fail-closed），不静默回落 SQLite"""
