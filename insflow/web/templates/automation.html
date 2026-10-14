@@ -1,0 +1,161 @@
+{% extends "base.html" %}
+{% block title %} · 自动化运营{% endblock %}
+{% block content %}
+<h1>自动化运营</h1>
+<p class="sub">本地时区 {{ local_tz }} · 现在 {{ now_str }} ·
+  今天{{ '是工作日，自动化任务正常执行' if workday else '不是工作日（周六日/节假日非重要任务不执行）' }} ·
+  非重要任务夜间窗口截止 {{ night_end }}</p>
+
+<div class="cards">
+  <div class="card"><div class="num">{{ running_monitors | length }}</div><div class="label">正在执行的监控任务</div></div>
+  <div class="card"><div class="num">{{ enabled_agent | length }}</div><div class="label">启用的 Agent 定时任务</div></div>
+  <div class="card"><div class="num">{{ today_usage.calls or 0 }}</div><div class="label">今日 LLM 调用</div></div>
+  <div class="card">
+    <div class="num">¥{{ today_usage.cost_cny or 0 }}</div>
+    <div class="label">今日成本
+      <span class="pct-bar"><span class="pct-fill" style="width: {{ (budget.used_ratio * 100) | int }}%"></span></span>
+    </div>
+  </div>
+</div>
+
+{% if budget.exceeded %}
+<div class="card" style="border-color:#c0392b">
+  <strong>⚠️ 已超预算</strong> · 今日 ¥{{ budget.spent.total_cost_cny }} / 预算 ¥{{ budget.budget_cny }}。
+  非重要自动化任务的 LLM 调用已熔断（重要任务不受影响）。可单日加预算，次日自动回调。
+</div>
+{% elif budget.warning %}
+<div class="card" style="border-color:var(--accent)">
+  已用预算 {{ (budget.used_ratio * 100) | int }}%，注意消耗速度。
+</div>
+{% endif %}
+
+<h2>每日预算</h2>
+<table>
+  <tr><th>项</th><th>值</th></tr>
+  <tr><td>今日生效预算</td><td><strong>¥{{ budget.budget_cny }}</strong>（约 ${{ budget.budget_usd }}）</td></tr>
+  <tr><td>今日已花</td><td>¥{{ budget.spent.total_cost_cny }} = LLM ${{ budget.spent.llm_cost_usd }} + 数据源 ${{ budget.spent.source_cost_usd }}</td></tr>
+  <tr><td>超支动作</td><td>邮件告警管理员（当日仅一次）+ 非重要 LLM 调用熔断</td></tr>
+</table>
+<div class="card">
+  <form method="post" action="/console/automation/budget?workspace_id={{ workspace_id }}" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+    <label>单日加预算（今天生效，<b>次日自动回调</b>）：</label>
+    <input type="number" name="cny" min="1" step="0.5" value="{{ budget.budget_cny }}" required style="width:90px"> 元
+    <input type="hidden" name="mode" value="override">
+    <button class="dp-btn" type="submit">生效</button>
+  </form>
+  <form method="post" action="/console/automation/budget?workspace_id={{ workspace_id }}" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:8px">
+    <label>修改每日基础预算：</label>
+    <input type="number" name="cny" min="0" step="0.5" value="{{ budget.budget_cny }}" required style="width:90px"> 元
+    <input type="hidden" name="mode" value="base">
+    <button class="dp-btn" type="submit">保存</button>
+  </form>
+</div>
+
+<h2>每日 Token / 成本（近 14 天）</h2>
+<table>
+  <tr><th>日期</th><th>调用</th><th>输入 tokens</th><th>输出 tokens</th><th>成本 USD</th><th>成本 CNY</th><th>占当日预算</th></tr>
+  {% for r in daily_rows %}
+  <tr>
+    <td>{{ r.date }}{% if r.date == today_usage.date %} <span class="badge" style="background:var(--accent);color:var(--on-accent)">今天</span>{% endif %}</td>
+    <td>{{ r.calls }}</td>
+    <td>{{ r.prompt_tokens }}</td>
+    <td>{{ r.completion_tokens }}</td>
+    <td>${{ r.cost_usd }}</td>
+    <td>¥{{ r.cost_cny }}</td>
+    <td>
+      {% if budget.budget_cny %}
+      <span class="pct-bar"><span class="pct-fill" style="width: {{ (r.cost_cny / budget.budget_cny * 100) | int }}%"></span></span>
+      {% endif %}
+    </td>
+  </tr>
+  {% endfor %}
+</table>
+
+<h2>今日每小时记录</h2>
+<table>
+  <tr><th>小时（本地）</th><th>调用</th><th>输入 tokens</th><th>输出 tokens</th><th>成本</th></tr>
+  {% for h in hourly_rows %}
+  {% if h.calls %}
+  <tr>
+    <td>{{ '%02d' % h.hour }}:00–{{ '%02d' % (h.hour + 1) if h.hour < 23 else '00' }}:00</td>
+    <td>{{ h.calls }}</td>
+    <td>{{ h.prompt_tokens }}</td>
+    <td>{{ h.completion_tokens }}</td>
+    <td>${{ h.cost_usd }}</td>
+  </tr>
+  {% endif %}
+  {% else %}
+  <tr><td colspan="5" class="sub">今天还没有 LLM 调用记录</td></tr>
+  {% endfor %}
+</table>
+
+<h2>消耗大户（近 7 天）</h2>
+<div class="cards">
+  <div class="card" style="flex:1">
+    <div class="label">按模型</div>
+    <table>
+      <tr><th>模型</th><th>调用</th><th>tokens（入/出）</th><th>成本</th></tr>
+      {% for t in top.by_model %}
+      <tr><td><code>{{ t.name }}</code></td><td>{{ t.calls }}</td>
+          <td>{{ t.prompt_tokens }} / {{ t.completion_tokens }}</td><td>${{ t.cost_usd }}</td></tr>
+      {% else %}
+      <tr><td colspan="4" class="sub">暂无记录</td></tr>
+      {% endfor %}
+    </table>
+  </div>
+  <div class="card" style="flex:1">
+    <div class="label">按任务类型</div>
+    <table>
+      <tr><th>任务</th><th>调用</th><th>tokens（入/出）</th><th>成本</th></tr>
+      {% for t in top.by_task %}
+      <tr><td><code>{{ t.name }}</code></td><td>{{ t.calls }}</td>
+          <td>{{ t.prompt_tokens }} / {{ t.completion_tokens }}</td><td>${{ t.cost_usd }}</td></tr>
+      {% else %}
+      <tr><td colspan="4" class="sub">暂无记录</td></tr>
+      {% endfor %}
+    </table>
+  </div>
+</div>
+<p class="sub">优化机制已内置：预算 70% 后强模型自动降级为便宜模型（模型路由）、超预算非重要调用熔断、
+非重要任务压到凌晨低峰执行。消耗大户若长期集中在某模型/任务，优先调整该任务的调度频率或改用便宜模型。</p>
+
+<h2>监控任务（{{ monitors | length }}）</h2>
+<table>
+  <tr><th>ID</th><th>类型</th><th>状态</th><th>重要性</th><th>cron（UTC）</th><th>最近执行</th></tr>
+  {% for m in monitors %}
+  <tr>
+    <td><code>{{ m.id[:12] }}…</code></td>
+    <td>{{ m.kind }}</td>
+    <td>{{ m.state }}</td>
+    <td>{% if m.target_json.important %}<span class="badge b-high">重要</span>{% else %}<span class="sub">常规（工作日 00:00-06:00）</span>{% endif %}</td>
+    <td><code>{{ m.schedule_cron }}</code></td>
+    <td>{{ m.last_run_at[:16] if m.last_run_at else '—' }}</td>
+  </tr>
+  {% else %}
+  <tr><td colspan="6" class="sub">还没有监控任务，去 <a href="/console/onboarding?workspace_id={{ workspace_id }}">接入向导</a> 创建</td></tr>
+  {% endfor %}
+</table>
+
+<h2>Agent 定时任务（{{ agent_tasks | length }}）</h2>
+<table>
+  <tr><th>名称</th><th>启用</th><th>cron（UTC）</th><th>推送通道</th></tr>
+  {% for t in agent_tasks %}
+  <tr>
+    <td>{{ t.name }}</td>
+    <td>{{ '✓' if t.enabled else '✗' }}</td>
+    <td><code>{{ t.cron }}</code></td>
+    <td>{{ (t.channels_json or []) | join('、') }}</td>
+  </tr>
+  {% else %}
+  <tr><td colspan="4" class="sub">还没有 Agent 定时任务，去 <a href="/console/agent?workspace_id={{ workspace_id }}">Agent 工作台</a> 创建</td></tr>
+  {% endfor %}
+</table>
+
+<h2>调度器注册的 Job（{{ jobs | length }}）</h2>
+<table>
+  <tr><th>Job ID</th><th>下次触发</th><th>触发器</th></tr>
+  {% for j in jobs %}
+  <tr><td><code>{{ j.id }}</code></td><td>{{ j.next_run[:19] if j.next_run else '—' }}</td><td><code>{{ j.trigger }}</code></td></tr>
+  {% endfor %}
+</table>
+{% endblock %}

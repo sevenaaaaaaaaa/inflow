@@ -185,6 +185,9 @@ async def bootstrap_scheduled_jobs() -> dict:
         for ws in await store.list_workspaces():
             r = EventBus(ws.id).rotate(keep_days=30)
             kept_total += r["kept"]
+            # 用量账本同步轮转（90 天窗口，日报与消耗大户分析够用）
+            from ..engine.usage_ledger import UsageLedger
+            UsageLedger(ws.id).rotate()
         # WAL checkpoint：控制 -wal 膨胀（写多后 WAL 会显著大于主库）
         await store.wal_checkpoint("TRUNCATE")
         logger.info(f"事件流轮转 + WAL checkpoint 完成：保留 {kept_total} 行")
@@ -337,6 +340,40 @@ async def bootstrap_scheduled_jobs() -> dict:
     scheduler.register_handler(AGENT_TASK_TYPE, run_due_handler)
     registered["agent_tasks_restored"] = await restore_tasks()
     registered["jobs"].append("agent.task.run@per-task-cron")
+
+    # 12. 每天清晨/傍晚：运营日报邮件（过去12h 执行/流量/转化 + 当日任务与 token 消耗）
+    async def _ops_digest(payload=None):
+        from ..engine.email_digest import OpsDigestBuilder
+        from ..engine.usage_ledger import resolve_admin_email
+        period = str((payload or {}).get("period") or "morning")
+        for ws in await store.list_workspaces():
+            try:
+                if not await resolve_admin_email(ws.id):
+                    continue  # 管理员邮箱未配置 → 不发（SMTP 配置见运维手册）
+                await OpsDigestBuilder(ws.id).send(period=period)
+            except Exception:
+                logger.exception(f"运营日报发送失败: {ws.id} period={period}")
+
+    from ..engine.email_digest import digest_crons
+    for period, cron in digest_crons():
+        scheduler.add_job(f"ops.digest.{period}", cron, "ops.digest",
+                          {"period": period, "important": True})
+        registered["jobs"].append(f"ops.digest.{period}@local-{period}")
+
+    # 13. 每小时：每日预算巡检（超支邮件告警当日幂等；LLM 记账处也会即时触发，
+    #     这里兜住「数据源成本超支」等不经过 LLM 记账的路径）
+    async def _budget_check(payload=None):
+        from ..engine.usage_ledger import DailyBudget
+        for ws in await store.list_workspaces():
+            try:
+                await DailyBudget(ws.id).alert_if_exceeded()
+            except Exception:
+                logger.exception(f"预算巡检失败: {ws.id}")
+
+    scheduler.add_job("budget.check", "50 * * * *", "budget.check",
+                      {"important": True})
+    scheduler.register_handler("budget.check", _budget_check)
+    registered["jobs"].append("budget.check@hourly-50")
 
     # 多实例：定时任务只由 leader 执行（无 Redis → 单机恒为 leader）
     from ..core.leader import get_leader

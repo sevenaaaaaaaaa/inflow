@@ -335,6 +335,7 @@ NAV_AREA = {
     "reports": "report",
     "plugins": "ecosystem",
     "usage": "settings",
+    "automation": "settings",
     "subscriptions": "settings",
     "ops": "settings",
     "overview": "overview",
@@ -489,10 +490,33 @@ async def dashboard(request: Request, workspace_id: str = Query("")):
     except Exception:
         roi = {}
 
+    # 自动化与消耗（首页入口卡片：在跑的任务 + 今日 token/预算，详情进运营页）
+    try:
+        from ..engine.usage_ledger import DailyBudget, UsageLedger
+        auto_today = UsageLedger(workspace_id).today()
+        auto_budget = await DailyBudget(workspace_id).status()
+    except Exception:
+        auto_today, auto_budget = {}, {}
+    try:
+        auto_running = await store._fetchone(
+            "SELECT COUNT(*) AS n FROM monitors WHERE workspace_id = ? AND state = 'running'",
+            (workspace_id,))
+        auto_running = int((auto_running or {}).get("n") or 0)
+    except Exception:
+        auto_running = 0
+    try:
+        auto_tasks = await store._fetchone(
+            "SELECT COUNT(*) AS n FROM monitors WHERE workspace_id = ?", (workspace_id,))
+        auto_tasks_n = int((auto_tasks or {}).get("n") or 0)
+    except Exception:
+        auto_tasks_n = 0
+
     return templates.TemplateResponse(request, "dashboard.html", await _ctx(
         request, "dashboard", workspace_id,
         checklist=checklist, checklist_done=checklist_done,
         todos=todos, due_actions=due_actions[:5], roi=roi,
+        auto_today=auto_today, auto_budget=auto_budget,
+        auto_running=auto_running, auto_tasks_n=auto_tasks_n,
         workspaces=await accessible_workspaces(request),
         stage=ws.stage.value if ws else "-",
         counts={
@@ -1384,6 +1408,74 @@ async def usage_page(request: Request, workspace_id: str = Query("")):
         checked_at=summary["checked_at"],
         all_plans=PLANS, trial=trial,
     ))
+
+
+@router.get("/automation", response_class=HTMLResponse)
+async def automation_page(request: Request, workspace_id: str = Query("")):
+    """自动化运营：正在跑的任务、每日/每小时 token 消耗、预算与消耗大户
+
+    后台首页（仪表盘）的「自动化与消耗」卡片链接到这里。
+    """
+    if not workspace_id:
+        workspace_id = await _default_workspace()
+    from ..core.scheduler import get_scheduler
+    from ..core.work_calendar import is_workday, local_date, local_now, local_tzname, next_night_end
+    from ..engine.usage_ledger import DailyBudget, UsageLedger
+
+    store = await get_store()
+
+    # ---- 任务面：监控 + Agent 定时任务 + 调度器 job 清单 ----
+    monitors = await store.list_monitors_full(workspace_id)
+    agent_tasks = await store.list_agent_tasks(workspace_id)
+    try:
+        jobs = get_scheduler("default").list_jobs()
+    except Exception:
+        jobs = []
+    running_monitors = [m for m in monitors if m.get("state") == "running"]
+    enabled_agent = [t for t in agent_tasks if t.get("enabled")]
+
+    # ---- 消耗面：账本 + 预算 + 消耗大户 ----
+    ledger = UsageLedger(workspace_id)
+    budget = DailyBudget(workspace_id)
+    budget_st = await budget.status(refresh=True)
+    daily_rows = ledger.daily(days=14)
+    hourly_rows = ledger.hourly()
+    top = ledger.top_consumers(days=7, limit=5)
+
+    today_usage = daily_rows[-1] if daily_rows else {}
+    max_daily_cost = max((r["cost_usd"] for r in daily_rows), default=0.0) or 0.0
+
+    return templates.TemplateResponse(request, "automation.html", await _ctx(
+        request, "automation", workspace_id,
+        monitors=monitors, running_monitors=running_monitors,
+        agent_tasks=agent_tasks, enabled_agent=enabled_agent, jobs=jobs,
+        budget=budget_st, daily_rows=daily_rows, hourly_rows=hourly_rows,
+        top=top, today_usage=today_usage, max_daily_cost=max_daily_cost,
+        workday=is_workday(local_date()),
+        local_tz=local_tzname(),
+        now_str=local_now().strftime("%Y-%m-%d %H:%M"),
+        night_end=next_night_end().strftime("%m-%d %H:%M"),
+    ))
+
+
+@router.post("/automation/budget")
+async def automation_budget(request: Request, workspace_id: str = Query(""),
+                            mode: str = Form("override"), cny: float = Form(...)):
+    """预算调整：mode=override 单日加预算（次日自动回调）/ mode=base 改每日基础预算"""
+    if not workspace_id:
+        workspace_id = await _default_workspace()
+    from ..engine.usage_ledger import DailyBudget
+    budget = DailyBudget(workspace_id)
+    try:
+        if mode == "base":
+            await budget.set_base_budget_cny(cny)
+            return RedirectResponse(
+                f"/console/automation?workspace_id={workspace_id}", status_code=303)
+        await budget.add_one_day_budget(cny)
+    except (ValueError, TypeError):
+        raise HTTPException(status_code=422, detail="预算金额不合法")
+    return RedirectResponse(
+        f"/console/automation?workspace_id={workspace_id}", status_code=303)
 
 
 @router.get("/onboarding", response_class=HTMLResponse)

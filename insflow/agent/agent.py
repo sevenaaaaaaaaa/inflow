@@ -83,8 +83,11 @@ class InsightAgent:
 
     # ========== ask 主入口 ==========
 
-    async def ask(self, question: str) -> dict:
+    async def ask(self, question: str, important: bool = False) -> dict:
         """问答：返回 {answer, citations, skills_used, mode, proposed_actions}
+
+        important：人在现场触发的调用（控制台/MCP/CLI）传 True——不受每日预算
+        熔断限制；无人值守的定时 Agent 任务保持 False，超预算即熔断（fail-closed）。
 
         citations: [{"insight_id": str, "title": str}] —— 引用溯源清单
         proposed_actions: Agent 起草的待审批动作（人在 UI 里批准）
@@ -96,7 +99,8 @@ class InsightAgent:
 
         if self.llm.available:
             try:
-                result = await self._ask_with_llm(question, matched_skills, citations)
+                result = await self._ask_with_llm(question, matched_skills, citations,
+                                                  important=important)
                 mode = "llm"
             except RuntimeError as e:
                 # LLM 失败（未配置/预算耗尽/网络）→ 确定性回退，不中断服务
@@ -122,7 +126,7 @@ class InsightAgent:
 
     # ========== 流式问答（SSE）==========
 
-    async def ask_stream(self, question: str):
+    async def ask_stream(self, question: str, important: bool = False):
         """流式问答：逐个 yield (event, data)
 
         事件：stage（进度：在调哪个工具）/ delta（答案片段）/ done（与 ask 同结构）
@@ -140,7 +144,8 @@ class InsightAgent:
 
         if self.llm.available:
             try:
-                async for event in self._stream_with_llm(question, skills, state):
+                async for event in self._stream_with_llm(question, skills, state,
+                                                          important=important):
                     yield event
             except RuntimeError as e:
                 result = await self._ask_retrieval_only(question, skills, citations)
@@ -177,14 +182,15 @@ class InsightAgent:
             yield "delta", {"text": text[i:i + STREAM_CHUNK]}
             await asyncio.sleep(STREAM_PAUSE)
 
-    async def _stream_with_llm(self, question: str, skills: list[Skill], state: dict):
+    async def _stream_with_llm(self, question: str, skills: list[Skill], state: dict,
+                               important: bool = False):
         memory = await self._memory_context(question)
         messages: list[dict] = [
             {"role": "system", "content": self._system_prompt_with_skills(skills, memory)},
             {"role": "user", "content": question},
         ]
         for _ in range(MAX_TOOL_ROUNDS):
-            resp = await self.llm.chat(messages, tools=AGENT_TOOLS)
+            resp = await self.llm.chat(messages, tools=AGENT_TOOLS, important=important)
             tool_calls = resp.get("tool_calls") or []
             if not tool_calls:
                 state["answer"] = resp.get("content") or ""
@@ -210,14 +216,15 @@ class InsightAgent:
 
         yield "stage", {"stage": "summarize", "label": "汇总中…"}
         pieces: list[str] = []
-        async for piece in self.llm.chat_stream(messages):
+        async for piece in self.llm.chat_stream(messages, important=important):
             pieces.append(piece)
             yield "delta", {"text": piece}
         state["answer"] = "".join(pieces)
 
     # ========== LLM 模式（function calling 循环）==========
 
-    async def _ask_with_llm(self, question: str, skills: list[Skill], citations: list) -> dict:
+    async def _ask_with_llm(self, question: str, skills: list[Skill], citations: list,
+                            important: bool = False) -> dict:
         memory = await self._memory_context(question)
         messages: list[dict] = [
             {"role": "system", "content": self._system_prompt_with_skills(skills, memory)},
@@ -225,7 +232,7 @@ class InsightAgent:
         ]
 
         for _ in range(MAX_TOOL_ROUNDS):
-            resp = await self.llm.chat(messages, tools=AGENT_TOOLS)
+            resp = await self.llm.chat(messages, tools=AGENT_TOOLS, important=important)
             tool_calls = resp.get("tool_calls") or []
             if not tool_calls:
                 return {"answer": resp.get("content") or ""}
@@ -250,7 +257,7 @@ class InsightAgent:
                 })
 
         # 轮数用尽，最后再取一次无工具总结
-        resp = await self.llm.chat(messages)
+        resp = await self.llm.chat(messages, important=important)
         return {"answer": resp.get("content") or ""}
 
     # ========== retrieval-only 模式（无 LLM 确定性回退）==========

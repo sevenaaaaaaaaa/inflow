@@ -5,8 +5,12 @@
   action.dispatch、feedback.evaluate、quota.audit
 - 依赖编排：采集完成 → 触发依赖该指标的模型 → 洞察产出 → 触发订阅的报告与告警
 - 熔断：每个 source 实例的配额账本超阈值自动暂停并告警
+- 日历守卫：非重要任务仅工作日执行（周六日/法定节假日跳过），且限定
+  本地 00:00–06:00 夜间窗口，06:00 强制截止；重要任务（payload.important /
+  target_json.important）不受限
 """
 
+import asyncio
 import logging
 from collections.abc import Callable
 
@@ -14,8 +18,14 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 
 from .files import EventBus
+from .work_calendar import is_workday, local_date, seconds_until_night_end
 
 logger = logging.getLogger("insflow.scheduler")
+
+
+# 日历守卫只覆盖「用户自动化任务」；系统级定时任务（备份/轮转/巡检等）
+# 里有不少周任务跑在周末，误伤会导致静默停摆（如周日快照清理永远不执行）
+GATED_TASK_TYPES = {"monitor.run", "agent.task.run"}
 
 
 class Scheduler:
@@ -95,9 +105,44 @@ class Scheduler:
 
     # ========== 内部执行 ==========
 
+    @staticmethod
+    def _is_important(payload: dict) -> bool:
+        """任务重要性：payload.important 或 target_json.important（监控任务）"""
+        if payload.get("important"):
+            return True
+        target = payload.get("target_json") or {}
+        return bool(target.get("important")) if isinstance(target, dict) else False
+
+    def _guard(self, task_type: str, payload: dict) -> str | None:
+        """执行前守卫（工作日 + 夜间窗口）；返回拒绝原因，None=放行
+
+        只作用于用户自动化任务（GATED_TASK_TYPES）+ 显式 workday_only 的任务：
+        - 重要任务（payload.important / target_json.important）：不受限
+        - 非重要任务：仅工作日执行（周六日与法定节假日跳过），
+          且固定在本地凌晨 00:00–06:00 窗口内跑（06:00 强制截止见 _run_* 的超时）
+        """
+        if task_type not in GATED_TASK_TYPES and not payload.get("workday_only"):
+            return None
+        if self._is_important(payload):
+            return None
+        if not is_workday(local_date()):
+            return "non-workday"
+        return None
+
     async def _run_monitor(self, monitor_id: str, payload: dict) -> None:
         """执行监控任务（含状态机 + 事件流 + 依赖编排）"""
         bus = EventBus(self.workspace_id)
+
+        # 执行前守卫：非重要任务非工作日不执行（周六日与法定节假日）
+        reason = self._guard(f"monitor.{monitor_id}", payload)
+        if reason:
+            bus.emit("monitor.skipped", {
+                "monitor_id": monitor_id, "reason": reason,
+                "local_date": local_date().isoformat(),
+            })
+            logger.info(f"Monitor skipped ({reason}): {monitor_id}")
+            return
+
         bus.emit("monitor.run_started", {"monitor_id": monitor_id, **payload})
 
         handler = self._handlers.get("monitor.run")
@@ -105,8 +150,13 @@ class Scheduler:
             logger.error("No handler registered for monitor.run")
             return
 
+        important = self._is_important(payload)
+        # 非重要任务夜间窗口强制截止（本地 06:00 前必须结束）
+        timeout = None if important else seconds_until_night_end()
         try:
-            result = await handler({"monitor_id": monitor_id, **payload})
+            coro = handler({"monitor_id": monitor_id, **payload})
+            result = await (asyncio.wait_for(coro, timeout=timeout)
+                            if timeout else coro)
             bus.emit("monitor.run_finished", {
                 "monitor_id": monitor_id,
                 "ok": True,
@@ -114,6 +164,12 @@ class Scheduler:
             })
             # 依赖编排：采集完成 → 触发模型评估
             await self._trigger_dependent_models(result)
+        except TimeoutError:
+            logger.warning(f"Monitor killed at night-window deadline: {monitor_id}")
+            bus.emit("monitor.alert", {
+                "monitor_id": monitor_id,
+                "error": "夜间窗口 06:00 截止，任务被强制结束（非重要任务仅可在 00:00-06:00 运行）",
+            })
         except Exception as e:
             logger.exception(f"Monitor run failed: {monitor_id}")
             bus.emit("monitor.alert", {
@@ -151,10 +207,30 @@ class Scheduler:
             logger.error(f"No handler registered for {task_type}")
             return
         bus = EventBus(self.workspace_id)
+
+        # 执行前守卫：非重要任务非工作日不执行（系统级任务标记 important=True 不受限）
+        reason = self._guard(task_type, payload)
+        if reason:
+            bus.emit("task.skipped", {
+                "task_type": task_type, "reason": reason,
+                "local_date": local_date().isoformat(),
+            })
+            logger.info(f"Task skipped ({reason}): {task_type}")
+            return
+
         bus.emit(f"{task_type}.started", payload)
+        gated = task_type in GATED_TASK_TYPES or bool(payload.get("workday_only"))
+        important = self._is_important(payload)
+        # 非重要自动化任务夜间窗口强制截止（本地 06:00 前必须结束）
+        timeout = (None if important else seconds_until_night_end()) if gated else None
         try:
-            await handler(payload)
+            coro = handler(payload)
+            await (asyncio.wait_for(coro, timeout=timeout) if timeout else coro)
             bus.emit(f"{task_type}.finished", payload)
+        except TimeoutError:
+            logger.warning(f"Task killed at night-window deadline: {task_type}")
+            bus.emit(f"{task_type}.failed", {
+                "error": "夜间窗口 06:00 截止，任务被强制结束", **payload})
         except Exception:
             logger.exception(f"Task {task_type} failed")
             bus.emit(f"{task_type}.failed", {"error": "see logs", **payload})

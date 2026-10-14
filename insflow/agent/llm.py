@@ -75,6 +75,7 @@ class LLMUsage:
     tier: str = ""
     task: str = ""
     degraded: bool = False
+    important: bool = False
 
 
 @dataclass
@@ -131,6 +132,8 @@ class LLMGateway:
     - INSFLOW_AGENT_MODEL_CHEAP / INSFLOW_AGENT_MODEL_STRONG（模型路由两层，缺省都回落 MODEL）
     - INSFLOW_AGENT_BUDGET_USD（会话预算上限，默认 $5）
     - INSFLOW_AGENT_DEGRADE_AT（预算用到多少比例开始降级，默认 0.7）
+    每日预算（跨会话，工作区级）：见 engine/usage_ledger.DailyBudget——
+    默认 ¥5/天，超支后非重要调用 fail-closed，管理员可单日加预算（次日自动回调）。
     未配置时 available=False，Agent 走 retrieval-only 回退。
     """
 
@@ -185,8 +188,13 @@ class LLMGateway:
         }
 
     async def chat(self, messages: list[dict], tools: list[dict] | None = None,
-                   temperature: float = 0.3, task: str = "reason") -> dict:
+                   temperature: float = 0.3, task: str = "reason",
+                   important: bool = False) -> dict:
         """调用 chat/completions（支持 function calling + 按任务选模型）
+
+        important=False（默认，自动化/无人值守调用）：每日预算（默认 ¥5/天）
+        用尽时 fail-closed 拒绝——宁可停，也不悄悄超支；管理员邮件里给出加预算入口。
+        important=True（人在现场触发的调用）：不受每日预算熔断限制。
 
         Returns:
             {"content": str|None, "tool_calls": [...], "usage": LLMUsage, "model": str}
@@ -195,6 +203,12 @@ class LLMGateway:
             raise RuntimeError("LLM 未配置（OPENAI_API_KEY 缺失）")
         if self.budget.exceeded():
             raise RuntimeError("Agent 会话预算已耗尽（fail-closed）")
+        if not important and self.workspace_id:
+            from ..engine.usage_ledger import DailyBudget
+            if await DailyBudget(self.workspace_id).exceeded():
+                raise RuntimeError(
+                    "每日预算已用尽（fail-closed）：今日 LLM/数据源成本已达每日预算上限，"
+                    "非重要调用被熔断。管理员可在控制台「自动化运营」单日加预算（次日自动回调）。")
 
         model, tier, degraded = self.resolve_model(task)
         payload = {
@@ -224,6 +238,7 @@ class LLMGateway:
             cost_usd=self._estimate_cost(data.get("usage", {}), model),
             latency_ms=int((time.monotonic() - start) * 1000),
             model=model, tier=tier, task=task, degraded=degraded,
+            important=important,
         )
         await self._record(entry)
 
@@ -239,7 +254,9 @@ class LLMGateway:
         }
 
     async def _record(self, entry: LLMUsage) -> None:
-        """记账：会话账本 + 成本落库（settings_json.usage.<月>.llm_cost_usd）"""
+        """记账：会话账本 + 成本落库（settings_json.usage.<月>.llm_cost_usd）
+        + 用量账本（每日/每小时/按模型/按任务，日报与消耗大户分析的数据源）
+        + 每日预算超支检查（超支发一次邮件告警，当日幂等）"""
         self.budget.record(entry)
         if self.workspace_id and entry.cost_usd:
             import contextlib
@@ -247,9 +264,23 @@ class LLMGateway:
                 from ..engine.billing import BillingManager
                 await BillingManager(self.workspace_id).record_usage_persisted(
                     "llm_cost_usd", entry.cost_usd)
+        if self.workspace_id:
+            import contextlib
+            with contextlib.suppress(Exception):
+                from ..engine.usage_ledger import DailyBudget, UsageLedger
+                UsageLedger(self.workspace_id).record(
+                    model=entry.model, task=entry.task, tier=entry.tier,
+                    prompt_tokens=entry.prompt_tokens,
+                    completion_tokens=entry.completion_tokens,
+                    cost_usd=entry.cost_usd, latency_ms=entry.latency_ms,
+                    degraded=entry.degraded, important=entry.important)
+                # 超支即告警（幂等在 alert_if_exceeded 内部）；记账旁路不阻塞主流程
+                import asyncio
+                asyncio.get_running_loop().create_task(
+                    DailyBudget(self.workspace_id).alert_if_exceeded())
 
     async def chat_stream(self, messages: list[dict], temperature: float = 0.3,
-                          task: str = "reason"):
+                          task: str = "reason", important: bool = False):
         """真流式（SSE over httpx）：逐块 yield 文本，最后一帧记账
 
         不支持 tools：function calling 要完整 JSON 才能执行，边流边拼 arguments
@@ -259,6 +290,12 @@ class LLMGateway:
             raise RuntimeError("LLM 未配置（OPENAI_API_KEY 缺失）")
         if self.budget.exceeded():
             raise RuntimeError("Agent 会话预算已耗尽（fail-closed）")
+        if not important and self.workspace_id:
+            from ..engine.usage_ledger import DailyBudget
+            if await DailyBudget(self.workspace_id).exceeded():
+                raise RuntimeError(
+                    "每日预算已用尽（fail-closed）：今日成本已达每日预算上限，"
+                    "非重要调用被熔断。管理员可在控制台「自动化运营」单日加预算。")
 
         model, tier, degraded = self.resolve_model(task)
         payload = {"model": model, "messages": messages, "temperature": temperature,
@@ -299,7 +336,8 @@ class LLMGateway:
             completion_tokens=usage.get("completion_tokens", 0),
             cost_usd=self._estimate_cost(usage, model),
             latency_ms=int((time.monotonic() - start) * 1000),
-            model=model, tier=tier, task=task, degraded=degraded))
+            model=model, tier=tier, task=task, degraded=degraded,
+            important=important))
 
     def _estimate_cost(self, usage: dict, model: str = "") -> float:
         """粗略成本估算（按模型价格表；未知模型用保守缺省价）"""

@@ -33,8 +33,16 @@ class TestCRUD:
         svc = env["service"]
         m = await svc.create("site_change", {"url": "https://c.com/pricing"})
         assert m["state"] == "idle"
-        assert m["schedule_cron"] == "0 */6 * * *"
-        assert len(await svc.list()) == 1
+        # 非重要任务固定本地凌晨 00:00（Asia/Shanghai → UTC 前一日 16:00），
+        # 周六日/节假日跳过 + 06:00 强制截止由调度器守卫执行
+        assert m["schedule_cron"] == "0 16 * * *"
+        assert m["target_json"]["important"] is False
+        # 重要任务保留调用方 cron，不受夜间窗口限制
+        m2 = await svc.create("keyword", {"query": "增长工具"},
+                              schedule_cron="0 */6 * * *", important=True)
+        assert m2["schedule_cron"] == "0 */6 * * *"
+        assert m2["target_json"]["important"] is True
+        assert len(await svc.list()) == 2
 
     async def test_unknown_kind_rejected(self, env):
         with pytest.raises(ValueError):

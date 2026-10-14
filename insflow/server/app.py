@@ -705,6 +705,7 @@ class MonitorCreateRequest(BaseModel):
     kind: str
     target: dict
     schedule_cron: str = "0 */6 * * *"
+    important: bool = False  # 非重要任务固定本地凌晨 00:00 执行，且仅工作日执行
 
 
 @app.get("/api/v1/monitors")
@@ -717,7 +718,8 @@ async def list_monitors(workspace_id: str = Query(...)):
 async def create_monitor(workspace_id: str, data: MonitorCreateRequest):
     from ..engine.monitors import MonitorService
     try:
-        return await MonitorService(workspace_id).create(data.kind, data.target, data.schedule_cron)
+        return await MonitorService(workspace_id).create(
+            data.kind, data.target, data.schedule_cron, important=data.important)
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
 
@@ -1975,7 +1977,7 @@ async def agent_ask(data: AgentAskRequest, workspace_id: str = Query(...)):
         raise HTTPException(status_code=404, detail="Workspace not found")
 
     agent = InsightAgent(workspace_id)
-    return await agent.ask(data.question)
+    return await agent.ask(data.question, important=True)  # 人在现场，不受每日预算熔断
 
 
 @app.get("/api/v1/search")
@@ -2027,7 +2029,7 @@ async def agent_ask_stream(request: Request, workspace_id: str = Query(...),
     async def _gen():
         agent = InsightAgent(workspace_id)
         try:
-            async for event, data in agent.ask_stream(question):
+            async for event, data in agent.ask_stream(question, important=True):
                 if await request.is_disconnected():
                     return
                 yield sse_event(event, data)

@@ -28,17 +28,31 @@ class MonitorService:
 
     # ========== CRUD + 调度 ==========
 
-    async def create(self, kind: str, target: dict, schedule_cron: str = "0 */6 * * *") -> dict:
-        """创建监控任务并注册到调度器"""
+    async def create(self, kind: str, target: dict, schedule_cron: str = "0 */6 * * *",
+                     important: bool = False) -> dict:
+        """创建监控任务并注册到调度器
+
+        important=False（默认，非重要任务）：
+        - 固定在本地凌晨 00:00 执行（调度器走 UTC，经 work_calendar 换算），
+          06:00 前强制结束（Scheduler 夜间窗口守卫）
+        - 周六日与法定节假日不执行（Scheduler 日历守卫）
+        important=True：按调用方给定的 cron 执行，不受日历与窗口限制
+        """
         if kind not in self.KINDS:
             raise ValueError(f"未知监控类型: {kind}（支持: {self.KINDS}）")
-        # 频率治理（对齐 OpenFlow 心跳降频）：拒绝过于频繁的调度
+        # 频率治理（对齐 OpenFlow 心跳降频）：按「请求的 cron」校验（拒绝过频），
+        # 之后才允许对非重要任务改写为凌晨执行（策略改写不能绕过频率守卫）
         from ..core.governor import validate_cron
         validate_cron(kind, schedule_cron)
+        if not important:
+            from ..core.work_calendar import local_hour_to_utc_cron
+            schedule_cron = local_hour_to_utc_cron(0, 0)  # 本地凌晨 00:00
         store = await get_store()
+        target = {**target, "important": bool(important)}
         monitor = await store.create_monitor(self.workspace_id, kind, target, schedule_cron)
         self._register_job(monitor)
-        self.bus.emit("monitor.created", {"monitor_id": monitor["id"], "kind": kind})
+        self.bus.emit("monitor.created", {"monitor_id": monitor["id"], "kind": kind,
+                                          "important": bool(important)})
         return monitor
 
     async def delete(self, monitor_id: str) -> bool:

@@ -12,6 +12,15 @@
   <div class="card"><div class="num">{{ feedback_effective }}</div><div class="label">验证有效</div></div>
 </div>
 
+<div class="card" style="margin-bottom:18px">
+  <b>⚙️ 自动化与消耗</b>
+  <span class="sub">正在执行 {{ auto_running }} 个任务 · 共 {{ auto_tasks_n }} 个监控任务 ·
+  今日 LLM 调用 {{ auto_today.calls or 0 }} 次（{{ auto_today.prompt_tokens or 0 }} 入 / {{ auto_today.completion_tokens or 0 }} 出 tokens）·
+  成本 ¥{{ auto_today.cost_cny or 0 }} / 预算 ¥{{ auto_budget.budget_cny or '—' }}
+  {% if auto_budget.exceeded %}<span class="badge b-high">已超支·非重要任务已熔断</span>{% endif %}</span>
+  <a class="dp-btn" href="/console/automation?workspace_id={{ workspace_id }}">进入自动化运营 →</a>
+</div>
+
 {% if checklist and checklist_done < checklist | length %}
 <div class="card checklist">
   <div class="cl-head">

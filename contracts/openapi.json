@@ -562,6 +562,11 @@
       },
       "MonitorCreateRequest": {
         "properties": {
+          "important": {
+            "default": false,
+            "title": "Important",
+            "type": "boolean"
+          },
           "kind": {
             "title": "Kind",
             "type": "string"

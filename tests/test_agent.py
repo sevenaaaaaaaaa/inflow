@@ -117,7 +117,7 @@ class TestAgentAsk:
                 self.rounds = 0
                 self.budget = BudgetLedger()
 
-            async def chat(self, messages, tools=None, temperature=0.3):
+            async def chat(self, messages, tools=None, temperature=0.3, important=False):
                 self.rounds += 1
                 if self.rounds == 1:
                     return {

@@ -33,7 +33,8 @@ EXCLUDES=(
   --exclude='.git' --exclude='.venv' --exclude='__pycache__'
   --exclude='.pytest_cache' --exclude='.ruff_cache' --exclude='.mypy_cache'
   --exclude='/data/' --exclude='/data-backup/' --exclude='*.pyc'
-  --exclude='.env' --exclude='.DS_Store'
+  --exclude='.env' --exclude='.env.*' --exclude='.DS_Store'
+  --exclude='/Temp/' --exclude='CLAUDE.md' --exclude='AGENTS.md' --exclude='.gitleaksignore'
 )
 
 GITLEAKS="${GITLEAKS:-$HOME/.local/bin/gitleaks}"
@@ -54,7 +55,7 @@ if [ "$SERVER_ONLY" = "0" ]; then
     git status -s | head -40
     echo "==> [dry-run] gitleaks 扫描工作区改动"
     leak_scan worktree
-    echo "    将提交：$MSG（dry-run 不提交、不推送）"
+    echo "    将提交：${MSG}（dry-run 不提交、不推送）"
   else
     br="$(git rev-parse --abbrev-ref HEAD)"
     [ "$br" = "main" ] || { echo "✗ 当前分支 $br 不是 main，已中止（或用 --server-only）"; exit 1; }

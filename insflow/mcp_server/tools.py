@@ -49,7 +49,7 @@ async def tool_run_diagnosis(workspace_id: str) -> dict:
 async def tool_ask_analyst(workspace_id: str, question: str) -> dict:
     """数据洞察问答（Agent，含引用溯源）"""
     agent = InsightAgent(workspace_id)
-    return await agent.ask(question)
+    return await agent.ask(question, important=True)  # MCP 由人触发，不受每日预算熔断
 
 
 async def tool_list_competitors(workspace_id: str) -> dict:

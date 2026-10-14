@@ -563,7 +563,7 @@ def agent_ask(question: str, workspace: str):
 
     async def _ask():
         agent = InsightAgent(workspace)
-        result = await agent.ask(question)
+        result = await agent.ask(question, important=True)  # 人在现场，不受每日预算熔断
         console.print(Panel(result["answer"], title=f"mode={result['mode']}"))
         if result["citations"]:
             console.print("[dim]引用溯源：[/]")
