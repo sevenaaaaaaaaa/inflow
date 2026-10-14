@@ -12,6 +12,8 @@
 #   /data/      仓库根 data（本机数据），注意必须锚定根目录——否则会连带排除 insflow/data/（内置地图）
 #   .ruff_cache .pytest_cache __pycache__ 本机工具缓存，不该上服务器
 #   .venv .env  服务器有自己的环境与配置
+#   /ops/       使用工具产生的脚本/批次（gitignored），单独同步到 web 根之外的 /www/ops/inflow/
+# 分支约束：正式部署（含 --server-only）只允许在 main 上进行；--dry-run 任意分支可跑（仅告警）
 set -euo pipefail
 
 APP_DIR="$(cd "$(dirname "$0")/.." && pwd)"
@@ -35,7 +37,34 @@ EXCLUDES=(
   --exclude='/data/' --exclude='/data-backup/' --exclude='*.pyc'
   --exclude='.env' --exclude='.env.*' --exclude='.DS_Store'
   --exclude='/Temp/' --exclude='CLAUDE.md' --exclude='AGENTS.md' --exclude='.gitleaksignore'
+  --exclude='/ops/'
 )
+REMOTE_HOST="${REMOTE%%:*}"
+OPS_REMOTE="${OPS_REMOTE:-/www/ops/inflow/}"   # outside any web root; never --delete
+
+# Deploy only from main (dry-run: warn only)
+br="$(git rev-parse --abbrev-ref HEAD)"
+if [ "$br" != "main" ]; then
+  if [ "$DRY" = "1" ]; then
+    echo "⚠ 当前分支 ${br}，部署只允许从 main 进行；功能分支请先合并（dry-run 仅预览，继续）"
+  else
+    echo "✗ 当前分支 ${br}，部署只允许从 main 进行；功能分支请先合并"; exit 1
+  fi
+fi
+
+# Sync tool-usage workspace ops/ → server (outside web root). Skips when ops/ is empty.
+sync_ops() {
+  [ -d ops ] && [ -n "$(ls -A ops 2>/dev/null)" ] || return 0
+  if [ "$DRY" = "1" ]; then
+    echo "==> ops/ 差异（dry-run）→ ${REMOTE_HOST}:${OPS_REMOTE}"
+    rsync -azn --update --itemize-changes --exclude='.DS_Store' \
+      --rsync-path="mkdir -p ${OPS_REMOTE} && rsync" ./ops/ "${REMOTE_HOST}:${OPS_REMOTE}" || true
+  else
+    echo "==> 同步 ops/ → ${REMOTE_HOST}:${OPS_REMOTE}（--update，只增不删）"
+    rsync -az --update --exclude='.DS_Store' \
+      --rsync-path="mkdir -p ${OPS_REMOTE} && rsync" ./ops/ "${REMOTE_HOST}:${OPS_REMOTE}"
+  fi
+}
 
 GITLEAKS="${GITLEAKS:-$HOME/.local/bin/gitleaks}"
 [ -x "$GITLEAKS" ] || GITLEAKS="$(command -v gitleaks || true)"
@@ -57,8 +86,6 @@ if [ "$SERVER_ONLY" = "0" ]; then
     leak_scan worktree
     echo "    将提交：${MSG}（dry-run 不提交、不推送）"
   else
-    br="$(git rev-parse --abbrev-ref HEAD)"
-    [ "$br" = "main" ] || { echo "✗ 当前分支 $br 不是 main，已中止（或用 --server-only）"; exit 1; }
     git add -A
     if git diff --cached --quiet; then
       echo "==> GitHub：没有改动，跳过提交"
@@ -77,15 +104,17 @@ fi
 if [ "$DRY" = "1" ]; then
   echo "==> 差异（dry-run）"
   rsync -azn --itemize-changes "${EXCLUDES[@]}" ./ "$REMOTE" || true
+  sync_ops
   echo "==> 仅预览，未变更线上"
   exit 0
 fi
 
 echo "==> 同步到 $REMOTE"
 rsync -az "${EXCLUDES[@]}" ./ "$REMOTE"
+sync_ops
 
 echo "==> 重启服务"
-ssh "${REMOTE%%:*}" "systemctl restart insflow && sleep 5 && systemctl is-active insflow"
+ssh "$REMOTE_HOST" "systemctl restart insflow && sleep 5 && systemctl is-active insflow"
 
 echo "==> 健康检查"
 BASE="${BASE:-https://www.nownexts.com/inflow}"

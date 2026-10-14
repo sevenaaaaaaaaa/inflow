@@ -56,6 +56,8 @@ node scripts/e2e_ui.mjs insflow/web/static_app.js   # UI 行为回归
 - **双轨同步，唯一入口 `deploy/sync.sh`**：
   - GitHub 轨（公开仓库）：只推干净代码。`.gitignore` 挡住 `.env*`、`/data/`、`/Temp/` 等；`git add -A` 后 gitleaks 扫描暂存区，发现泄漏即中止；只推 `main`
   - 服务器轨：rsync 工作区（不带 --delete，排除 `.env`/`.venv`/`/data/` 等）→ `systemctl restart insflow` → 健康检查 `/console/login` → 核对 `ASSET_VERSION`
+  - 只允许从 `main` 部署（含 `--server-only`）；其他分支直接拒绝，`--dry-run` 仅告警
+  - `ops/` 单独同步到 `/www/ops/inflow/`（见「开发工具 vs 使用工具」）
   - 本地 `.git/hooks/pre-commit` 跑 gitleaks（不入库，新 clone 需自行安装）；误报登记在 `.gitleaksignore` 或行内 `gitleaks:allow`
 
 ```bash
@@ -68,6 +70,16 @@ BASE=https://www.nownexts.com/inflow EMAIL=... PASSWORD=... ./scripts/smoke_live
 
 - CI：`.github/workflows/ci.yml` 在 push `main` / PR 时跑单测、ruff、契约检查、MySQL 兼容、UI 回归；**不自动部署**
 - 私有化形态：`deploy/install.sh`、`deploy/upgrade.sh`、`deploy/docker/`（`docker compose -f deploy/docker/docker-compose.yml --env-file .env up -d --build`）、`deploy/systemd/`
+
+## 开发工具 vs 使用工具（硬性规则）
+
+| 类别 | 例子 | 放哪 | GitHub | 服务器 |
+|---|---|---|---|---|
+| 开发工具（产品代码） | 源码、测试、部署脚本、文档 | 原目录 | ✅ | ✅（部署同步） |
+| 使用工具的产物 | 用 inFlow 干活时写的批处理/一次性修复脚本、批次文件、导出数据 | **`ops/`** | ❌ | ✅ 仅 `/www/ops/inflow/`（web 根之外，`--update` 只增不删） |
+
+- `/ops/` 已 gitignore；`deploy/sync.sh` 把 `ops/` 单独同步到服务器 `/www/ops/inflow/`（不进 web 根、不进 GitHub；`ops/` 为空时跳过）。
+- 拿不准时按第二类处理（放 `ops/`，不进 GitHub），再问用户。
 
 ## 注意事项
 

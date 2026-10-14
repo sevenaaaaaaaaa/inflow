@@ -76,3 +76,7 @@ htmlcov/
 *.key
 *.sqlite
 *.sqlite3
+
+# Tool-usage workspace: scripts/batches/data produced while *using* inFlow.
+# Never on GitHub; deploy/sync.sh pushes it to the server only (/www/ops/inflow/).
+/ops/
