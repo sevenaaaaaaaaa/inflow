@@ -66,10 +66,8 @@ class RedditProvider:
         }
 
         # 构建搜索 URL
-        if subreddit:
-            url = f"{self.API_URL}/r/{subreddit}/search"
-        else:
-            url = f"{self.API_URL}/search"
+        url = (f"{self.API_URL}/r/{subreddit}/search" if subreddit
+               else f"{self.API_URL}/search")
 
         params = {
             "q": query,
