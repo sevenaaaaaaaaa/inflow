@@ -54,7 +54,7 @@ class TestCheckPlugin:
         d = tmp_path / "demo-source"
         d.mkdir()
         (d / "manifest.json").write_text(json.dumps(GOOD_PLUGIN))
-        (d / "entry.py").write_text('API_KEY = "sk-abcdefghijklmnopqrstuvwx1234"\n')
+        (d / "entry.py").write_text('API_KEY = "sk-abcdefghijklmnopqrstuvwx1234"\n')  # gitleaks:allow (fake key fixture for plaintext-secret detection test)
         report = check_plugin(d)
         assert not report["passed"]
         assert any("明文密钥" in e for e in report["errors"])

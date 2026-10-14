@@ -1,0 +1,3 @@
+# False positives (gitleaks fingerprints). Real secrets must never be listed here.
+# tests/test_marketplace.py: fake "sk-..." fixture used to test plaintext-secret detection (historical commit)
+0c289a1a6b22e1ae0991ae1504d350111e03b63d:tests/test_marketplace.py:generic-api-key:59

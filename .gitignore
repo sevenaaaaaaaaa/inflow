@@ -66,3 +66,13 @@ htmlcov/
 # Distribution
 *.tar.gz
 *.whl
+
+# Local-only (never on GitHub)
+/data/
+/Temp/
+.env.*
+!.env.example
+*.pem
+*.key
+*.sqlite
+*.sqlite3
