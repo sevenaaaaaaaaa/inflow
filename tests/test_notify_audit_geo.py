@@ -844,6 +844,10 @@ class TestGeoDimSelection:
 
     def _seed(self, env, workspace_id: str, dim: str, rows: list):
         import asyncio
+        from datetime import UTC, datetime, timedelta
+
+        # 相对时间：页面按 days=30 取窗，写死日期会随时间滑出窗口
+        ts = (datetime.now(UTC) - timedelta(days=3)).isoformat()
 
         async def _run():
             store = env["store"]
@@ -852,9 +856,9 @@ class TestGeoDimSelection:
                 await store._execute(
                     """INSERT INTO metrics (id, workspace_id, entity_type, entity_id,
                        metric, value, dim_json, ts) VALUES (?, ?, 'site', 'main',
-                       'ga4_sessions', ?, ?, '2026-09-10T00:00:00+00:00')""",
+                       'ga4_sessions', ?, ?, ?)""",
                     (f"{workspace_id}-{i}", workspace_id, value,
-                     json.dumps({dim: key}, ensure_ascii=False)))
+                     json.dumps({dim: key}, ensure_ascii=False), ts))
             await store._db.commit()
         asyncio.get_event_loop().run_until_complete(_run())
 

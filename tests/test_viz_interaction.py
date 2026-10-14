@@ -76,10 +76,14 @@ async def env(tmp_path, monkeypatch):
 class TestDrillAPI:
     def test_endpoint_returns_series_and_insights(self, env):
         import asyncio
+        from datetime import UTC, datetime, timedelta
 
         from fastapi.testclient import TestClient
 
         from insflow.server.app import app
+
+        # 相对时间：drill 默认窗口 hours=720（30 天），写死日期会随时间滑出窗口
+        base = datetime.now(UTC) - timedelta(days=5)
 
         async def _seed():
             store = env["store"]
@@ -88,7 +92,7 @@ class TestDrillAPI:
                     """INSERT INTO metrics (id, workspace_id, entity_type, entity_id, metric,
                        value, dim_json, ts) VALUES (?, 'test-ws', 'topic', '某品牌',
                        'topic_negative_ratio', ?, '{}', ?)""",
-                    (f"m{i}", 0.2 + i * 0.05, f"2026-09-1{i}T00:00:00+00:00"))
+                    (f"m{i}", 0.2 + i * 0.05, (base + timedelta(days=i)).isoformat()))
             await store.create_insight(Insight(
                 workspace_id="test-ws", type="topic_negative_alert",
                 title="舆情负面预警：某品牌", summary="负向占比 45%",
